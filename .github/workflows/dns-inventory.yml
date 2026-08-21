@@ -1,0 +1,200 @@
+name: DNS Inventory
+
+# Read-only inventory of DNS state across both providers.
+#
+# Writes nothing. It answers three questions:
+#   1. Do the API credentials work and what scope do they have?
+#   2. Which provider serves which domain?
+#   3. Is any VPN entry record proxied by Cloudflare?
+#
+# The last question matters most: a proxied record terminates TLS at
+# Cloudflare and breaks VLESS + REALITY outright. See docs/integrations/dns.md.
+#
+# The repository is public. Entry domain names are seed material and public by
+# construction, so they are printed. API tokens and account identifiers are not.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dns-inventory:
+    name: DNS Inventory
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check configuration
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SPACESHIP_API_KEY: ${{ secrets.SPACESHIP_API_KEY }}
+          SPACESHIP_API_SECRET: ${{ secrets.SPACESHIP_API_SECRET }}
+          VPN_ENTRY_DOMAINS: ${{ vars.VPN_ENTRY_DOMAINS }}
+          SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${CLOUDFLARE_API_TOKEN}" ] || missing="${missing} secrets.CLOUDFLARE_API_TOKEN"
+          [ -n "${CLOUDFLARE_ACCOUNT_ID}" ] || missing="${missing} secrets.CLOUDFLARE_ACCOUNT_ID"
+          [ -n "${SPACESHIP_API_KEY}" ] || missing="${missing} secrets.SPACESHIP_API_KEY"
+          [ -n "${SPACESHIP_API_SECRET}" ] || missing="${missing} secrets.SPACESHIP_API_SECRET"
+          [ -n "${VPN_ENTRY_DOMAINS}" ] || missing="${missing} vars.VPN_ENTRY_DOMAINS"
+          [ -n "${SITE_DOMAIN}" ] || missing="${missing} vars.SITE_DOMAIN"
+
+          if [ -n "${missing}" ]; then
+            echo "Not configured:${missing}"
+            echo "See docs/integrations/dns.md"
+            exit 1
+          fi
+          echo "Configuration is complete."
+
+      - name: Verify Cloudflare token
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/cf-verify.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "accept: application/json" \
+            https://api.cloudflare.com/client/v4/user/tokens/verify)
+
+          if [ "${code}" != "200" ]; then
+            echo "Cloudflare token verification failed. HTTP ${code}."
+            jq -r '(.errors // []) | map(.message) | join("; ")' /tmp/cf-verify.json || true
+            exit 1
+          fi
+
+          status=$(jq -r '.result.status // "unknown"' /tmp/cf-verify.json)
+          echo "Cloudflare token status: ${status}"
+          if [ "${status}" != "active" ]; then
+            echo "Token is not active."
+            exit 1
+          fi
+
+      - name: Verify Spaceship credentials
+        env:
+          SPACESHIP_API_KEY: ${{ secrets.SPACESHIP_API_KEY }}
+          SPACESHIP_API_SECRET: ${{ secrets.SPACESHIP_API_SECRET }}
+          VPN_ENTRY_DOMAINS: ${{ vars.VPN_ENTRY_DOMAINS }}
+        run: |
+          set -euo pipefail
+          # Spaceship has no dedicated credential-check endpoint, so the first
+          # entry domain is used as a probe. 401 or 403 means bad credentials,
+          # 404 means the domain is not on Spaceship, which is still a valid
+          # answer about the credentials themselves.
+          probe=$(echo "${VPN_ENTRY_DOMAINS}" | cut -d',' -f1)
+
+          code=$(curl -sS -o /tmp/ss-probe.json -w '%{http_code}' \
+            -G \
+            -H "X-API-Key: ${SPACESHIP_API_KEY}" \
+            -H "X-API-Secret: ${SPACESHIP_API_SECRET}" \
+            -H "accept: application/json" \
+            --data-urlencode "take=1" \
+            --data-urlencode "skip=0" \
+            "https://spaceship.dev/api/v1/dns/records/${probe}")
+
+          case "${code}" in
+            200) echo "Spaceship credentials work and the probe domain is served there." ;;
+            404) echo "Spaceship credentials work, the probe domain is not on Spaceship." ;;
+            401|403) echo "Spaceship credentials rejected. HTTP ${code}."; exit 1 ;;
+            *) echo "Unexpected Spaceship response. HTTP ${code}."; exit 1 ;;
+          esac
+
+      - name: Inventory domains
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SPACESHIP_API_KEY: ${{ secrets.SPACESHIP_API_KEY }}
+          SPACESHIP_API_SECRET: ${{ secrets.SPACESHIP_API_SECRET }}
+          VPN_ENTRY_DOMAINS: ${{ vars.VPN_ENTRY_DOMAINS }}
+          SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
+        run: |
+          set -euo pipefail
+          proxy_violation=0
+
+          {
+            echo "## DNS Inventory"
+            echo ""
+            echo "| Domain | Role | Provider | Records | Types | Proxied |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          cf_zone_id() {
+            domain="$1"
+            curl -sS \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "accept: application/json" \
+              -G --data-urlencode "name=${domain}" \
+              https://api.cloudflare.com/client/v4/zones \
+              | jq -r '(.result // []) | .[0].id // empty'
+          }
+
+          inspect() {
+            domain="$1"
+            role="$2"
+
+            zone_id=$(cf_zone_id "${domain}")
+
+            if [ -n "${zone_id}" ]; then
+              curl -sS \
+                -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+                -H "accept: application/json" \
+                -G --data-urlencode "per_page=100" \
+                "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
+                > /tmp/recs.json
+
+              count=$(jq -r '(.result // []) | length' /tmp/recs.json)
+              types=$(jq -r '(.result // []) | map(.type) | unique | join(" ")' /tmp/recs.json)
+              proxied=$(jq -r '(.result // []) | map(select(.proxied == true)) | length' /tmp/recs.json)
+              provider="cloudflare"
+            else
+              code=$(curl -sS -o /tmp/recs.json -w '%{http_code}' \
+                -G \
+                -H "X-API-Key: ${SPACESHIP_API_KEY}" \
+                -H "X-API-Secret: ${SPACESHIP_API_SECRET}" \
+                -H "accept: application/json" \
+                --data-urlencode "take=500" \
+                --data-urlencode "skip=0" \
+                "https://spaceship.dev/api/v1/dns/records/${domain}")
+
+              if [ "${code}" = "200" ]; then
+                count=$(jq -r '(.items // []) | length' /tmp/recs.json)
+                types=$(jq -r '(.items // []) | map(.type) | unique | join(" ")' /tmp/recs.json)
+                proxied="n/a"
+                provider="spaceship"
+              else
+                count="?"
+                types="-"
+                proxied="-"
+                provider="not found (HTTP ${code})"
+              fi
+            fi
+
+            if [ "${role}" = "vpn-entry" ] && [ "${proxied}" != "n/a" ] && [ "${proxied}" != "-" ] && [ "${proxied}" != "0" ]; then
+              echo "VIOLATION: ${domain} has ${proxied} proxied record(s). Proxying breaks REALITY."
+              proxy_violation=1
+              proxied="${proxied} VIOLATION"
+            fi
+
+            echo "${domain}: provider=${provider} records=${count} types=[${types}] proxied=${proxied}"
+            echo "| ${domain} | ${role} | ${provider} | ${count} | ${types:--} | ${proxied} |" >> "${GITHUB_STEP_SUMMARY}"
+          }
+
+          IFS=',' read -ra entries <<< "${VPN_ENTRY_DOMAINS}"
+          for d in "${entries[@]}"; do
+            inspect "$(echo "${d}" | tr -d ' ')" "vpn-entry"
+          done
+
+          inspect "${SITE_DOMAIN}" "site"
+
+          {
+            echo ""
+            if [ "${proxy_violation}" -ne 0 ]; then
+              echo "**Proxy violation found.** Cloudflare proxying must be off for VPN entry domains."
+            else
+              echo "No Cloudflare proxying on VPN entry domains."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [ "${proxy_violation}" -ne 0 ]; then
+            exit 1
+          fi
