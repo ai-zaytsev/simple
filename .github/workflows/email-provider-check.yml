@@ -65,8 +65,9 @@ jobs:
             exit 1
           fi
 
-          plan=$(jq -r '(.plan // []) | map(.type) | join(",")' /tmp/account.json)
-          credits=$(jq -r '(.plan // []) | map(.credits // empty) | join(",")' /tmp/account.json)
+          # Тип плана и остаток кредитов — это account data.
+          # В публичных логах их быть не должно, поэтому наружу идёт только булев признак.
+          credits_ok=$(jq -r '[(.plan // [])[] | (.credits // 0)] | add // 0 | if . > 0 then "доступны" else "исчерпаны" end' /tmp/account.json)
 
           echo "Ключ валиден."
           {
@@ -75,9 +76,13 @@ jobs:
             echo "| Проверка | Результат |"
             echo "| --- | --- |"
             echo "| Ключ Brevo | валиден |"
-            echo "| План | \`${plan:-не определён}\` |"
-            echo "| Остаток кредитов | \`${credits:-не определён}\` |"
+            echo "| Кредиты отправки | ${credits_ok} |"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [ "${credits_ok}" = "исчерпаны" ]; then
+            echo "Кредиты отправки исчерпаны — письма не уйдут."
+            exit 1
+          fi
 
       - name: Отправить тестовые письма
         id: send
