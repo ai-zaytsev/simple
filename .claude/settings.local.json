@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git branch:*)",
+      "Bash(git show:*)",
+      "Bash(git rev-parse:*)",
+      "PowerShell(git status:*)",
+      "PowerShell(git log:*)",
+      "PowerShell(git diff:*)",
+      "PowerShell(git branch:*)",
+      "PowerShell(powershell -File .\scripts\New-FeatureBranch.ps1:*)",
+      "PowerShell(powershell -File .\scripts\Select-ImplementationAgent.ps1:*)",
+      "PowerShell(powershell -File .\scripts\Start-ImplementationWorker.ps1:*)",
+      "PowerShell(powershell -File .\scripts\Invoke-AIReview.ps1:*)",
+      "PowerShell(& 'C:\Program Files\GitHub CLI\gh.exe' pr list:*)",
+      "PowerShell(& 'C:\Program Files\GitHub CLI\gh.exe' pr view:*)",
+      "PowerShell(& 'C:\Program Files\GitHub CLI\gh.exe' pr checks:*)",
+      "PowerShell(& 'C:\Program Files\GitHub CLI\gh.exe' run list:*)",
+      "PowerShell(& 'C:\Program Files\GitHub CLI\gh.exe' run view:*)"
+    ]
+  }
+}

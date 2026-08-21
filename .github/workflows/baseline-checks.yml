@@ -1,0 +1,87 @@
+name: Baseline Checks
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  workflow_dispatch:
+
+jobs:
+  process-baseline:
+    name: Process Baseline
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify required process artifacts
+        shell: pwsh
+        run: |
+          $required = @(
+            'AGENTS.md',
+            'CLAUDE.md',
+            '.specify/README.md',
+            '.specify/templates/spec.md',
+            '.specify/templates/plan.md',
+            '.specify/templates/tasks.md',
+            'docs/ai-pr-workflow.md',
+            'docs/worker-orchestration.md',
+            'scripts/Process.Common.ps1',
+            'scripts/New-FeatureBranch.ps1',
+            'scripts/Select-ImplementationAgent.ps1',
+            'scripts/Start-ImplementationWorker.ps1',
+            'scripts/Publish-FeaturePR.ps1',
+            'scripts/Invoke-AIReview.ps1'
+          )
+
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing required process artifact: $path"
+            }
+          }
+
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $errors = @()
+          Get-ChildItem -Path scripts -Filter *.ps1 -File | ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors)
+            if ($parseErrors -and $parseErrors.Count -gt 0) {
+              $errors += $parseErrors | ForEach-Object { "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
+            }
+          }
+
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Host $_ }
+            throw "PowerShell parsing failed."
+          }
+
+      - name: Compile Python sources
+        shell: pwsh
+        run: |
+          $roots = @('src', 'tests') | Where-Object { Test-Path -LiteralPath $_ }
+          if ($roots.Count -eq 0) {
+            Write-Host "No Python source roots found. Product code is not introduced yet, skipping compile step."
+            exit 0
+          }
+
+          $pythonFiles = Get-ChildItem -Path $roots -Filter *.py -File -Recurse -ErrorAction SilentlyContinue
+          if (-not $pythonFiles -or $pythonFiles.Count -eq 0) {
+            Write-Host "Python source roots contain no .py files, skipping compile step."
+            exit 0
+          }
+
+          python -m compileall @roots

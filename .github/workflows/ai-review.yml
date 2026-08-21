@@ -1,0 +1,47 @@
+name: AI Review
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to review
+        required: false
+        type: string
+      feature_id:
+        description: Optional feature id override
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  ai-review:
+    name: AI Review
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.ref }}
+
+      - name: Run AI review workflow
+        shell: pwsh
+        env:
+          AI_REVIEW_AGENT: ${{ vars.AI_REVIEW_AGENT }}
+          AI_REVIEW_COMMAND: ${{ vars.AI_REVIEW_COMMAND }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:AI_REVIEW_AGENT)) {
+            Write-Host "AI_REVIEW_AGENT is not configured. Falling back to manual review."
+          }
+
+          .\scripts\Invoke-AIReview.ps1 -Mode workflow -FeatureId "${{ inputs.feature_id }}"

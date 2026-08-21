@@ -1,0 +1,98 @@
+name: PR Guard
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - edited
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-loop-guard:
+    name: PR Loop Guard
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate PR routing and mergeability
+        id: pr_meta
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = context.payload.pull_request.number;
+
+            let pr = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+            for (let attempt = 0; attempt < 5 && pr.data.mergeable === null; attempt += 1) {
+              await new Promise((resolve) => setTimeout(resolve, 2000));
+              pr = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+            }
+
+            core.setOutput('head_ref', pr.data.head.ref);
+            core.setOutput('base_sha', pr.data.base.sha);
+            core.setOutput('head_sha', pr.data.head.sha);
+
+            if (pr.data.base.ref !== 'main') {
+              core.setFailed(`PR must target main. Current base is '${pr.data.base.ref}'.`);
+            }
+
+            if (pr.data.head.ref === 'main') {
+              core.setFailed('PR head branch must not be main.');
+            }
+
+            if (pr.data.mergeable === false || pr.data.mergeable_state === 'dirty') {
+              core.setFailed('PR has merge conflicts and is not merge-ready.');
+            }
+
+      - name: Validate feature branch contract
+        shell: pwsh
+        env:
+          HEAD_REF: ${{ steps.pr_meta.outputs.head_ref }}
+        run: |
+          if ($env:HEAD_REF -notmatch '^(feature|codex|task)/(?<featureId>[A-Za-z0-9._-]+)$') {
+            throw "Head branch '$env:HEAD_REF' does not match the feature branch contract."
+          }
+
+          $featureId = $Matches['featureId']
+          $featureRoot = Join-Path 'specs' $featureId
+          foreach ($required in @('spec.md', 'plan.md', 'tasks.md')) {
+            $target = Join-Path $featureRoot $required
+            if (-not (Test-Path -LiteralPath $target)) {
+              throw "Missing feature-memory file: $target"
+            }
+          }
+
+      - name: Require memory updates for process changes
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ steps.pr_meta.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.pr_meta.outputs.head_sha }}
+        run: |
+          $changed = git diff --name-only $env:BASE_SHA $env:HEAD_SHA
+          $processChanged = $false
+          $memoryChanged = $false
+
+          foreach ($path in $changed) {
+            if ($path -match '^(AGENTS\.md|CLAUDE\.md|\.specify/|scripts/|\.github/workflows/)') {
+              $processChanged = $true
+            }
+
+            if ($path -match '^(docs/|specs/)') {
+              $memoryChanged = $true
+            }
+          }
+
+          if ($processChanged -and -not $memoryChanged) {
+            throw "Process-layer changes must be accompanied by docs/ or specs/ updates."
+          }
