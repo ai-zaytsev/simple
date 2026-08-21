@@ -46,3 +46,20 @@ The versioned files in this repository do not rely on a separate workspace topol
 
 - `docs/` stores durable process rules and contracts
 - `specs/<feature-id>/` stores task memory until the task reaches `merge-ready`
+
+## Remote And Repository Settings
+
+Локальный flow работает без remote, но PR loop — нет. Что нужно один раз настроить на стороне GitHub:
+
+1. Создать repository и подключить `origin`:
+   `gh repo create <owner>/<repo> --private --source . --remote origin --push`
+2. Пометить required checks для ветки `main`: `Process Baseline`, `PR Loop Guard`, `AI Review`.
+3. Запретить direct push в `main` через branch protection.
+4. Задать repo variable `AI_REVIEW_AGENT` (`disabled`, `manual`, `codex`, `claude` или `custom`).
+5. Для `custom` дополнительно задать repo variable `AI_REVIEW_COMMAND` с плейсхолдерами `{prompt}` и `{featureId}`.
+
+Пока `origin` не подключён, задача может достигнуть состояния `local-ready`, но не `merge-ready`.
+
+## Local Environment Contract
+
+Обязателен только `git`. `gh` опционален и включает автоматическое создание или обновление PR. `pwsh` опционален: при его отсутствии используется Windows PowerShell 5.1. Текущее состояние среды зафиксировано в `docs/environment.md`.
