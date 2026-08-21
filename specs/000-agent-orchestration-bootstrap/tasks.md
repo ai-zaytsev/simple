@@ -8,11 +8,16 @@
 - [x] Перенести `.specify/` templates
 - [x] Добавить process docs (`docs/README.md`, `ai-pr-workflow.md`, `worker-orchestration.md`, `environment.md`)
 - [x] Добавить локальные orchestration scripts
-- [x] Добавить GitHub workflow layer и адаптировать `Baseline Checks`
+- [x] Добавить GitHub workflow layer
 - [x] Добавить `.claude/settings.local.json`
 - [x] Выполнить локальную валидацию скриптового flow
-- [x] Подключить `origin` (`ai-zaytsev/simple`, private) и запушить `main`
+- [x] Подключить `origin` (`ai-zaytsev/simple`) и запушить `main`
 - [x] Установить repo variable `AI_REVIEW_AGENT` = `claude`
 - [x] Проверить `Process Baseline` и `AI Review` через `workflow_dispatch`
 - [x] Проверить `PR Loop Guard` и `Publish-FeaturePR.ps1` на реальном PR
-- [ ] Пометить `Process Baseline`, `PR Loop Guard`, `AI Review` как required checks — заблокировано планом GitHub, см. `docs/environment.md`
+- [x] Перевести репозиторий в public
+- [x] Включить branch protection на `main` с required checks `Process Baseline`, `PR Loop Guard`, `AI Review`
+- [x] Зафиксировать стек MVP в `docs/stack.md`
+- [x] Привести `.gitignore` в соответствие со стеком (Go, Android/Gradle, Terraform, секреты)
+- [x] Перестроить `Baseline Checks` под multi-language стек с адаптивным пропуском
+- [ ] Merge PR — остаётся за человеком

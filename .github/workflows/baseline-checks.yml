@@ -12,18 +12,13 @@ on:
 jobs:
   process-baseline:
     name: Process Baseline
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
 
       - name: Verify required process artifacts
         shell: pwsh
@@ -37,6 +32,7 @@ jobs:
             '.specify/templates/tasks.md',
             'docs/ai-pr-workflow.md',
             'docs/worker-orchestration.md',
+            'docs/stack.md',
             'scripts/Process.Common.ps1',
             'scripts/New-FeatureBranch.ps1',
             'scripts/Select-ImplementationAgent.ps1',
@@ -69,19 +65,64 @@ jobs:
             throw "PowerShell parsing failed."
           }
 
-      - name: Compile Python sources
+      - name: Detect source layers
+        id: detect
         shell: pwsh
         run: |
-          $roots = @('src', 'tests') | Where-Object { Test-Path -LiteralPath $_ }
-          if ($roots.Count -eq 0) {
-            Write-Host "No Python source roots found. Product code is not introduced yet, skipping compile step."
-            exit 0
+          $goModules = @(Get-ChildItem -Path . -Filter go.mod -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '[\/](\.git|vendor)[\/]' })
+          $terraformFiles = @(Get-ChildItem -Path . -Filter *.tf -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '[\/](\.git|\.terraform)[\/]' })
+
+          $hasGo = $goModules.Count -gt 0
+          $hasTerraform = $terraformFiles.Count -gt 0
+
+          "has_go=$($hasGo.ToString().ToLower())" | Add-Content -Path $env:GITHUB_OUTPUT
+          "has_terraform=$($hasTerraform.ToString().ToLower())" | Add-Content -Path $env:GITHUB_OUTPUT
+
+          Write-Host "Go modules found: $($goModules.Count)"
+          Write-Host "Terraform files found: $($terraformFiles.Count)"
+
+          if (-not $hasGo -and -not $hasTerraform) {
+            Write-Host "No product source layers found yet. Baseline stays process-only."
           }
 
-          $pythonFiles = Get-ChildItem -Path $roots -Filter *.py -File -Recurse -ErrorAction SilentlyContinue
-          if (-not $pythonFiles -or $pythonFiles.Count -eq 0) {
-            Write-Host "Python source roots contain no .py files, skipping compile step."
-            exit 0
+      - name: Setup Go
+        if: steps.detect.outputs.has_go == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Vet Go modules
+        if: steps.detect.outputs.has_go == 'true'
+        shell: pwsh
+        run: |
+          $modules = Get-ChildItem -Path . -Filter go.mod -File -Recurse |
+            Where-Object { $_.FullName -notmatch '[\/](\.git|vendor)[\/]' }
+
+          foreach ($module in $modules) {
+            $moduleDir = $module.Directory.FullName
+            Write-Host "::group::go vet $moduleDir"
+            Push-Location $moduleDir
+            try {
+              go vet ./...
+              if ($LASTEXITCODE -ne 0) {
+                throw "go vet failed in $moduleDir"
+              }
+            }
+            finally {
+              Pop-Location
+              Write-Host "::endgroup::"
+            }
           }
 
-          python -m compileall @roots
+      - name: Setup Terraform
+        if: steps.detect.outputs.has_terraform == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Check Terraform formatting
+        if: steps.detect.outputs.has_terraform == 'true'
+        run: terraform fmt -check -recursive

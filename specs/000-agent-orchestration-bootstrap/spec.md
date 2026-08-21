@@ -24,10 +24,11 @@
 - `scripts/*.ps1`
 - `.github/workflows/*.yml`
 - `.claude/settings.local.json`
+- `docs/stack.md` как durable memory по стеку MVP
 
 ## Repository Memory Updates
 
-- durable memory: `docs/README.md`, `docs/ai-pr-workflow.md`, `docs/worker-orchestration.md`, `docs/environment.md`
+- durable memory: `docs/README.md`, `docs/ai-pr-workflow.md`, `docs/worker-orchestration.md`, `docs/environment.md`, `docs/stack.md`
 - task-memory: `specs/000-agent-orchestration-bootstrap/`
 
 ## Legacy Workspace Assessment
@@ -37,11 +38,12 @@
 ## Отличия От Донорского Репозитория
 
 - `scripts/Send-TelegramNotification.ps1` не переносится: он завязан на runtime `telegram_proxy` (`src/notifications.py`, контейнер `proxy_app`) и не является частью переносимого process-layer
-- `Baseline Checks` в шаге компиляции Python работает адаптивно: при отсутствии `src/` и `tests/` шаг явно пропускается, а не падает
+- `Baseline Checks` перестроен под multi-language стек MVP: вместо Python-компиляции донора выполняется адаптивная детекция `go.mod` и `*.tf` с пропуском шагов, пока соответствующего кода нет; runner переведён на `ubuntu-latest`
 - `docs/` не содержит продуктовых разделов донора
 
 ## Acceptance Criteria
 
+- стек MVP зафиксирован в `docs/stack.md`, а process-layer согласован с ним (`.gitignore`, `Baseline Checks`)
 - новая задача заводится через `scripts/New-FeatureBranch.ps1` и создаёт `specs/<feature-id>/` из шаблонов
 - implementation worker выбирается и запускается без отдельной workspace-механики
 - PR loop задокументирован как completion contract

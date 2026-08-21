@@ -1,5 +1,40 @@
-__pycache__/
-*.pyc
-.pytest_cache/
-.venv/
+# Secrets and local env
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.keystore
+*.jks
+google-services.json
+service-account*.json
+
+# Go
+bin/
+/vendor/
+*.exe
+*.test
+*.out
+
+# Android / Gradle
+.gradle/
+build/
+local.properties
+captures/
+.cxx/
+*.apk
+*.aab
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+
+# IDE and OS
+.idea/
+*.iml
+.DS_Store
+Thumbs.db

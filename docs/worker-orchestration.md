@@ -60,6 +60,8 @@ The versioned files in this repository do not rely on a separate workspace topol
 
 Пока `origin` не подключён, задача может достигнуть состояния `local-ready`, но не `merge-ready`.
 
+Для этого репозитория шаги 1-4 уже выполнены. Фактическое состояние настроек зафиксировано в `docs/environment.md`, раздел `Состояние GitHub`. Branch protection на free-плане работает только для public-репозиториев.
+
 ## Local Environment Contract
 
 Обязателен только `git`. `gh` опционален и включает автоматическое создание или обновление PR. `pwsh` опционален: при его отсутствии используется Windows PowerShell 5.1. Текущее состояние среды зафиксировано в `docs/environment.md`.
