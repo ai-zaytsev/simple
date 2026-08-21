@@ -1,0 +1,152 @@
+name: Email Provider Check
+
+# Проверка email-провайдера без раскрытия ключа.
+# Ключ живёт в GitHub Secrets, workflow его использует и никогда не печатает.
+# ВНИМАНИЕ: репозиторий публичный, логи Actions видны всем.
+# Поэтому в вывод не попадают ни ключ, ни адреса, ни данные аккаунта.
+
+on:
+  workflow_dispatch:
+    inputs:
+      send_test_email:
+        description: Отправить тестовое письмо на адрес из секрета EMAIL_TEST_RECIPIENT
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  email-check:
+    name: Email Provider Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Проверить наличие секретов
+        env:
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          BREVO_SENDER_EMAIL: ${{ secrets.BREVO_SENDER_EMAIL }}
+          EMAIL_TEST_RECIPIENT: ${{ secrets.EMAIL_TEST_RECIPIENT }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${BREVO_API_KEY}" ] || missing="${missing} BREVO_API_KEY"
+          [ -n "${BREVO_SENDER_EMAIL}" ] || missing="${missing} BREVO_SENDER_EMAIL"
+          if [ "${{ inputs.send_test_email }}" = "true" ]; then
+            [ -n "${EMAIL_TEST_RECIPIENT}" ] || missing="${missing} EMAIL_TEST_RECIPIENT"
+          fi
+          if [ -n "${missing}" ]; then
+            echo "Не заданы секреты:${missing}"
+            echo "Как задать — docs/integrations/brevo.md"
+            exit 1
+          fi
+          echo "Все требуемые секреты присутствуют."
+
+      - name: Проверить валидность ключа
+        env:
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/account.json -w '%{http_code}' \
+            -H "api-key: ${BREVO_API_KEY}" \
+            -H "accept: application/json" \
+            https://api.brevo.com/v3/account)
+
+          if [ "${code}" != "200" ]; then
+            echo "Проверка ключа не прошла. HTTP ${code}."
+            case "${code}" in
+              401) echo "Ключ недействителен или отозван." ;;
+              403) echo "Ключу не хватает прав." ;;
+              429) echo "Превышен лимит запросов провайдера." ;;
+            esac
+            exit 1
+          fi
+
+          plan=$(jq -r '(.plan // []) | map(.type) | join(",") | select(. != "")' /tmp/account.json || true)
+          echo "Ключ валиден. Тип плана: ${plan:-не определён}"
+          echo "## Email Provider Check" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Ключ: валиден" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- План: \`${plan:-не определён}\`" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Отправить тестовое письмо
+        id: send
+        if: ${{ inputs.send_test_email }}
+        env:
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          BREVO_SENDER_EMAIL: ${{ secrets.BREVO_SENDER_EMAIL }}
+          EMAIL_TEST_RECIPIENT: ${{ secrets.EMAIL_TEST_RECIPIENT }}
+        run: |
+          set -euo pipefail
+          stamp=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+          jq -n \
+            --arg sender "${BREVO_SENDER_EMAIL}" \
+            --arg to "${EMAIL_TEST_RECIPIENT}" \
+            --arg stamp "${stamp}" \
+            '{
+              sender: { email: $sender, name: "VPN Service" },
+              to: [ { email: $to } ],
+              subject: "Проверка доставляемости \($stamp)",
+              textContent: "Тестовое письмо проверки доставляемости.\nЕсли оно во «Входящих», а не в спаме — провайдер настроен верно.\nВремя отправки: \($stamp)"
+            }' > /tmp/payload.json
+
+          code=$(curl -sS -o /tmp/send.json -w '%{http_code}' \
+            -X POST \
+            -H "api-key: ${BREVO_API_KEY}" \
+            -H "content-type: application/json" \
+            -H "accept: application/json" \
+            --data @/tmp/payload.json \
+            https://api.brevo.com/v3/smtp/email)
+
+          if [ "${code}" != "201" ] && [ "${code}" != "200" ]; then
+            echo "Отправка не прошла. HTTP ${code}."
+            jq -r '.code // empty' /tmp/send.json || true
+            echo "Текст ошибки провайдера не печатается целиком: он может содержать адреса."
+            exit 1
+          fi
+
+          message_id=$(jq -r '.messageId // empty' /tmp/send.json)
+          echo "message_id=${message_id}" >> "${GITHUB_OUTPUT}"
+          echo "Письмо принято провайдером."
+          echo "- Отправка: принята провайдером" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Проверить событие доставки
+        if: ${{ inputs.send_test_email }}
+        env:
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          MESSAGE_ID: ${{ steps.send.outputs.message_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MESSAGE_ID}" ]; then
+            echo "Провайдер не вернул messageId, проверка события пропущена."
+            exit 0
+          fi
+
+          events=""
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -sS -o /tmp/events.json -w '%{http_code}' \
+              -G \
+              -H "api-key: ${BREVO_API_KEY}" \
+              -H "accept: application/json" \
+              --data-urlencode "messageId=${MESSAGE_ID}" \
+              --data-urlencode "limit=10" \
+              https://api.brevo.com/v3/smtp/statistics/events) || true
+
+            if [ "${code}" = "200" ]; then
+              events=$(jq -r '(.events // []) | map(.event) | unique | join(", ")' /tmp/events.json)
+              if [ -n "${events}" ]; then
+                break
+              fi
+            fi
+            sleep 10
+          done
+
+          if [ -n "${events}" ]; then
+            echo "События по письму: ${events}"
+            echo "- События: \`${events}\`" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "События ещё не появились. Это нормально: провайдер отдаёт их с задержкой."
+            echo "- События: пока нет, проверьте почтовый ящик вручную" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Проверьте, попало ли письмо во «Входящие», а не в спам. Автоматически это не определяется." >> "${GITHUB_STEP_SUMMARY}"

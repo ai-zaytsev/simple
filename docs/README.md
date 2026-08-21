@@ -13,7 +13,11 @@
 
 **Архитектура**
 
-- `docs/architecture/` — целевая архитектура MVP: границы компонентов, threat model, privacy model, модель идентификаторов, remote config, bootstrap и восстановление, жизненный цикл нод, observability, entitlement, секреты, инфраструктура, сценарии отказа, ADR и prerequisites. Карта документов — в `docs/architecture/README.md`
+- `docs/architecture/` — целевая архитектура MVP: границы компонентов, threat model, privacy model, модель идентификаторов, remote config, bootstrap и восстановление, жизненный цикл нод, observability, entitlement, секреты, инфраструктура, сценарии отказа, инварианты развития, ADR и prerequisites. Карта документов — в `docs/architecture/README.md`
+
+**Интеграции**
+
+- `docs/integrations/brevo.md` — email-провайдер для magic link: секреты, требования к домену отправителя, проверка доставляемости
 
 Связанный task-memory layer хранится в `specs/<feature-id>/`. Product-code задача не должна стартовать без активной feature-memory папки с `spec.md`, `plan.md` и `tasks.md`.
 
