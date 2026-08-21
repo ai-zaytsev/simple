@@ -28,20 +28,46 @@ winget install --id Microsoft.PowerShell --source winget
 
 ### Python
 
-Локально установлен только Store-alias `python.exe`, реального интерпретатора нет. Для process-layer это не нужно: `Baseline Checks` выполняется на GitHub runner, а шаг компиляции пропускается, пока в репозитории нет `src/` или `tests/` с `.py`.
-
-Python понадобится только если стек VPN-приложения окажется Python. Тогда:
-
-```
-winget install --id Python.Python.3.12 --source winget
-```
+Локально установлен только Store-alias `python.exe`, реального интерпретатора нет. Для process-layer это не нужно и в стек MVP Python не входит, поэтому устанавливать его не требуется.
 
 ## Требует Ручных Действий
 
-См. `docs/worker-orchestration.md`, раздел `Remote And Repository Settings`.
+Текущее состояние GitHub-настроек — в разделе `Состояние GitHub` ниже. Контракт по подключению remote описан в `docs/worker-orchestration.md`, раздел `Remote And Repository Settings`.
 
 ## Инварианты Среды
 
-- process-layer не должен зависеть от `pwsh`, `python` или любого локального CLI сверх `git`
+- process-layer не должен зависеть от `pwsh` или любого локального CLI сверх `git`
+- продуктовый тулчейн (Go, Terraform, Android) не является требованием process-layer
 - `gh` опционален: `Publish-FeaturePR.ps1` при его отсутствии пушит ветку и печатает compare-URL для ручного создания PR
 - отсутствие сконфигурированного AI reviewer переводит review authority к человеку, а не имитирует review
+
+## Состояние GitHub
+
+| Настройка | Значение |
+| --- | --- |
+| Repository | `ai-zaytsev/simple`, public |
+| Default branch | `main`, protected |
+| Required checks | `Process Baseline`, `PR Loop Guard`, `AI Review`, strict |
+| Pull request | обязателен для `main`, required approvals — `0` |
+| Force push / branch deletion | запрещены |
+| `enforce_admins` | `false` |
+| Repo variable `AI_REVIEW_AGENT` | `claude` |
+
+Почему `required_approving_review_count` = `0`: в репозитории один владелец, а GitHub не позволяет апрувить собственный PR. При значении `1` merge собственного PR был бы заблокирован. Нулевое значение сохраняет обязательный PR-flow и обязательные checks, при этом merge остаётся ручным действием человека — то есть completion contract из `AGENTS.md` не нарушен.
+
+Branch protection стала доступна после перевода репозитория в public: на free-плане для приватных репозиториев и classic branch protection, и rulesets отвечают `403 Upgrade to GitHub Pro`.
+
+Если репозиторий потребуется вернуть в private, защита `main` отключится вместе с этим — тогда инварианты процесса снова будут держаться только на `AGENTS.md`.
+
+## Тулчейн Под Стек MVP
+
+Стек зафиксирован в `docs/stack.md`. Локально пока не установлено ничего из продуктового тулчейна — это не мешает process-layer, потому что `Baseline Checks` выполняется на GitHub runner и пропускает шаги, пока соответствующего кода нет.
+
+Устанавливать по мере появления задач:
+
+```
+winget install --id GoLang.Go --source winget
+winget install --id Hashicorp.Terraform --source winget
+```
+
+Android-разработка потребует Android Studio и JDK; ставить их до первой Android-задачи не нужно.
