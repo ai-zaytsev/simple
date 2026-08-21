@@ -1,22 +1,16 @@
 name: Email Provider Check
 
-# Проверка доставляемости Brevo без раскрытия ключа и адресов.
+# Brevo deliverability probe.
 #
-# ВНИМАНИЕ: репозиторий публичный, логи Actions видны всем.
-# В вывод не попадают ни ключ, ни адреса получателей, ни данные аккаунта.
-# Получатели обозначаются классами `gmail` и `yandex`.
+# The repository is public, so Actions logs are public too.
+# This workflow never prints the API key, recipient addresses or account data.
+# Recipients are referred to by class only: gmail and yandex.
 #
-# Письма отправляются только как plain text: это исключает пиксель отслеживания
-# открытий и переписывание ссылок. См. docs/integrations/brevo.md.
+# Messages are sent as plain text on purpose: that removes the open-tracking
+# pixel and leaves links unrewritten. See docs/integrations/brevo.md.
 
 on:
   workflow_dispatch:
-    inputs:
-      poll_events:
-        description: Опрашивать события доставки после отправки
-        required: false
-        default: true
-        type: boolean
 
 jobs:
   email-check:
@@ -24,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Проверить конфигурацию
+      - name: Check configuration
         env:
           BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
           EMAIL_TEST_GMAIL: ${{ secrets.EMAIL_TEST_GMAIL }}
@@ -39,13 +33,13 @@ jobs:
           [ -n "${BREVO_SENDER_EMAIL}" ] || missing="${missing} vars.BREVO_SENDER_EMAIL"
 
           if [ -n "${missing}" ]; then
-            echo "Не задано:${missing}"
-            echo "Как задать — docs/integrations/brevo.md"
+            echo "Not configured:${missing}"
+            echo "See docs/integrations/brevo.md"
             exit 1
           fi
-          echo "Конфигурация полная."
+          echo "Configuration is complete."
 
-      - name: Проверить валидность ключа
+      - name: Verify API key
         env:
           BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
         run: |
@@ -56,35 +50,35 @@ jobs:
             https://api.brevo.com/v3/account)
 
           if [ "${code}" != "200" ]; then
-            echo "Проверка ключа не прошла. HTTP ${code}."
+            echo "Key verification failed. HTTP ${code}."
             case "${code}" in
-              401) echo "Ключ недействителен или отозван." ;;
-              403) echo "Ключу не хватает прав." ;;
-              429) echo "Превышен лимит запросов провайдера." ;;
+              401) echo "Key is invalid or revoked." ;;
+              403) echo "Key lacks permissions." ;;
+              429) echo "Provider rate limit reached." ;;
             esac
             exit 1
           fi
 
-          # Тип плана и остаток кредитов — это account data.
-          # В публичных логах их быть не должно, поэтому наружу идёт только булев признак.
-          credits_ok=$(jq -r '[(.plan // [])[] | (.credits // 0)] | add // 0 | if . > 0 then "доступны" else "исчерпаны" end' /tmp/account.json)
+          # Plan type and credit balance are account data and must not reach
+          # public logs, so only a boolean signal is emitted.
+          credits=$(jq -r '[(.plan // [])[] | (.credits // 0)] | add // 0 | if . > 0 then "available" else "exhausted" end' /tmp/account.json)
 
-          echo "Ключ валиден."
+          echo "Key is valid."
           {
             echo "## Email Provider Check"
             echo ""
-            echo "| Проверка | Результат |"
+            echo "| Check | Result |"
             echo "| --- | --- |"
-            echo "| Ключ Brevo | валиден |"
-            echo "| Кредиты отправки | ${credits_ok} |"
+            echo "| Brevo key | valid |"
+            echo "| Sending credits | ${credits} |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-          if [ "${credits_ok}" = "исчерпаны" ]; then
-            echo "Кредиты отправки исчерпаны — письма не уйдут."
+          if [ "${credits}" = "exhausted" ]; then
+            echo "Sending credits are exhausted, messages would not go out."
             exit 1
           fi
 
-      - name: Отправить тестовые письма
+      - name: Send probe messages
         id: send
         env:
           BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
@@ -110,14 +104,14 @@ jobs:
               '{
                 sender: { email: $sender, name: "Simple VPN" },
                 to: [ { email: $to } ],
-                subject: "Проверка доставляемости \($stamp)",
+                subject: "Deliverability probe \($stamp)",
                 textContent: (
-                  "Тестовое письмо проверки доставляемости.\n\n" +
-                  "Ссылка-образец, имитирующая magic link:\n\($link)\n\n" +
-                  "Проверьте две вещи:\n" +
-                  "1. Письмо во «Входящих», а не в спаме.\n" +
-                  "2. Ссылка выше не переписана на трекинговый домен провайдера.\n\n" +
-                  "Класс получателя: \($label)\nВремя отправки: \($stamp)\n"
+                  "Deliverability probe message.\n\n" +
+                  "Sample link, shaped like a magic link:\n\($link)\n\n" +
+                  "Check two things:\n" +
+                  "1. This message is in Inbox, not in Spam.\n" +
+                  "2. The link above is NOT rewritten to a provider tracking domain.\n\n" +
+                  "Recipient class: \($label)\nSent at: \($stamp)\n"
                 ),
                 tags: [ "deliverability-check", $label ]
               }' > "/tmp/payload-${label}.json"
@@ -132,15 +126,15 @@ jobs:
 
             if [ "${code}" != "201" ] && [ "${code}" != "200" ]; then
               err_code=$(jq -r '.code // "unknown"' "/tmp/send-${label}.json" 2>/dev/null || echo "unknown")
-              echo "${label}: отправка не прошла, HTTP ${code}, код провайдера ${err_code}"
-              echo "" > "/tmp/id-${label}.txt"
+              echo "${label}: send failed, HTTP ${code}, provider code ${err_code}"
+              : > "/tmp/id-${label}.txt"
               failed=1
               return 0
             fi
 
             message_id=$(jq -r '.messageId // empty' "/tmp/send-${label}.json")
             printf '%s' "${message_id}" > "/tmp/id-${label}.txt"
-            echo "${label}: принято провайдером, HTTP ${code}"
+            echo "${label}: accepted by provider, HTTP ${code}"
           }
 
           send_one gmail "${EMAIL_TEST_GMAIL}"
@@ -149,12 +143,17 @@ jobs:
           gmail_id=$(cat /tmp/id-gmail.txt)
           yandex_id=$(cat /tmp/id-yandex.txt)
 
+          gmail_state=failed
+          [ -n "${gmail_id}" ] && gmail_state=accepted
+          yandex_state=failed
+          [ -n "${yandex_id}" ] && yandex_state=accepted
+
           {
             echo ""
-            echo "| Получатель | Статус отправки | messageId |"
+            echo "| Recipient | Send status | messageId |"
             echo "| --- | --- | --- |"
-            echo "| gmail | $([ -n "${gmail_id}" ] && echo принято || echo ошибка) | \`${gmail_id:-нет}\` |"
-            echo "| yandex | $([ -n "${yandex_id}" ] && echo принято || echo ошибка) | \`${yandex_id:-нет}\` |"
+            echo "| gmail | ${gmail_state} | \`${gmail_id:-none}\` |"
+            echo "| yandex | ${yandex_state} | \`${yandex_id:-none}\` |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
           {
@@ -164,11 +163,10 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
           if [ "${failed}" -ne 0 ]; then
-            echo "Хотя бы одна отправка не прошла. Опрос событий всё равно выполнится, итог подводится в конце."
+            echo "At least one send failed. Events are still polled, verdict comes last."
           fi
 
-      - name: Опросить события доставки
-        if: ${{ inputs.poll_events }}
+      - name: Poll delivery events
         env:
           BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
           GMAIL_ID: ${{ steps.send.outputs.gmail_message_id }}
@@ -181,8 +179,8 @@ jobs:
             message_id="$2"
 
             if [ -z "${message_id}" ]; then
-              echo "${label}: messageId отсутствует, опрос пропущен"
-              printf '%s' "нет messageId" > "/tmp/ev-${label}.txt"
+              echo "${label}: no messageId, polling skipped"
+              printf '%s' "no messageId" > "/tmp/ev-${label}.txt"
               return 0
             fi
 
@@ -207,8 +205,8 @@ jobs:
               echo "${label}: ${events}"
               printf '%s' "${events}" > "/tmp/ev-${label}.txt"
             else
-              echo "${label}: событий пока нет, провайдер отдаёт их с задержкой"
-              printf '%s' "пока нет" > "/tmp/ev-${label}.txt"
+              echo "${label}: no events yet, the provider reports them with a delay"
+              printf '%s' "none yet" > "/tmp/ev-${label}.txt"
             fi
           }
 
@@ -217,23 +215,23 @@ jobs:
 
           {
             echo ""
-            echo "| Получатель | События доставки |"
+            echo "| Recipient | Delivery events |"
             echo "| --- | --- |"
             echo "| gmail | \`$(cat /tmp/ev-gmail.txt)\` |"
             echo "| yandex | \`$(cat /tmp/ev-yandex.txt)\` |"
             echo ""
-            echo "Автоматически определить попадание во «Входящие» или в спам невозможно."
-            echo "Проверьте оба ящика вручную и убедитесь, что ссылка в письме не переписана на трекинговый домен."
+            echo "Inbox vs Spam cannot be determined automatically."
+            echo "Check both mailboxes by hand and confirm the link was not rewritten."
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Итог
-        if: ${{ always() }}
+      - name: Verdict
+        if: always()
         env:
           SEND_FAILED: ${{ steps.send.outputs.send_failed }}
         run: |
           set -euo pipefail
           if [ "${SEND_FAILED:-1}" != "0" ]; then
-            echo "Проверка не пройдена: хотя бы одно письмо не принято провайдером."
+            echo "Check failed: at least one message was not accepted by the provider."
             exit 1
           fi
-          echo "Оба письма приняты провайдером. Итоговое суждение о доставляемости — за человеком."
+          echo "Both messages accepted by the provider. Final deliverability verdict is human."
