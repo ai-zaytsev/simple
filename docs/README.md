@@ -1,19 +1,27 @@
 # Документация Проекта
 
-Проект: приложение VPN. На текущем этапе репозиторий содержит только process-layer (agent orchestration). Стек MVP зафиксирован в `docs/stack.md`, продуктовая архитектура и продуктовый код ещё не проектировались.
+Проект: MVP Android VPN для российского рынка. Репозиторий содержит process-layer (agent orchestration) и целевую архитектуру MVP. Продуктового кода пока нет.
 
-`docs/` — durable memory процесса:
+`docs/` — durable memory проекта:
+
+**Процесс**
 
 - `docs/ai-pr-workflow.md` — completion contract через PR loop
 - `docs/worker-orchestration.md` — локальный branch-based orchestration flow
 - `docs/environment.md` — состояние локальной среды и требования к ней
 - `docs/stack.md` — зафиксированный стек MVP и его следствия для process-layer
 
+**Архитектура**
+
+- `docs/architecture/` — целевая архитектура MVP: границы компонентов, threat model, privacy model, модель идентификаторов, remote config, bootstrap и восстановление, жизненный цикл нод, observability, entitlement, секреты, инфраструктура, сценарии отказа, ADR и prerequisites. Карта документов — в `docs/architecture/README.md`
+
 Связанный task-memory layer хранится в `specs/<feature-id>/`. Product-code задача не должна стартовать без активной feature-memory папки с `spec.md`, `plan.md` и `tasks.md`.
 
 ## Правило Наполнения
 
-В `docs/` попадают только документы, соответствующие текущему состоянию репозитория. Продуктовые разделы (`overview/`, `api/`, `product/`, `deployment/`, `infra/`, `security/`) создаются позже — в момент, когда появляется соответствующий код или принятое решение, а не заранее.
+В `docs/` попадают только документы, соответствующие текущему состоянию репозитория. `docs/architecture/` описывает принятые решения и ограничения, а не намерения: документ, не имеющий проверяемого следствия, в него не попадает.
+
+Разделы `api/`, `deployment/`, `product/` создаются позже — в момент, когда появляется соответствующий код или развёрнутая инфраструктура, а не заранее.
 
 Что сюда намеренно не кладётся:
 
