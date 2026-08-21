@@ -18,6 +18,7 @@
 | [secrets-model.md](secrets-model.md) | Реестр секретов, хранение, ротация, реакция на утечку | Появился новый секрет |
 | [infrastructure.md](infrastructure.md) | Топология MVP, сетевые правила, окружения, бэкапы | Разворачиваете что-либо |
 | [failure-scenarios.md](failure-scenarios.md) | Сценарии отказа с детектом и восстановлением | Проектируете поведение при ошибке |
+| [evolution.md](evolution.md) | Инварианты, обеспечивающие резервирование Core и второй транспорт в будущем | Пишете код Control Plane или клиента |
 | [decisions.md](decisions.md) | ADR по спорным вопросам | Кажется, что решение можно принять иначе |
 | [prerequisites.md](prerequisites.md) | Внешние ресурсы, которые нужно запросить у Business Owner | Планируете следующую стадию |
 
@@ -35,9 +36,20 @@
 | 2.6 Traffic classification | Раздел классификации в [observability.md](observability.md), `ADR-009` |
 | 2.7 Разделение идентификаторов | [identity-model.md](identity-model.md), матрица видимости, `ADR-003` |
 
+## Решения Business Owner, Учтённые В Архитектуре
+
+| Решение | Что изменилось |
+| --- | --- |
+| Достаточно агрегированного retention | Механизм когорт в [identity-model.md](identity-model.md); ADR-003 закрыт |
+| Резервный способ первой настройки обязателен до публичного запуска | Канал `rescue` спроектирован и обязателен: зеркала и код восстановления, [bootstrap-recovery.md](bootstrap-recovery.md); ADR-004 закрыт |
+| Один Core и один транспорт — временные ограничения | Шестнадцать инвариантов в [evolution.md](evolution.md); ADR-011 и ADR-014 переведены в `accepted (temporary)` |
+| Оплата откладывается | Платёжный путь убран из MVP, VIP выдаётся административно; ADR-006 |
+| FREE и VIP — одинаково расходуемая инфраструктура, различие только в лимитах и экспорте | Разделение пулов FREE/VIP убрано из [threat-model.md](threat-model.md) и [node-lifecycle.md](node-lifecycle.md); ADR-002 пересмотрен |
+| VIP может выгружать конфигурацию для сторонних клиентов | Subscription-модель и `export`-пул, [entitlement-model.md](entitlement-model.md); ADR-017 |
+
 ## Открытые Вопросы
 
-Решения со статусом `needs-owner-decision` в [decisions.md](decisions.md): канал `rescue`, VPS-провайдер, платёжный провайдер, email-провайдер, DNS-резолвер. Ни одно из них не блокирует начало реализации: архитектура спроектирована так, чтобы работать при любом исходе, а список запросов собран в [prerequisites.md](prerequisites.md).
+Осталось три решения со статусом `needs-owner-decision` в [decisions.md](decisions.md): VPS-провайдер (`ADR-005`), DNS-резолвер (`ADR-008`) и email-провайдер (`ADR-012`). Ни одно не блокирует проектирование, но первое и третье блокируют развёртывание. Полный список запросов — в [prerequisites.md](prerequisites.md).
 
 ## Как Пользоваться Этими Документами
 

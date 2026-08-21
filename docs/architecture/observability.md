@@ -53,6 +53,8 @@ flowchart LR
 | `tier` | Enum | `FREE`, `VIP` |
 | `segment_class` | LowCardinality(String) | Класс сети, не IP |
 | `app_version` | LowCardinality(String) | Версия сборки |
+| `cohort` | LowCardinality(String) | Месяц регистрации, для агрегированного retention |
+| `transport_kind` | LowCardinality(String) | Тип транспорта, инвариант И-15 |
 | `duration_s` | UInt32 | Заполняется на `end` |
 | `end_reason` | LowCardinality(String) | `user_off`, `network_lost`, `failover`, `error` |
 
@@ -78,12 +80,13 @@ flowchart LR
 | `ts` | DateTime | |
 | `analytics_id` | FixedString(16) | |
 | `node_alias` | LowCardinality(String) | Пусто для попыток bootstrap |
-| `entry_kind` | LowCardinality(String) | `https-direct`, `reality-edge`, `tunnel`, `rescue` |
+| `entry_kind` | LowCardinality(String) | `https-direct`, `reality-edge`, `tunnel`, `rescue-mirror`, `rescue-code` |
+| `transport_kind` | LowCardinality(String) | Инвариант И-15: без него не отличить отказ ноды от отказа транспорта |
 | `segment_class` | LowCardinality(String) | |
 | `result` | Enum | `success`, `timeout`, `refused`, `tls_error`, `auth_error` |
 | `latency_ms` | UInt32 | |
 
-Эта таблица — основной датчик блокировок. Она отвечает и на вопрос «нода жива?», и на вопрос «у какого сегмента проблемы?».
+Эта таблица — основной датчик блокировок. Она отвечает на три вопроса: жива ли нода, у какого сегмента проблемы и не отказывает ли сам транспорт. Последний вопрос определяет момент, когда пора вводить второй транспорт, см. [evolution.md](evolution.md).
 
 ## Сетевой Сегмент
 
@@ -149,6 +152,8 @@ flowchart LR
 | Traffic mix | Доли классов | `traffic_agg` |
 | Degraded / blocked nodes | Состояния из Fleet manager | Prometheus, Control Plane |
 | Проблемы сетевых сегментов | Connect success в разрезе `segment_class` | `connect_attempts` |
+| Агрегированный retention | uniq `analytics_id` по `cohort` в каждой эпохе, делённое на размер когорты | `session_events` |
+| Здоровье транспорта | Connect success в разрезе `transport_kind` | `connect_attempts` |
 
 Каждая строка достижима без единого запрещённого поля. Это и есть проверка того, что privacy-модель и требования Business Owner совместимы.
 
