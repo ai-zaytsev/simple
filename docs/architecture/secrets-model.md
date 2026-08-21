@@ -28,6 +28,7 @@
 | VPS provider API token | Провайдер | GitHub Secrets, среда Terraform | Provisioning | Плановая | Создание и удаление инфраструктуры |
 | DNS provider API token | Провайдер | GitHub Secrets | Управление доменами | Плановая | Перехват доменов |
 | Email provider key `BREVO_API_KEY` | Провайдер | GitHub Secrets, позже — secrets store среды | Auth service | Плановая и при подозрении | Рассылка от нашего имени, перехват magic links |
+| Email webhook path secret | Control Plane | Secrets store среды | Обработчик webhook | Плановая | Возможность слать поддельные события доставки |
 | Payment provider keys | Провайдер | Secrets store среды | Billing | Плановая | Финансовые операции |
 | Firebase service account | Google | GitHub Secrets | Распространение сборок | Плановая | Раздача поддельной сборки тестерам |
 
