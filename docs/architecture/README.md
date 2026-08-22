@@ -17,6 +17,7 @@
 | [entitlement-model.md](entitlement-model.md) | FREE и VIP, квоты, платежи | Трогаете доступ или монетизацию |
 | [secrets-model.md](secrets-model.md) | Реестр секретов, хранение, ротация, реакция на утечку | Появился новый секрет |
 | [infrastructure.md](infrastructure.md) | Топология MVP, сетевые правила, окружения, бэкапы | Разворачиваете что-либо |
+| [mvp-topology.md](mvp-topology.md) | Фактическое размещение ролей, стоимость, бюджет трафика | Считаете деньги или добавляете сервер |
 | [failure-scenarios.md](failure-scenarios.md) | Сценарии отказа с детектом и восстановлением | Проектируете поведение при ошибке |
 | [evolution.md](evolution.md) | Инварианты, обеспечивающие резервирование Core и второй транспорт в будущем | Пишете код Control Plane или клиента |
 | [decisions.md](decisions.md) | ADR по спорным вопросам | Кажется, что решение можно принять иначе |
@@ -49,7 +50,9 @@
 
 ## Открытые Вопросы
 
-Осталось два решения со статусом `needs-owner-decision` в [decisions.md](decisions.md): VPS-провайдер (`ADR-005`) и DNS-резолвер (`ADR-008`). Email-провайдер выбран: Brevo, `ADR-012`. Резервный email-провайдер остаётся невыбранным и обязателен до публичного запуска. Полный список запросов — в [prerequisites.md](prerequisites.md).
+Осталось одно решение со статусом `needs-owner-decision` в [decisions.md](decisions.md): DNS-резолвер (`ADR-008`). Email-провайдер — Brevo (`ADR-012`), VPS-провайдер — DigitalOcean (`ADR-005`).
+
+Отдельно ждут решения Business Owner, не будучи ADR: размер квоты FREE (бюджетное решение, см. [mvp-topology.md](mvp-topology.md)), резервный email-провайдер, площадки для `rescue`-зеркал, второй провайдер для нод. Полный список — в [prerequisites.md](prerequisites.md).
 
 ## Как Пользоваться Этими Документами
 
