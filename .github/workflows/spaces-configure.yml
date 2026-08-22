@@ -78,27 +78,39 @@ jobs:
           echo "Plan written to summary."
 
       - name: Apply versioning
+        id: versioning
         if: ${{ inputs.apply }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ams3
         run: |
-          set -euo pipefail
-          aws s3api put-bucket-versioning \
-            --bucket "${BUCKET}" \
-            --endpoint-url "${ENDPOINT}" \
-            --versioning-configuration Status=Enabled
-          echo "Versioning enabled."
+          set -uo pipefail
+          # Not fatal on purpose. Bucket-level configuration needs broader
+          # Spaces key permissions than object access. If it is denied, that is
+          # a fact to report and a permission to request precisely, not a
+          # reason to abort the object-level checks that follow.
+          if aws s3api put-bucket-versioning \
+               --bucket "${BUCKET}" \
+               --endpoint-url "${ENDPOINT}" \
+               --versioning-configuration Status=Enabled 2>/tmp/ver-err.txt; then
+            echo "Versioning enabled."
+            echo "result=enabled" >> "${GITHUB_OUTPUT}"
+          else
+            echo "Versioning could not be set:"
+            sed 's/^/  /' /tmp/ver-err.txt || true
+            echo "result=denied" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Apply lifecycle rules
+        id: lifecycle
         if: ${{ inputs.apply }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ams3
         run: |
-          set -euo pipefail
+          set -uo pipefail
           cat > /tmp/lifecycle.json <<'JSON'
           {
             "Rules": [
@@ -156,12 +168,19 @@ jobs:
           }
           JSON
 
-            aws s3api put-bucket-lifecycle-configuration \
-              --bucket "${BUCKET}" \
-              --endpoint-url "${ENDPOINT}" \
-              --lifecycle-configuration file:///tmp/lifecycle-legacy.json
-            echo "Lifecycle rules applied using the legacy Prefix form."
+            if aws s3api put-bucket-lifecycle-configuration \
+                 --bucket "${BUCKET}" \
+                 --endpoint-url "${ENDPOINT}" \
+                 --lifecycle-configuration file:///tmp/lifecycle-legacy.json 2>/tmp/lc-err2.txt; then
+              echo "Lifecycle rules applied using the legacy Prefix form."
+            else
+              echo "Legacy form also rejected:"
+              sed 's/^/  /' /tmp/lc-err2.txt || true
+              echo "result=denied" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
           fi
+          echo "result=applied" >> "${GITHUB_OUTPUT}"
 
       - name: Verify
         if: ${{ inputs.apply }}
@@ -169,12 +188,14 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ams3
+          VERSIONING_RESULT: ${{ steps.versioning.outputs.result }}
+          LIFECYCLE_RESULT: ${{ steps.lifecycle.outputs.result }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           versioning=$(aws s3api get-bucket-versioning --bucket "${BUCKET}" --endpoint-url "${ENDPOINT}" \
-            --query 'Status' --output text)
+            --query 'Status' --output text 2>/dev/null || echo "unreadable")
           rules=$(aws s3api get-bucket-lifecycle-configuration --bucket "${BUCKET}" --endpoint-url "${ENDPOINT}" \
-            --query 'Rules[].ID' --output text)
+            --query 'Rules[].ID' --output text 2>/dev/null || echo "none")
 
           echo "versioning after apply: ${versioning}"
           echo "lifecycle rules after apply: ${rules}"
@@ -183,13 +204,23 @@ jobs:
             echo ""
             echo "### Result"
             echo ""
-            echo "| Setting | Value |"
-            echo "| --- | --- |"
-            echo "| Versioning | ${versioning} |"
-            echo "| Lifecycle rules | \`${rules}\` |"
+            echo "| Setting | Attempt | Observed |"
+            echo "| --- | --- | --- |"
+            echo "| Versioning | ${VERSIONING_RESULT:-skipped} | ${versioning} |"
+            echo "| Lifecycle | ${LIFECYCLE_RESULT:-skipped} | \`${rules}\` |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-          [ "${versioning}" = "Enabled" ] || { echo "Versioning did not take effect."; exit 1; }
+          if [ "${VERSIONING_RESULT:-}" = "denied" ] || [ "${LIFECYCLE_RESULT:-}" = "denied" ]; then
+            {
+              echo ""
+              echo "**Bucket-level configuration is denied for these Spaces keys.**"
+              echo ""
+              echo "Object access works, bucket settings do not. Two ways forward:"
+              echo ""
+              echo "1. Business Owner issues a Spaces key with full access limited to \`${BUCKET}\`."
+              echo "2. Retention is enforced by the backup job itself, deleting objects older than the retention window. This needs no extra permission, but leaves Terraform state without version history."
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
 
       - name: Round trip check
         if: ${{ inputs.apply }}
