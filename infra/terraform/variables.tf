@@ -13,7 +13,12 @@ variable "region" {
 variable "ssh_key_names" {
   description = "Names of SSH keys already registered in DigitalOcean. Droplets get no password login."
   type        = list(string)
-  default     = []
+  default     = ["simple-vpn-ssh-key"]
+
+  validation {
+    condition     = length(var.ssh_key_names) > 0
+    error_message = "At least one SSH key is required. A droplet created without a key gets a root password by email, which puts a secret in a mailbox and a password login on a public port."
+  }
 }
 
 variable "obs_size" {
