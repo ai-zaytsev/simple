@@ -370,14 +370,24 @@ write_files:
         --path /etc/lego \
         --key-type ec256 \
         --http --http.webroot /var/www/site \
-        run
+        run > /var/log/acme.log 2>&1
       rc=$?
 
       cert="/etc/lego/certificates/${domain}.crt"
       key="/etc/lego/certificates/${domain}.key"
 
       if [ "$rc" -ne 0 ] || [ ! -f "$cert" ] || [ ! -f "$key" ]; then
-        say "certificate-failed"
+        say "certificate-failed rc=$rc"
+        # Without the client's own words the next attempt is guesswork. The
+        # output goes into the status file because there is no shell access
+        # from the workflow, and a failure nobody can read costs another node.
+        if [ "$DEBUG_STATUS" = "true" ]; then
+          {
+            echo "--- acme client output ---"
+            tail -20 /var/log/acme.log
+            echo "--- end ---"
+          } >> "$STATUS"
+        fi
         exit 1
       fi
       chmod 0600 "$key"
