@@ -1,0 +1,105 @@
+name: Android Build
+
+# Builds the APK and records what it is made of.
+#
+# No local machine builds this: there is no JDK, SDK or Go on the developer
+# host, so CI is the only build environment. That is an advantage rather than a
+# gap, because the toolchain is pinned in one place and every artifact is
+# traceable to a commit.
+#
+# Reproducibility here means: pinned Gradle, pinned AGP and Kotlin through the
+# version catalog, no dependency ranges, no wrapper binary in the repository,
+# and a recorded SHA-256 for the artifact. It does not yet mean bit-identical
+# release APKs, which additionally requires a fixed signing setup.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  android-build:
+    name: Android Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Report toolchain
+        working-directory: android
+        run: |
+          set -euo pipefail
+          echo "Gradle: $(gradle --version | grep -E '^Gradle' | head -1)"
+          echo "Java:   $(java -version 2>&1 | head -1)"
+          {
+            echo "## Android Build"
+            echo ""
+            echo "| Component | Version |"
+            echo "| --- | --- |"
+            echo "| Gradle | 8.11.1 |"
+            echo "| JDK | temurin 17 |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Assemble debug APK
+        working-directory: android
+        run: gradle --no-daemon assembleDebug
+
+      - name: Record artifact identity
+        working-directory: android
+        run: |
+          set -euo pipefail
+          apk=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
+          if [ -z "${apk}" ]; then
+            echo "No APK was produced."
+            exit 1
+          fi
+
+          size=$(stat -c%s "${apk}")
+          sha=$(sha256sum "${apk}" | cut -d' ' -f1)
+
+          echo "APK:    ${apk}"
+          echo "Size:   ${size} bytes"
+          echo "SHA256: ${sha}"
+
+          {
+            echo "| APK size | ${size} bytes |"
+            echo "| APK SHA-256 | \`${sha}\` |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          # The engine is not bundled yet. Saying so here keeps the build
+          # report honest: an APK that installs is not the same as an APK that
+          # can establish a tunnel.
+          if find app/libs -name '*.aar' 2>/dev/null | grep -q .; then
+            echo "| Transport engine | bundled |" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "| Transport engine | NOT bundled, tunnel cannot be established |" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: simple-vpn-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
