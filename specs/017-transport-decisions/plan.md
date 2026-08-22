@@ -1,4 +1,4 @@
-﻿# Plan: Transport Decisions And Cover Site
+# Plan: Transport Decisions And Cover Site
 
 - Feature ID: `017-transport-decisions`
 - Feature Branch: `feature/017-transport-decisions`
@@ -6,24 +6,28 @@
 
 ## Implementation Slices
 
-1. Подготовить repository memory и role contracts.
-2. Добавить локальный orchestration flow.
-3. Добавить GitHub PR-loop workflows.
-4. Проверить локальную валидацию и обновить task-memory.
+1. Зафиксировать решения как ADR-023, ADR-024, ADR-025.
+2. Проверить лимиты Let's Encrypt по первоисточнику и вывести следствия.
+3. Написать сайт прикрытия.
+4. Перевести клиент на конверт транспорта с двумя типами.
+5. Оставить cloud-init и Nginx на следующий шаг.
+
+## Почему Cloud-init Отложен
+
+Он тянет за собой Nginx, статику, ACME через Core и второй транспорт на отдельном порту. Это самостоятельный объём, который лучше проверять отдельно, а не вместе с изменением клиента.
 
 ## Risks
 
-- скрытая зависимость от старого процесса
-- смешивание process-layer и product logic
-- неявная зависимость от локальных CLI или GitHub settings
+- лимит на дубликаты сертификатов легко упустить: он не виден в конфигурации и проявляется отказом выпуска через неделю после начала отладки
+- сайт прикрытия одинаков на всех доменах: связывается сравнением хэшей, поэтому подстановка различий обязательна при раскатке
+- поле `flow` вместе с WebSocket приводит к отказу рукопожатия: закрыто типом, а не соглашением
 
 ## Validation Plan
 
-- синтаксическая проверка PowerShell scripts
-- проверка process docs/specs на наличие required artifacts
-- smoke локального Python validation, если task не требует глубокой продуктовой валидации
+- сборка APK в CI
+- отсутствие внешних ссылок и упоминаний продукта на странице
+- отсутствие ссылок на старые поля профиля в коде
 
 ## Merge Readiness
 
-Задача считается готовой только после PR loop: green required checks, no blocking findings, no merge conflicts, human approval pending or merge pending.
-
+Закрывается сборкой APK. Реализация серверной части идёт следующей задачей.
