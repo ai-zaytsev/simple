@@ -95,10 +95,11 @@ write_files:
       # answered exactly like a request to any path that does not exist:
       # a different status, header set or timing would turn the path into a
       # detector for anyone who guesses it.
+      # One entry only: map matches case-insensitively, so listing "WebSocket"
+      # as well is a conflicting duplicate and nginx refuses the whole file.
       map $http_upgrade $simple_ws_upgrade {
           default        0;
           "websocket"    1;
-          "WebSocket"    1;
       }
 
       server {
