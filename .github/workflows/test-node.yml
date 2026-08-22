@@ -1,22 +1,31 @@
 name: Test Node
 
-# Creates a VLESS + REALITY node, proves it carries traffic, and destroys it.
+# Builds a node the way production will be built, proves it carries traffic on
+# both transports, and destroys it.
 #
-# Everything happens in one run on purpose. The node's credential is generated
-# here, used here and dies here: it never reaches a log, a repository or a
-# chat message. A verification endpoint that outlives its verification is a
+# Everything happens in one run on purpose. The node's credentials are generated
+# here, used here and die here: they never reach a log, a repository or a chat
+# message. A verification endpoint that outlives its verification is a
 # credential nobody is tracking.
 #
-# Cost: one 512 MB droplet for the minutes the run takes. Billing is hourly, so
-# a full run costs less than a cent. The Terraform budget guard still counts it
-# at the full monthly rate, because a guard with exceptions is not a guard.
+# Certificates come from the Let's Encrypt staging environment. Production
+# allows five certificates per identical name set per week, and this loop would
+# exhaust a domain's weekly budget in an afternoon. The staging root is added to
+# the runner's trust store so the client still validates a real chain rather
+# than skipping verification.
 #
-# Destruction runs even when verification fails. A failed test that leaves a
-# droplet behind turns a cent into a recurring charge nobody remembers.
+# Destruction runs even when verification fails, and the DNS record is removed
+# with it. A failed test that leaves a droplet behind turns a cent into a
+# recurring charge nobody remembers.
 
 on:
   workflow_dispatch:
     inputs:
+      domain:
+        description: Entry domain to use. Must be a zone the Cloudflare token can write.
+        required: true
+        default: 6047864.xyz
+        type: string
       keep_node:
         description: Keep the node after verification. Leaves a running charge until destroyed.
         required: true
@@ -29,6 +38,7 @@ permissions:
 env:
   XRAY_VERSION: v25.8.3
   TF_IN_AUTOMATION: "1"
+  REALITY_PORT: "8443"
 
 jobs:
   test-node:
@@ -53,8 +63,6 @@ jobs:
 
           expected=$(grep -i 'SHA2-256=' /tmp/xray.zip.dgst | head -1 | cut -d'=' -f2 | tr -d '[:space:]')
           actual=$(sha256sum /tmp/xray.zip | cut -d' ' -f1)
-          echo "release digest: ${expected}"
-          echo "downloaded    : ${actual}"
           if [ -n "${expected}" ] && [ "${expected}" != "${actual}" ]; then
             echo "Checksum mismatch."
             exit 1
@@ -62,34 +70,41 @@ jobs:
 
           sudo unzip -o -q /tmp/xray.zip -d /usr/local/bin xray
           sudo chmod 0755 /usr/local/bin/xray
-          xray version | head -2
+          xray version | head -1
+
+      - name: Trust the Let's Encrypt staging root
+        run: |
+          set -euo pipefail
+          # Without this the client would have to skip certificate verification,
+          # and a test that skips verification does not test the thing that
+          # matters. The staging root is trusted explicitly instead.
+          sudo curl -fsSL -o /usr/local/share/ca-certificates/le-staging-root.crt \
+            https://letsencrypt.org/certs/staging/letsencrypt-stg-root-x1.pem
+          sudo update-ca-certificates >/dev/null
+          echo "Staging root installed."
 
       - name: Generate ephemeral credentials
         id: creds
         run: |
           set -euo pipefail
-          uuid=$(xray uuid)
+          ws_uuid=$(xray uuid)
+          reality_uuid=$(xray uuid)
           keys=$(xray x25519)
           short=$(openssl rand -hex 8)
+          ws_path="/$(openssl rand -hex 12)"
 
-          # Xray renamed the public key to "Password" in the v25 line, so that
-          # people would stop sharing it casually. Matching only on "public"
-          # silently yields an empty key, the client then presents nothing, and
-          # the handshake fails with no error anywhere. Both spellings are
-          # accepted here.
-          private=$(printf '%s\n' "${keys}" | grep -iE '^(PrivateKey|Private key)[[:space:]]*:' | awk '{print $NF}')
-          public=$(printf '%s\n' "${keys}" | grep -iE '^(Password|Public key)[[:space:]]*:' | awk '{print $NF}')
-
-          # Labels only. Printing which fields the tool emitted costs nothing
-          # and turns a future rename into an obvious diff instead of a silent
-          # empty value.
           echo "Fields returned by xray x25519:"
           printf '%s\n' "${keys}" | sed -E 's/:.*/: <redacted>/' | sed 's/^/  /'
 
-          # The check that was missing the first time. An empty key produced a
-          # node that looked healthy and carried no traffic, which is far more
-          # expensive to diagnose than a failed step here.
-          for pair in "uuid:${uuid}" "private:${private}" "public:${public}" "short:${short}"; do
+          private=$(printf '%s\n' "${keys}" | grep -iE '^(PrivateKey|Private key)[[:space:]]*:' | awk '{print $NF}')
+          public=$(printf '%s\n' "${keys}" | grep -iE '^(Password|Public key)[[:space:]]*:' | awk '{print $NF}')
+
+          # Validation before masking. Masking an empty value hides the very
+          # emptiness worth catching, and an empty key produces a node that
+          # looks healthy and carries nothing.
+          for pair in "ws_uuid:${ws_uuid}" "reality_uuid:${reality_uuid}" \
+                      "private:${private}" "public:${public}" \
+                      "short:${short}" "ws_path:${ws_path}"; do
             name=${pair%%:*}
             value=${pair#*:}
             if [ -z "${value}" ]; then
@@ -98,8 +113,6 @@ jobs:
             fi
           done
 
-          # base64url of 32 bytes is 43 characters. A shorter value means the
-          # parse grabbed the wrong field.
           for pair in "private:${private}" "public:${public}"; do
             name=${pair%%:*}
             value=${pair#*:}
@@ -109,18 +122,20 @@ jobs:
             fi
           done
 
-          # Masked only after validation: masking first would hide the very
-          # emptiness the checks above look for.
-          echo "::add-mask::${uuid}"
+          echo "::add-mask::${ws_uuid}"
+          echo "::add-mask::${reality_uuid}"
           echo "::add-mask::${private}"
           echo "::add-mask::${public}"
           echo "::add-mask::${short}"
+          echo "::add-mask::${ws_path}"
 
           {
-            echo "uuid=${uuid}"
+            echo "ws_uuid=${ws_uuid}"
+            echo "reality_uuid=${reality_uuid}"
             echo "private=${private}"
             echo "public=${public}"
             echo "short=${short}"
+            echo "ws_path=${ws_path}"
           } >> "${GITHUB_OUTPUT}"
 
           echo "Credentials generated, validated and masked."
@@ -140,9 +155,14 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
           TF_VAR_test_node_enabled: "true"
-          TF_VAR_test_node_uuid: ${{ steps.creds.outputs.uuid }}
+          TF_VAR_test_node_domain: ${{ inputs.domain }}
+          TF_VAR_test_node_ws_uuid: ${{ steps.creds.outputs.ws_uuid }}
+          TF_VAR_test_node_ws_path: ${{ steps.creds.outputs.ws_path }}
+          TF_VAR_test_node_reality_uuid: ${{ steps.creds.outputs.reality_uuid }}
           TF_VAR_test_node_reality_private_key: ${{ steps.creds.outputs.private }}
           TF_VAR_test_node_reality_short_id: ${{ steps.creds.outputs.short }}
+          TF_VAR_acme_staging: "true"
+          TF_VAR_debug_status: "true"
         run: |
           set -euo pipefail
           terraform apply -input=false -auto-approve
@@ -154,109 +174,282 @@ jobs:
           echo "node_ip=${ip}" >> "${GITHUB_OUTPUT}"
           echo "Node created at ${ip}"
 
-      - name: Wait for the node to answer
+      - name: Point DNS at the node
+        id: dns
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DOMAIN: ${{ inputs.domain }}
+          NODE_IP: ${{ steps.create.outputs.node_ip }}
+        run: |
+          set -euo pipefail
+          token=$(printf '%s' "${CF_TOKEN}" | tr -d '[:space:]')
+
+          zone_id=$(curl -sS -H "Authorization: Bearer ${token}" \
+            -G --data-urlencode "name=${DOMAIN}" \
+            https://api.cloudflare.com/client/v4/zones | jq -r '(.result // []) | .[0].id // empty')
+
+          if [ -z "${zone_id}" ]; then
+            echo "Domain ${DOMAIN} is not a zone this token can see."
+            exit 1
+          fi
+
+          # proxied must stay false. Cloudflare proxying terminates TLS, which
+          # would break both the certificate we just issued and the tunnel.
+          record_id=$(curl -sS -X POST \
+            -H "Authorization: Bearer ${token}" \
+            -H "content-type: application/json" \
+            -d "{\"type\":\"A\",\"name\":\"${DOMAIN}\",\"content\":\"${NODE_IP}\",\"ttl\":60,\"proxied\":false}" \
+            "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
+            | jq -r '.result.id // empty')
+
+          if [ -z "${record_id}" ]; then
+            echo "Could not create the A record."
+            exit 1
+          fi
+
+          echo "zone_id=${zone_id}" >> "${GITHUB_OUTPUT}"
+          echo "record_id=${record_id}" >> "${GITHUB_OUTPUT}"
+          echo "A record created for ${DOMAIN}"
+
+      - name: Wait for bring-up
         id: wait
         env:
           NODE_IP: ${{ steps.create.outputs.node_ip }}
         run: |
           set -uo pipefail
-          # cloud-init installs packages and Xray, which takes a while on a
-          # fresh droplet. Polling beats a fixed sleep: a sleep is either too
-          # short and flaky, or too long and wasteful.
+          # The node publishes its progress at /status.txt while bringing up.
+          # Polling that beats guessing at a sleep duration, and when something
+          # fails it says which step failed instead of leaving a black box.
+          last=""
           ready=false
-          for attempt in $(seq 1 40); do
-            if timeout 5 bash -c "cat < /dev/null > /dev/tcp/${NODE_IP}/443" 2>/dev/null; then
-              echo "Port 443 accepting connections after ${attempt} attempts."
-              ready=true
-              break
+          for attempt in $(seq 1 60); do
+            body=$(curl -fsS --max-time 8 "http://${NODE_IP}/status.txt" 2>/dev/null || true)
+            if [ -n "${body}" ] && [ "${body}" != "${last}" ]; then
+              echo "${body}" | tail -3 | sed 's/^/  /'
+              last="${body}"
             fi
+
+            case "${body}" in
+              *ready*) ready=true; break ;;
+              *failed*|*mismatch*|*invalid*|*never*) echo "Bring-up reported a failure."; break ;;
+            esac
             sleep 15
           done
 
           if [ "${ready}" != "true" ]; then
-            echo "Node never opened port 443."
+            echo "Node did not reach the ready state."
+            echo "Last status:"
+            echo "${last}" | sed 's/^/  /'
+            exit 1
+          fi
+          echo "Node reported ready."
+
+      - name: Verify the site answers on our own certificate
+        env:
+          DOMAIN: ${{ inputs.domain }}
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/site.html -w '%{http_code}' --max-time 20 "https://${DOMAIN}/")
+          echo "HTTPS status: ${code}"
+
+          if [ "${code}" != "200" ]; then
+            echo "The site did not answer over TLS."
             exit 1
           fi
 
-          # REALITY proxies to a real site when authentication fails, so an
-          # ordinary TLS client must see that site's certificate. If it does
-          # not, the camouflage is broken and the node is distinguishable.
-          echo "Checking the fallback identity a scanner would see:"
-          echo | timeout 10 openssl s_client -connect "${NODE_IP}:443" -servername www.microsoft.com 2>/dev/null \
-            | openssl x509 -noout -issuer -subject 2>/dev/null || echo "  could not read certificate"
+          # Compared by hash against the file in the repository rather than by
+          # searching for a phrase: it proves the node serves exactly the page
+          # we shipped, and it keeps this workflow free of non-ASCII, which has
+          # already once stopped a workflow from registering at all.
+          served=$(sha256sum /tmp/site.html | cut -d' ' -f1)
+          expected=$(sha256sum sites/pigeons/index.html | cut -d' ' -f1)
+          echo "served page:   ${served}"
+          echo "repository:    ${expected}"
 
-      - name: Verify traffic flows through the node
-        id: verify
+          if [ "${served}" != "${expected}" ]; then
+            echo "The node is not serving the page from this commit."
+            head -5 /tmp/site.html
+            exit 1
+          fi
+
+          issuer=$(echo | openssl s_client -connect "${DOMAIN}:443" -servername "${DOMAIN}" 2>/dev/null \
+            | openssl x509 -noout -issuer 2>/dev/null || echo "unknown")
+          echo "Certificate issuer: ${issuer}"
+
+          echo "Site served over TLS with a chain the client validated."
+
+      - name: Verify the tunnel path is indistinguishable from a missing page
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          WS_PATH: ${{ steps.creds.outputs.ws_path }}
+        run: |
+          set -euo pipefail
+          # The adversary in the threat model has an account, so the path is not
+          # a secret. What it must not be is a signal: a plain request to it has
+          # to look exactly like a request to any path that does not exist.
+          random="/$(openssl rand -hex 12)"
+
+          probe() {
+            curl -sS -o "$2" -D "$3" -w '%{http_code}' --max-time 15 "https://${DOMAIN}$1"
+          }
+
+          code_ws=$(probe "${WS_PATH}" /tmp/ws.body /tmp/ws.head)
+          code_rand=$(probe "${random}" /tmp/rand.body /tmp/rand.head)
+
+          hash_ws=$(sha256sum /tmp/ws.body | cut -d' ' -f1)
+          hash_rand=$(sha256sum /tmp/rand.body | cut -d' ' -f1)
+
+          # Date and Content-Length of a dynamic header set differ run to run;
+          # everything else must match.
+          norm() { grep -viE '^(date|connection):' "$1" | tr -d '\r' | sort; }
+          norm /tmp/ws.head > /tmp/ws.head.n
+          norm /tmp/rand.head > /tmp/rand.head.n
+
+          echo "status  tunnel path: ${code_ws}   random path: ${code_rand}"
+          echo "body    tunnel path: ${hash_ws}"
+          echo "body    random path: ${hash_rand}"
+
+          fail=0
+          [ "${code_ws}" = "${code_rand}" ] || { echo "Status codes differ."; fail=1; }
+          [ "${hash_ws}" = "${hash_rand}" ] || { echo "Bodies differ."; fail=1; }
+          if ! diff -q /tmp/ws.head.n /tmp/rand.head.n >/dev/null; then
+            echo "Headers differ:"
+            diff /tmp/ws.head.n /tmp/rand.head.n | sed 's/^/  /'
+            fail=1
+          fi
+
+          if [ "${fail}" -ne 0 ]; then
+            echo "The tunnel path is distinguishable. Anyone who guesses it can confirm what this domain is."
+            exit 1
+          fi
+          echo "Tunnel path answers exactly like a missing page."
+
+      - name: Verify traffic over WebSocket
+        id: verify_ws
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          NODE_IP: ${{ steps.create.outputs.node_ip }}
+          UUID: ${{ steps.creds.outputs.ws_uuid }}
+          WS_PATH: ${{ steps.creds.outputs.ws_path }}
+        run: |
+          set -euo pipefail
+          # Connects to the node by address while presenting the domain name:
+          # nodes of one group share a domain, so the address selects the node
+          # and the name validates the certificate.
+          jq -n \
+            --arg ip "${NODE_IP}" --arg uuid "${UUID}" \
+            --arg path "${WS_PATH}" --arg sni "${DOMAIN}" \
+            '{
+              log: { loglevel: "info" },
+              inbounds: [ { tag: "socks-in", protocol: "socks", listen: "127.0.0.1", port: 10808,
+                            settings: { auth: "noauth", udp: true } } ],
+              outbounds: [
+                { tag: "proxy", protocol: "vless",
+                  settings: { vnext: [ { address: $ip, port: 443,
+                    users: [ { id: $uuid, encryption: "none" } ] } ] },
+                  streamSettings: { network: "ws", security: "tls",
+                    wsSettings: { path: $path, headers: { Host: $sni } },
+                    tlsSettings: { serverName: $sni, fingerprint: "chrome", allowInsecure: false } } }
+              ]
+            }' > /tmp/client-ws.json
+
+          xray run -config /tmp/client-ws.json > /tmp/xray-ws.log 2>&1 &
+          pid=$!
+          sleep 5
+
+          out=$(curl -fsS --max-time 25 --socks5-hostname 127.0.0.1:10808 https://api.ipify.org || echo "")
+          kill "${pid}" 2>/dev/null || true
+
+          echo "Address through the WebSocket tunnel: ${out:-none}"
+          if [ -z "${out}" ]; then
+            echo "No traffic passed. Client log:"
+            sed 's/^/  /' /tmp/xray-ws.log | tail -30
+            exit 1
+          fi
+          if [ "${out}" != "${NODE_IP}" ]; then
+            echo "Traffic exited from ${out}, expected ${NODE_IP}."
+            exit 1
+          fi
+          echo "WebSocket transport verified."
+
+      - name: Verify traffic over the standby REALITY transport
+        id: verify_reality
         env:
           NODE_IP: ${{ steps.create.outputs.node_ip }}
-          UUID: ${{ steps.creds.outputs.uuid }}
+          UUID: ${{ steps.creds.outputs.reality_uuid }}
           PUBLIC: ${{ steps.creds.outputs.public }}
           SHORT: ${{ steps.creds.outputs.short }}
         run: |
           set -euo pipefail
-
           jq -n \
-            --arg ip "${NODE_IP}" \
-            --arg uuid "${UUID}" \
-            --arg pbk "${PUBLIC}" \
-            --arg sid "${SHORT}" \
+            --arg ip "${NODE_IP}" --arg uuid "${UUID}" \
+            --arg pbk "${PUBLIC}" --arg sid "${SHORT}" \
+            --argjson port ${REALITY_PORT} \
             '{
               log: { loglevel: "info" },
-              inbounds: [
-                { tag: "socks-in", protocol: "socks", listen: "127.0.0.1", port: 10808,
-                  settings: { auth: "noauth", udp: true } }
-              ],
+              inbounds: [ { tag: "socks-in", protocol: "socks", listen: "127.0.0.1", port: 10809,
+                            settings: { auth: "noauth", udp: true } } ],
               outbounds: [
                 { tag: "proxy", protocol: "vless",
-                  settings: { vnext: [ { address: $ip, port: 443,
+                  settings: { vnext: [ { address: $ip, port: $port,
                     users: [ { id: $uuid, encryption: "none", flow: "xtls-rprx-vision" } ] } ] },
                   streamSettings: { network: "tcp", security: "reality",
                     realitySettings: { serverName: "www.microsoft.com", publicKey: $pbk,
-                      shortId: $sid, fingerprint: "chrome" } } }
+                                       shortId: $sid, fingerprint: "chrome" } } }
               ]
-            }' > /tmp/client.json
+            }' > /tmp/client-reality.json
 
-          xray run -config /tmp/client.json > /tmp/xray-client.log 2>&1 &
-          client_pid=$!
+          xray run -config /tmp/client-reality.json > /tmp/xray-reality.log 2>&1 &
+          pid=$!
           sleep 5
 
-          if ! kill -0 "${client_pid}" 2>/dev/null; then
-            echo "Client exited immediately:"
-            cat /tmp/xray-client.log
+          out=$(curl -fsS --max-time 25 --socks5-hostname 127.0.0.1:10809 https://api.ipify.org || echo "")
+          kill "${pid}" 2>/dev/null || true
+
+          echo "Address through the REALITY tunnel: ${out:-none}"
+          if [ -z "${out}" ]; then
+            echo "No traffic passed. Client log:"
+            sed 's/^/  /' /tmp/xray-reality.log | tail -30
+            echo ""
+            echo "This transport is the standby, so its failure does not invalidate the primary result."
             exit 1
           fi
-
-          direct_ip=$(curl -fsS --max-time 15 https://api.ipify.org || echo "unknown")
-          echo "Runner address:  ${direct_ip}"
-
-          tunnel_ip=$(curl -fsS --max-time 25 --socks5-hostname 127.0.0.1:10808 https://api.ipify.org || echo "")
-          echo "Address through the tunnel: ${tunnel_ip:-none}"
-
-          kill "${client_pid}" 2>/dev/null || true
-
-          if [ -z "${tunnel_ip}" ]; then
-            echo "No traffic passed through the node."
-            echo "Client log (info level, so a rejected handshake is visible):"
-            sed 's/^/  /' /tmp/xray-client.log | tail -40
+          if [ "${out}" != "${NODE_IP}" ]; then
+            echo "Traffic exited from ${out}, expected ${NODE_IP}."
             exit 1
           fi
+          echo "REALITY standby transport verified."
 
-          if [ "${tunnel_ip}" != "${NODE_IP}" ]; then
-            echo "Traffic exited from ${tunnel_ip}, expected ${NODE_IP}."
-            exit 1
-          fi
-
-          echo "Verified: traffic exits from the node."
+      - name: Summary
+        if: ${{ always() }}
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          WS_RESULT: ${{ steps.verify_ws.outcome }}
+          REALITY_RESULT: ${{ steps.verify_reality.outcome }}
+        run: |
           {
             echo "## Test Node"
             echo ""
             echo "| Check | Result |"
             echo "| --- | --- |"
-            echo "| Node created | yes |"
-            echo "| Port 443 reachable | yes |"
-            echo "| VLESS + REALITY handshake | succeeded |"
-            echo "| Exit address matches node | yes |"
+            echo "| Domain | \`${DOMAIN}\` |"
+            echo "| WebSocket transport | ${WS_RESULT:-not reached} |"
+            echo "| REALITY standby | ${REALITY_RESULT:-not reached} |"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Remove the DNS record
+        if: ${{ always() && steps.dns.outputs.record_id != '' }}
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ZONE_ID: ${{ steps.dns.outputs.zone_id }}
+          RECORD_ID: ${{ steps.dns.outputs.record_id }}
+        run: |
+          set -uo pipefail
+          token=$(printf '%s' "${CF_TOKEN}" | tr -d '[:space:]')
+          ok=$(curl -sS -X DELETE -H "Authorization: Bearer ${token}" \
+            "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
+            | jq -r '.success // false')
+          echo "DNS record removed: ${ok}"
 
       - name: Destroy node
         if: ${{ always() && !inputs.keep_node }}
@@ -266,14 +459,10 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
           TF_VAR_test_node_enabled: "false"
-          TF_VAR_test_node_uuid: ${{ steps.creds.outputs.uuid }}
-          TF_VAR_test_node_reality_private_key: ${{ steps.creds.outputs.private }}
-          TF_VAR_test_node_reality_short_id: ${{ steps.creds.outputs.short }}
         run: |
           set -euo pipefail
           terraform apply -input=false -auto-approve
           echo "Node destroyed."
-          echo "| Node destroyed | yes |" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Confirm nothing is left running
         if: ${{ always() && !inputs.keep_node }}
@@ -293,12 +482,3 @@ jobs:
             echo "Something is still running. Check the account before the next run."
             exit 1
           fi
-
-      - name: Warn when the node was kept
-        if: ${{ always() && inputs.keep_node }}
-        run: |
-          {
-            echo ""
-            echo "**The node was kept and is being charged.** Destroy it by running this workflow"
-            echo "again with keep_node disabled, or with terraform apply and test_node_enabled=false."
-          } >> "${GITHUB_STEP_SUMMARY}"

@@ -1,0 +1,314 @@
+#cloud-config
+# Node bring-up: Nginx with a real site, VLESS over WebSocket, REALITY standby.
+#
+# The node receives its whole configuration here and is never touched by hand.
+#
+# Two logging rules are enforced at the only place that generates configuration,
+# so no runtime switch can undo them:
+#   - Xray access log is off. It records every destination, which is the
+#     browsing history the privacy model forbids.
+#   - Nginx access log is off. It records client addresses, which is the same
+#     history seen from the other side.
+#
+# Certificates: this node issues its own key and certificate with HTTP-01.
+# That works because one node owns the domain here. In production a domain is
+# shared by a group of nodes, HTTP-01 would then validate whichever node DNS
+# points at, and the scheme becomes DNS-01 orchestrated by Core. See ADR-023.
+
+package_update: true
+packages:
+  - nginx
+  - certbot
+  - curl
+  - unzip
+  - ca-certificates
+  - dnsutils
+
+write_files:
+  - path: /var/www/site/index.html
+    encoding: b64
+    permissions: "0644"
+    content: ${site_html_b64}
+
+  - path: /var/www/site/404.html
+    permissions: "0644"
+    content: |
+      <!doctype html>
+      <html lang="ru"><head><meta charset="utf-8"><title>Страница не найдена</title>
+      <style>body{font:17px/1.6 Georgia,serif;margin:0;background:#faf7f2;color:#23201d}
+      .w{max-width:640px;margin:0 auto;padding:64px 20px}a{color:#5a6b7d}</style></head>
+      <body><div class="w"><h1>Страница не найдена</h1>
+      <p>Такой страницы здесь нет. Вернуться на <a href="/">главную</a>.</p></div></body></html>
+
+  - path: /etc/nginx/sites-available/site-http.conf
+    permissions: "0644"
+    content: |
+      server {
+          listen 80 default_server;
+          listen [::]:80 default_server;
+          server_name _;
+
+          access_log off;
+          root /var/www/site;
+
+          location /.well-known/acme-challenge/ {
+              root /var/www/site;
+          }
+
+          location / {
+              try_files $uri $uri/ =404;
+          }
+
+          error_page 404 /404.html;
+          location = /404.html { internal; }
+      }
+
+  - path: /etc/nginx/sites-available/site-tls.conf
+    permissions: "0644"
+    content: |
+      # Selects websocket upgrades. A plain request to the tunnel path must be
+      # answered exactly like a request to any path that does not exist:
+      # a different status, header set or timing would turn the path into a
+      # detector for anyone who guesses it.
+      map $http_upgrade $simple_ws_upgrade {
+          default        0;
+          "websocket"    1;
+          "WebSocket"    1;
+      }
+
+      server {
+          listen 80 default_server;
+          listen [::]:80 default_server;
+          server_name _;
+
+          access_log off;
+
+          location /.well-known/acme-challenge/ {
+              root /var/www/site;
+          }
+
+          # A site whose port 80 is closed looks unusual. Redirecting costs
+          # nothing and removes the difference. See ADR-025.
+          location / {
+              return 301 https://$host$request_uri;
+          }
+      }
+
+      server {
+          listen 443 ssl default_server;
+          listen [::]:443 ssl default_server;
+          http2 on;
+          server_name ${domain};
+
+          access_log off;
+
+          ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
+          ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
+          ssl_protocols TLSv1.2 TLSv1.3;
+          ssl_session_cache shared:SSL:10m;
+          ssl_session_timeout 1h;
+
+          root /var/www/site;
+          index index.html;
+
+          error_page 404 /404.html;
+          location = /404.html { internal; }
+
+          location = ${ws_path} {
+              if ($simple_ws_upgrade = 0) {
+                  return 404;
+              }
+
+              proxy_pass http://127.0.0.1:${ws_backend_port};
+              proxy_http_version 1.1;
+              proxy_set_header Upgrade $http_upgrade;
+              proxy_set_header Connection "upgrade";
+              proxy_set_header Host $host;
+              # The client address is deliberately not forwarded. Xray does not
+              # need it, and passing it would place user addresses somewhere
+              # they could be logged.
+              proxy_read_timeout 300s;
+              proxy_send_timeout 300s;
+          }
+
+          location / {
+              try_files $uri $uri/ =404;
+          }
+      }
+
+  - path: /usr/local/etc/xray/config.json
+    permissions: "0600"
+    content: |
+      {
+        "log": { "access": "none", "loglevel": "warning" },
+        "inbounds": [
+          {
+            "tag": "ws-in",
+            "listen": "127.0.0.1",
+            "port": ${ws_backend_port},
+            "protocol": "vless",
+            "settings": {
+              "clients": [ { "id": "${ws_uuid}" } ],
+              "decryption": "none"
+            },
+            "streamSettings": {
+              "network": "ws",
+              "wsSettings": { "path": "${ws_path}" }
+            }
+          },
+          {
+            "tag": "reality-in",
+            "listen": "0.0.0.0",
+            "port": ${reality_port},
+            "protocol": "vless",
+            "settings": {
+              "clients": [ { "id": "${reality_uuid}", "flow": "xtls-rprx-vision" } ],
+              "decryption": "none"
+            },
+            "streamSettings": {
+              "network": "tcp",
+              "security": "reality",
+              "realitySettings": {
+                "show": false,
+                "dest": "${reality_dest}",
+                "xver": 0,
+                "serverNames": ["${reality_server_name}"],
+                "privateKey": "${reality_private_key}",
+                "shortIds": ["${reality_short_id}"]
+              }
+            }
+          }
+        ],
+        "outbounds": [ { "tag": "direct", "protocol": "freedom" } ]
+      }
+
+  - path: /etc/systemd/system/xray.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Xray node
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
+      Restart=on-failure
+      RestartSec=3
+      NoNewPrivileges=true
+      LimitNOFILE=65536
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /usr/local/bin/node-bootstrap.sh
+    permissions: "0700"
+    content: |
+      #!/usr/bin/env bash
+      set -uo pipefail
+
+      STATUS=/var/www/site/status.txt
+      DEBUG_STATUS=${debug_status}
+
+      say() {
+        echo "[bootstrap] $1"
+        if [ "$DEBUG_STATUS" = "true" ]; then
+          echo "$(date -u +%H:%M:%S) $1" >> "$STATUS"
+        fi
+      }
+
+      # The status file exists only on verification nodes. It lets the workflow
+      # see how far bring-up got without shell access, which is the difference
+      # between fixing a problem and guessing at it. It must never be enabled
+      # in production: it would describe our own bring-up to anyone asking.
+      if [ "$DEBUG_STATUS" = "true" ]; then
+        : > "$STATUS"
+        chmod 0644 "$STATUS"
+      fi
+
+      say "start"
+
+      # --- site on port 80 -------------------------------------------------
+      rm -f /etc/nginx/sites-enabled/default
+      ln -sf /etc/nginx/sites-available/site-http.conf /etc/nginx/sites-enabled/site.conf
+      nginx -t && systemctl restart nginx
+      say "nginx-http-up"
+
+      # --- xray ------------------------------------------------------------
+      workdir=$(mktemp -d)
+      cd "$workdir" || exit 1
+      base="https://github.com/XTLS/Xray-core/releases/download/${xray_version}"
+      curl -fsSL -o xray.zip "$base/Xray-linux-64.zip"
+      curl -fsSL -o xray.zip.dgst "$base/Xray-linux-64.zip.dgst"
+
+      expected=$(grep -i 'SHA2-256=' xray.zip.dgst | head -1 | cut -d'=' -f2 | tr -d '[:space:]')
+      actual=$(sha256sum xray.zip | cut -d' ' -f1)
+      if [ -n "$expected" ] && [ "$expected" != "$actual" ]; then
+        say "xray-checksum-mismatch"
+        exit 1
+      fi
+
+      unzip -o -q xray.zip -d /usr/local/bin xray
+      chmod 0755 /usr/local/bin/xray
+      systemctl daemon-reload
+      systemctl enable --now xray
+      say "xray-up"
+
+      # --- wait for DNS to point here --------------------------------------
+      own_ip=$(curl -fsS4 --max-time 15 https://api.ipify.org)
+      say "own-ip-known"
+
+      resolved=""
+      for _ in $(seq 1 60); do
+        resolved=$(dig +short A ${domain} @1.1.1.1 | tail -1)
+        if [ "$resolved" = "$own_ip" ]; then
+          break
+        fi
+        sleep 10
+      done
+
+      if [ "$resolved" != "$own_ip" ]; then
+        say "dns-never-pointed-here"
+        exit 1
+      fi
+      say "dns-ready"
+
+      # --- certificate ------------------------------------------------------
+      # The key is generated here, on the node, and never leaves it.
+      staging_flag=""
+      if [ "${acme_staging}" = "true" ]; then
+        staging_flag="--staging"
+      fi
+
+      # A staging registration needs no contact address, and not supplying one
+      # keeps a personal address out of the repository.
+      email_flag="--register-unsafely-without-email"
+      if [ -n "${acme_email}" ]; then
+        email_flag="-m ${acme_email} --no-eff-email"
+      fi
+
+      certbot certonly --webroot -w /var/www/site \
+        -d ${domain} \
+        --agree-tos $email_flag \
+        --non-interactive \
+        $staging_flag \
+        --key-type ecdsa
+      rc=$?
+
+      if [ "$rc" -ne 0 ] || [ ! -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]; then
+        say "certificate-failed"
+        exit 1
+      fi
+      say "certificate-issued"
+
+      # --- switch nginx to TLS ---------------------------------------------
+      ln -sf /etc/nginx/sites-available/site-tls.conf /etc/nginx/sites-enabled/site.conf
+      if ! nginx -t; then
+        say "nginx-tls-config-invalid"
+        exit 1
+      fi
+      systemctl reload nginx
+      say "ready"
+
+runcmd:
+  - /usr/local/bin/node-bootstrap.sh
