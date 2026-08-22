@@ -19,6 +19,7 @@
 
 - `docs/integrations/brevo.md` — email-провайдер для magic link: секреты, требования к домену отправителя, проверка доставляемости
 - `docs/integrations/dns.md` — DNS: провайдеры, роли доменов, конвенции записей, запрет проксирования на точках входа
+- `docs/integrations/digitalocean.md` — DigitalOcean: фактическая область токена, Spaces, retention, границы бюджета
 
 Связанный task-memory layer хранится в `specs/<feature-id>/`. Product-code задача не должна стартовать без активной feature-memory папки с `spec.md`, `plan.md` и `tasks.md`.
 

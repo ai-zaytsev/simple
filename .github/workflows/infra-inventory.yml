@@ -105,7 +105,11 @@ jobs:
             echo "Projects: \`${projects:--}\`" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
-          echo "account_code=${account_code}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "account_code=${account_code}"
+            echo "droplets_code=$(cat /tmp/code-droplets.txt)"
+            echo "projects_code=$(cat /tmp/code-projects.txt)"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Probe DigitalOcean write scope
         id: do_write
@@ -206,16 +210,23 @@ jobs:
       - name: Verdict
         if: always()
         env:
-          ACCOUNT_CODE: ${{ steps.do_read.outputs.account_code }}
+          DROPLETS_CODE: ${{ steps.do_read.outputs.droplets_code }}
+          PROJECTS_CODE: ${{ steps.do_read.outputs.projects_code }}
           DO_WRITABLE: ${{ steps.do_write.outputs.writable }}
           SPACES_USABLE: ${{ steps.spaces.outputs.usable }}
         run: |
           set -euo pipefail
+          # Capability is judged only by the endpoints provisioning actually uses.
+          # /v2/account is deliberately NOT one of them: a correctly narrowed
+          # token is expected to be denied there, and gating on it punishes
+          # good scoping. Same mistake was made once with Cloudflare's
+          # user/tokens/verify. See docs/integrations/digitalocean.md.
           failed=0
-          [ "${ACCOUNT_CODE:-000}" = "200" ] || { echo "DigitalOcean token cannot read the account."; failed=1; }
-          [ "${DO_WRITABLE:-false}" = "true" ] || { echo "DigitalOcean token has no write scope. Provisioning is impossible until it is granted."; failed=1; }
+          [ "${DROPLETS_CODE:-000}" = "200" ] || { echo "Cannot read droplets. Needs droplet read scope."; failed=1; }
+          [ "${PROJECTS_CODE:-000}" = "200" ] || { echo "Cannot read projects. Needs project read scope."; failed=1; }
+          [ "${DO_WRITABLE:-false}" = "true" ] || { echo "No write scope. Provisioning is impossible until it is granted."; failed=1; }
           [ "${SPACES_USABLE:-false}" = "true" ] || { echo "Spaces bucket is not reachable."; failed=1; }
           if [ "${failed}" -ne 0 ]; then
             exit 1
           fi
-          echo "DigitalOcean and Spaces are both usable."
+          echo "DigitalOcean and Spaces are usable for provisioning."
