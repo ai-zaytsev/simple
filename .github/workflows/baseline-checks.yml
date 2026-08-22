@@ -65,6 +65,41 @@ jobs:
             throw "PowerShell parsing failed."
           }
 
+      - name: Cloud-init templates must be ASCII
+        shell: pwsh
+        run: |
+          $templates = Get-ChildItem -Path infra -Filter *.tftpl -File -Recurse -ErrorAction SilentlyContinue
+          if (-not $templates) {
+            Write-Host "No cloud-init templates found, nothing to check."
+            exit 0
+          }
+
+          # Non-ASCII text in user-data once reached the node double-encoded.
+          # cloud-init rejected the whole document and the node booted with
+          # nothing configured while reporting success: no file existed, no
+          # error surfaced, and the machine looked healthy. Text that needs
+          # non-ASCII lives in sites/ and travels as base64.
+          $bad = @()
+          foreach ($t in $templates) {
+            $bytes = [System.IO.File]::ReadAllBytes($t.FullName)
+            $line = 1
+            for ($i = 0; $i -lt $bytes.Length; $i++) {
+              if ($bytes[$i] -eq 10) { $line++ }
+              elseif ($bytes[$i] -gt 127) {
+                $bad += "$($t.Name) line $line"
+                break
+              }
+            }
+          }
+
+          if ($bad.Count -gt 0) {
+            Write-Host "Non-ASCII found in cloud-init templates:"
+            $bad | ForEach-Object { Write-Host "  $_" }
+            throw "Cloud-init templates must be ASCII. Move the text into sites/ and pass it as base64."
+          }
+
+          Write-Host "All $($templates.Count) cloud-init template(s) are ASCII."
+
       - name: Detect source layers
         id: detect
         shell: pwsh

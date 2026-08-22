@@ -132,6 +132,7 @@ resource "digitalocean_droplet" "test_node" {
     acme_staging        = var.acme_staging ? "true" : "false"
     debug_status        = var.debug_status ? "true" : "false"
     site_html_b64       = base64encode(file("${path.module}/../../sites/pigeons/index.html"))
+    notfound_html_b64   = base64encode(file("${path.module}/../../sites/pigeons/404.html"))
     ws_path             = var.test_node_ws_path
     ws_uuid             = var.test_node_ws_uuid
     ws_backend_port     = var.ws_backend_port
