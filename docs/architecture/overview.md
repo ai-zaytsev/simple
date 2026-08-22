@@ -59,15 +59,14 @@ flowchart TB
     subgraph obs["Observability plane"]
         OTEL["OTel Collector"]
         PROM["Prometheus"]
-        CH[("ClickHouse")]
-        LOKI["Loki"]
+        AN[("PostgreSQL: analytics")]
+        ARCH[("Spaces: logs/")]
         GRAF["Grafana"]
         OTEL --> PROM
-        OTEL --> CH
-        OTEL --> LOKI
+        OTEL --> AN
+        OTEL --> ARCH
         PROM --> GRAF
-        CH --> GRAF
-        LOKI --> GRAF
+        AN --> GRAF
     end
 
     subgraph prov["Provisioning"]
@@ -226,14 +225,15 @@ sequenceDiagram
 | Не входит | Почему |
 | --- | --- |
 | Kubernetes | Нод десятки, а не тысячи; Terraform и node-agent проще и отлаживаемее |
-| Kafka | Объём телеметрии MVP покрывается OTel Collector и батчами в ClickHouse |
-| Elasticsearch | Полнотекстовый поиск по логам не нужен, Loki закрывает потребность |
+| Kafka | Объём телеметрии MVP покрывается OTel Collector и батчевой вставкой |
+| Elasticsearch | Полнотекстовый поиск по логам не нужен |
 | Redis cluster | Нет состояния, требующего распределённого кэша |
 | Service mesh | Один Control Plane и ноды за WireGuard — mesh нечего решать |
 | Микросервисы | Control Plane это один Go-бинарь с внутренними модулями |
 | Автоматический autoscaling | По ТЗ не обязателен; обязательна штатная операция добавления ноды |
 | Выбор страны или сервера в UI | Прямо запрещено ТЗ |
 | Оплата и платёжная интеграция | Отложены за пределы MVP, `ADR-006`. VIP выдаётся административно |
+| ClickHouse и Loki | Не помещаются в бюджет и в доступную память, `ADR-018` и `ADR-019`. Условия обратимости — в [deferred-stack-migration.md](deferred-stack-migration.md) |
 
 Каждый пункт может быть пересмотрен отдельным ADR при появлении измеренной причины.
 
