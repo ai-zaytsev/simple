@@ -120,9 +120,11 @@ write_files:
       }
 
       server {
-          listen 443 ssl default_server;
-          listen [::]:443 ssl default_server;
-          http2 on;
+          # http2 as a standalone directive requires nginx 1.25. Ubuntu 24.04
+          # ships 1.24, where it is a listen parameter, and the standalone form
+          # makes the whole configuration invalid.
+          listen 443 ssl http2 default_server;
+          listen [::]:443 ssl http2 default_server;
           server_name ${domain};
 
           access_log off;
@@ -402,8 +404,17 @@ write_files:
 
       # --- switch nginx to TLS ---------------------------------------------
       ln -sf /etc/nginx/sites-available/site-tls.conf /etc/nginx/sites-enabled/site.conf
-      if ! nginx -t; then
+      if ! nginx -t > /var/log/nginx-tls-test.log 2>&1; then
         say "nginx-tls-config-invalid"
+        # Same lesson as the ACME client: a rejection without its reason costs
+        # another node.
+        if [ "$DEBUG_STATUS" = "true" ]; then
+          {
+            echo "--- nginx -t output ---"
+            tail -10 /var/log/nginx-tls-test.log
+            echo "--- end ---"
+          } >> "$STATUS"
+        fi
         exit 1
       fi
       systemctl reload nginx
