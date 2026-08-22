@@ -1,0 +1,221 @@
+name: Spaces Configure
+
+# Configures the existing Spaces bucket for two jobs: Terraform remote state
+# and PostgreSQL backups. Creates no bucket and no other resource.
+#
+# Why this is a workflow and not Terraform: the bucket holds Terraform's own
+# state. Managing it from Terraform is a bootstrap cycle, so the state store is
+# configured outside the tool whose state it stores.
+#
+# Encryption is not configured here: DigitalOcean encrypts Spaces at rest with
+# AES-256 by default and does not expose bucket-level encryption settings.
+#
+# Run with apply=false first to see what would change.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Apply the configuration. Leave false for a dry run.
+        required: true
+        default: false
+        type: boolean
+
+env:
+  BUCKET: simple-vpn-infra-backups
+  ENDPOINT: https://ams3.digitaloceanspaces.com
+
+jobs:
+  spaces-configure:
+    name: Spaces Configure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Show current state
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ams3
+        run: |
+          set -uo pipefail
+          if ! aws s3api head-bucket --bucket "${BUCKET}" --endpoint-url "${ENDPOINT}" >/dev/null 2>&1; then
+            echo "Bucket is not reachable with these credentials."
+            exit 1
+          fi
+
+          versioning=$(aws s3api get-bucket-versioning --bucket "${BUCKET}" --endpoint-url "${ENDPOINT}" \
+            --query 'Status' --output text 2>/dev/null || echo "none")
+          echo "current versioning: ${versioning}"
+
+          echo "current lifecycle:"
+          aws s3api get-bucket-lifecycle-configuration --bucket "${BUCKET}" --endpoint-url "${ENDPOINT}" 2>/dev/null \
+            || echo "  none configured"
+
+          {
+            echo "## Spaces Configure"
+            echo ""
+            echo "Mode: apply=${{ inputs.apply }}"
+            echo ""
+            echo "Before: versioning=\`${versioning}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Plan
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "### Intended configuration"
+            echo ""
+            echo "| Setting | Value | Why |"
+            echo "| --- | --- | --- |"
+            echo "| Versioning | Enabled | Terraform state corruption is recoverable only from a previous version |"
+            echo "| \`terraform/\` noncurrent versions | expire after 90 days | Long enough to roll back a bad apply, short enough not to accumulate |"
+            echo "| \`postgres/\` current objects | expire after 30 days | Minimal sufficient retention for the only irreplaceable data |"
+            echo "| \`postgres/\` noncurrent versions | expire after 7 days | Versions exist to survive a bad overwrite, not as history |"
+            echo "| Incomplete multipart uploads | abort after 7 days | Interrupted uploads are billable and invisible |"
+            echo "| Encryption | AES-256 by platform | DigitalOcean encrypts Spaces at rest by default; no bucket-level setting exists |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "Plan written to summary."
+
+      - name: Apply versioning
+        if: ${{ inputs.apply }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ams3
+        run: |
+          set -euo pipefail
+          aws s3api put-bucket-versioning \
+            --bucket "${BUCKET}" \
+            --endpoint-url "${ENDPOINT}" \
+            --versioning-configuration Status=Enabled
+          echo "Versioning enabled."
+
+      - name: Apply lifecycle rules
+        if: ${{ inputs.apply }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ams3
+        run: |
+          set -euo pipefail
+          cat > /tmp/lifecycle.json <<'JSON'
+          {
+            "Rules": [
+              {
+                "ID": "terraform-state-noncurrent",
+                "Status": "Enabled",
+                "Filter": { "Prefix": "terraform/" },
+                "NoncurrentVersionExpiration": { "NoncurrentDays": 90 },
+                "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+              },
+              {
+                "ID": "postgres-backups",
+                "Status": "Enabled",
+                "Filter": { "Prefix": "postgres/" },
+                "Expiration": { "Days": 30 },
+                "NoncurrentVersionExpiration": { "NoncurrentDays": 7 },
+                "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+              }
+            ]
+          }
+          JSON
+
+          # DigitalOcean's S3 compatibility is close but not complete. If the
+          # v2 "Filter" form is rejected, fall back to the legacy rule-level
+          # "Prefix" form rather than leaving the bucket unconfigured.
+          if aws s3api put-bucket-lifecycle-configuration \
+               --bucket "${BUCKET}" \
+               --endpoint-url "${ENDPOINT}" \
+               --lifecycle-configuration file:///tmp/lifecycle.json 2>/tmp/lc-err.txt; then
+            echo "Lifecycle rules applied using the Filter form."
+          else
+            echo "Filter form rejected:"
+            cat /tmp/lc-err.txt || true
+            echo "Retrying with the legacy Prefix form."
+
+            cat > /tmp/lifecycle-legacy.json <<'JSON'
+          {
+            "Rules": [
+              {
+                "ID": "terraform-state-noncurrent",
+                "Status": "Enabled",
+                "Prefix": "terraform/",
+                "NoncurrentVersionExpiration": { "NoncurrentDays": 90 },
+                "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+              },
+              {
+                "ID": "postgres-backups",
+                "Status": "Enabled",
+                "Prefix": "postgres/",
+                "Expiration": { "Days": 30 },
+                "NoncurrentVersionExpiration": { "NoncurrentDays": 7 },
+                "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+              }
+            ]
+          }
+          JSON
+
+            aws s3api put-bucket-lifecycle-configuration \
+              --bucket "${BUCKET}" \
+              --endpoint-url "${ENDPOINT}" \
+              --lifecycle-configuration file:///tmp/lifecycle-legacy.json
+            echo "Lifecycle rules applied using the legacy Prefix form."
+          fi
+
+      - name: Verify
+        if: ${{ inputs.apply }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ams3
+        run: |
+          set -euo pipefail
+          versioning=$(aws s3api get-bucket-versioning --bucket "${BUCKET}" --endpoint-url "${ENDPOINT}" \
+            --query 'Status' --output text)
+          rules=$(aws s3api get-bucket-lifecycle-configuration --bucket "${BUCKET}" --endpoint-url "${ENDPOINT}" \
+            --query 'Rules[].ID' --output text)
+
+          echo "versioning after apply: ${versioning}"
+          echo "lifecycle rules after apply: ${rules}"
+
+          {
+            echo ""
+            echo "### Result"
+            echo ""
+            echo "| Setting | Value |"
+            echo "| --- | --- |"
+            echo "| Versioning | ${versioning} |"
+            echo "| Lifecycle rules | \`${rules}\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          [ "${versioning}" = "Enabled" ] || { echo "Versioning did not take effect."; exit 1; }
+
+      - name: Round trip check
+        if: ${{ inputs.apply }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ams3
+        run: |
+          set -euo pipefail
+          # Proves the credentials can write, read back and delete under the
+          # prefixes that matter. A backup target that was never written to is
+          # an assumption, not a backup target.
+          key="healthcheck/roundtrip-${GITHUB_RUN_ID}.txt"
+          printf 'roundtrip %s\n' "${GITHUB_RUN_ID}" > /tmp/rt.txt
+
+          aws s3 cp /tmp/rt.txt "s3://${BUCKET}/${key}" --endpoint-url "${ENDPOINT}" >/dev/null
+          aws s3 cp "s3://${BUCKET}/${key}" /tmp/rt-back.txt --endpoint-url "${ENDPOINT}" >/dev/null
+
+          if ! diff -q /tmp/rt.txt /tmp/rt-back.txt >/dev/null; then
+            echo "Round trip mismatch."
+            exit 1
+          fi
+          echo "Write and read back succeeded."
+
+          aws s3api delete-object --bucket "${BUCKET}" --key "${key}" --endpoint-url "${ENDPOINT}" >/dev/null
+          echo "Probe object deleted."
+
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Round trip write/read/delete: OK" >> "${GITHUB_STEP_SUMMARY}"
