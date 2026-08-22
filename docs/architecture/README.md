@@ -22,6 +22,7 @@
 | [android-client.md](android-client.md) | Устройство Android-клиента, маршрутизация, воспроизводимость сборки | Работаете с приложением |
 | [evolution.md](evolution.md) | Инварианты, обеспечивающие резервирование Core и второй транспорт в будущем | Пишете код Control Plane или клиента |
 | [deferred-stack-migration.md](deferred-stack-migration.md) | Ограничения формата, без которых переход на ClickHouse и Loki потеряет историю | Проектируете схему аналитики или формат логов |
+| [transport-change.md](transport-change.md) | Смена транспорта на VLESS over WebSocket: что меняется и чего это стоит | Трогаете транспорт, сертификаты или точки входа |
 | [decisions.md](decisions.md) | ADR по спорным вопросам | Кажется, что решение можно принять иначе |
 | [prerequisites.md](prerequisites.md) | Внешние ресурсы, которые нужно запросить у Business Owner | Планируете следующую стадию |
 
