@@ -386,7 +386,7 @@ write_files:
         exit 1
       fi
       systemctl reload nginx
-      say "ready"
+      say "bringup-complete"
 
 runcmd:
   - /usr/local/bin/node-bootstrap.sh
