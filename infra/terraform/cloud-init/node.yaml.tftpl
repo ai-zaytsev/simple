@@ -363,18 +363,21 @@ write_files:
       fi
 
       mkdir -p /etc/lego
-      # --accept-tos belongs to the run subcommand in lego v5, not to the
-      # global options. Placed before "run" the client exits immediately with
-      # "flag provided but not defined", which looks like a network failure
-      # until the client's own output is read.
-      lego \
+      # In lego v5 the global options are only help, version, logging and
+      # config: everything else belongs to the subcommand. Confirmed in the
+      # v5.4.0 source, where run reads server, email, path and key-type from
+      # its own flag set. Placed before "run" they produce "flag provided but
+      # not defined", which reads like a network failure until the client's own
+      # output is captured.
+      lego run \
+        --accept-tos \
         --server "$acme_server" \
         --email "$acme_mail" \
         --domains "${domain}" \
         --path /etc/lego \
         --key-type ec256 \
         --http --http.webroot /var/www/site \
-        run --accept-tos > /var/log/acme.log 2>&1
+        > /var/log/acme.log 2>&1
       rc=$?
 
       cert="/etc/lego/certificates/${domain}.crt"
