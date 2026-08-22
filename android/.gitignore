@@ -1,0 +1,13 @@
+# The slice profile carries a working credential and a node address.
+# It is provided at build time and never committed.
+app/src/main/assets/slice-profile.json
+
+# Locally built engine artifact, produced by the libxray-build workflow.
+app/libs/*.aar
+
+# Gradle and Android build output
+.gradle/
+build/
+local.properties
+*.apk
+*.aab

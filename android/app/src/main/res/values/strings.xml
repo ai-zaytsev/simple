@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Simple VPN</string>
+
+    <string name="action_on">ON</string>
+    <string name="action_off">OFF</string>
+
+    <string name="status_disconnected">Отключено</string>
+    <string name="status_preparing">Запрашиваем разрешение</string>
+    <string name="status_connecting">Подключаемся</string>
+    <string name="status_connected">Подключено</string>
+    <string name="status_reconnecting">Сеть сменилась, переподключаемся</string>
+    <string name="status_disconnecting">Отключаемся</string>
+
+    <string name="error_consent_denied">Без разрешения системы VPN включить нельзя</string>
+    <string name="error_tun_not_established">Не удалось создать сетевой интерфейс</string>
+    <string name="error_tun_lost">Сетевой интерфейс потерян</string>
+    <string name="error_unexpected">Не удалось подключиться</string>
+
+    <string name="notification_channel_name">Состояние VPN</string>
+</resources>

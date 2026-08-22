@@ -1,6 +1,6 @@
 # Документация Проекта
 
-Проект: MVP Android VPN для российского рынка. Репозиторий содержит process-layer (agent orchestration) и целевую архитектуру MVP. Продуктового кода пока нет.
+Проект: MVP Android VPN для российского рынка. Репозиторий содержит process-layer (agent orchestration), целевую архитектуру MVP, инфраструктуру как код и Android-клиент.
 
 `docs/` — durable memory проекта:
 

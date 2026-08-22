@@ -1,0 +1,150 @@
+name: libXray Build
+
+# Builds the Xray engine AAR from XTLS source and reports its public API.
+#
+# Why from source. A ready-made AAR republished on Maven Central by a third
+# party would be faster, but it is a binary blob at the exact centre of a
+# product whose only value is trust. The threat model treats supply chain as a
+# real path, so the engine is built from the upstream repository at a pinned
+# revision and its checksum recorded. See ADR-020.
+#
+# The API dump is the second purpose. The Kotlin binding must be written
+# against the actual exported signatures rather than from memory, so this
+# workflow prints them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: XTLS/libXray git ref to build
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  libxray-build:
+    name: libXray Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: |
+          set -euo pipefail
+          sdkmanager --install "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.2.12479018" >> "${GITHUB_ENV}"
+
+      - name: Fetch source at pinned ref
+        run: |
+          set -euo pipefail
+          git clone https://github.com/XTLS/libXray.git source
+          cd source
+          git checkout "${{ inputs.ref }}"
+          resolved=$(git rev-parse HEAD)
+          echo "Resolved ref to ${resolved}"
+          echo "LIBXRAY_COMMIT=${resolved}" >> "${GITHUB_ENV}"
+
+          {
+            echo "## libXray Build"
+            echo ""
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| Requested ref | \`${{ inputs.ref }}\` |"
+            echo "| Resolved commit | \`${resolved}\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Show pinned Xray-core version
+        working-directory: source
+        run: |
+          set -euo pipefail
+          # The build does not clone Xray-core: it pins it through go.mod. The
+          # exact version matters more than the libXray revision, because that
+          # is the code carrying user traffic.
+          core=$(grep -E 'xtls/xray-core' go.mod | head -1 | awk '{print $2}' || echo "unknown")
+          echo "Xray-core: ${core}"
+          echo "| Xray-core | \`${core}\` |" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Build AAR
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 build/main.py android
+          echo "Build finished, locating artifact."
+          find . -name '*.aar' -o -name '*.jar' | sed 's/^/  /'
+
+      - name: Record checksum
+        working-directory: source
+        run: |
+          set -euo pipefail
+          aar=$(find . -name '*.aar' | head -1)
+          if [ -z "${aar}" ]; then
+            echo "No AAR produced. The build script output above shows why."
+            exit 1
+          fi
+
+          sha=$(sha256sum "${aar}" | cut -d' ' -f1)
+          size=$(stat -c%s "${aar}")
+          echo "AAR:    ${aar}"
+          echo "SHA256: ${sha}"
+
+          mkdir -p "${GITHUB_WORKSPACE}/out"
+          cp "${aar}" "${GITHUB_WORKSPACE}/out/libxray.aar"
+
+          {
+            echo "| AAR size | ${size} bytes |"
+            echo "| AAR SHA-256 | \`${sha}\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Dump public API
+        run: |
+          set -euo pipefail
+          cd out
+          unzip -o -q libxray.aar -d extracted
+          classes=extracted/classes.jar
+          if [ ! -f "${classes}" ]; then
+            echo "No classes.jar inside the AAR."
+            exit 1
+          fi
+
+          # This is the point of the workflow: the binding is written against
+          # these signatures, not against recollection of them.
+          echo "Exported types and methods:"
+          unzip -l "${classes}" | awk '{print $4}' | grep -E '\.class$' | sed 's/^/  /' | head -50
+
+          mkdir -p api
+          unzip -o -q "${classes}" -d api
+          find api -name '*.class' | while read -r c; do
+            javap -public "${c}" 2>/dev/null || true
+          done > api-surface.txt
+
+          lines=$(wc -l < api-surface.txt)
+          echo "Public API surface: ${lines} lines, uploaded as an artifact."
+          head -80 api-surface.txt
+
+          echo "| Public API lines | ${lines} |" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload AAR and API surface
+        uses: actions/upload-artifact@v4
+        with:
+          name: libxray-aar
+          path: |
+            out/libxray.aar
+            out/api-surface.txt
+          if-no-files-found: error
+          retention-days: 30
