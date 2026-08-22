@@ -15,6 +15,16 @@
 # shared by a group of nodes, HTTP-01 would then validate whichever node DNS
 # points at, and the scheme becomes DNS-01 orchestrated by Core. See ADR-023.
 
+# Swap is created before anything else is installed. The node has 512 MB and
+# no swap by default, and installing Nginx together with the Certbot Python
+# stack exhausts it: the first attempt left a machine that accepted TCP but was
+# too starved to answer SSH. Runtime needs are small, roughly 10 MB for Nginx
+# and 30 MB for Xray; it is bring-up that spikes.
+swap:
+  filename: /swapfile
+  size: 1073741824
+  maxsize: 1073741824
+
 package_update: true
 packages:
   - nginx
@@ -226,12 +236,50 @@ write_files:
         chmod 0644 "$STATUS"
       fi
 
-      say "start"
+      say "start mem=$(free -m | awk '/Mem:/{print $2}')MB swap=$(free -m | awk '/Swap:/{print $2}')MB"
+
+      # A temporary server publishes progress from the very first second, using
+      # the Python that ships with the image. Without it the first reachable
+      # moment is after Nginx installs, and any failure before that point is a
+      # black box: exactly what happened on the first attempt.
+      if [ "$DEBUG_STATUS" = "true" ]; then
+        nohup python3 -m http.server 80 --directory /var/www/site \
+          > /var/log/status-server.log 2>&1 &
+        echo $! > /run/status-server.pid
+        say "status-server-up"
+      fi
+
+      # --- wait for packages ------------------------------------------------
+      # runcmd can start before cloud-init finishes installing packages when
+      # apt is slow, and a missing nginx binary here reads as a broken image
+      # rather than a race.
+      for _ in $(seq 1 60); do
+        if command -v nginx >/dev/null 2>&1 && command -v certbot >/dev/null 2>&1; then
+          break
+        fi
+        sleep 10
+      done
+
+      if ! command -v nginx >/dev/null 2>&1; then
+        say "nginx-package-missing"
+        exit 1
+      fi
+      say "packages-ready mem_free=$(free -m | awk '/Mem:/{print $7}')MB"
 
       # --- site on port 80 -------------------------------------------------
+      if [ -f /run/status-server.pid ]; then
+        kill "$(cat /run/status-server.pid)" 2>/dev/null || true
+        rm -f /run/status-server.pid
+        sleep 1
+      fi
+
       rm -f /etc/nginx/sites-enabled/default
       ln -sf /etc/nginx/sites-available/site-http.conf /etc/nginx/sites-enabled/site.conf
-      nginx -t && systemctl restart nginx
+      if ! nginx -t 2>>/var/log/nginx-config.log; then
+        say "nginx-http-config-invalid"
+        exit 1
+      fi
+      systemctl restart nginx
       say "nginx-http-up"
 
       # --- xray ------------------------------------------------------------
