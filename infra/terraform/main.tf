@@ -29,7 +29,12 @@ locals {
     lookup(local.size_price, var.node_size, 0) * var.edge_node_count
   )
 
-  estimated_monthly = local.droplet_monthly + local.spaces_monthly
+  # The ephemeral verification node counts too. It lives for minutes, but the
+  # budget guard must see it: an exception that skips the guard is how limits
+  # stop meaning anything.
+  test_node_monthly = var.test_node_enabled ? lookup(local.size_price, var.node_size, 0) : 0
+
+  estimated_monthly = local.droplet_monthly + local.spaces_monthly + local.test_node_monthly
 
   # Hard limit set by Business Owner. Anything above needs approval, so it is
   # a failed plan rather than a surprise on the invoice.
