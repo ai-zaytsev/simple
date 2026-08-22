@@ -1,0 +1,109 @@
+name: Terraform Check
+
+# Validates the Terraform configuration and proves the Spaces backend works.
+# Runs fmt, init against the real remote state, validate and plan.
+#
+# It never applies. Creating billable resources is a separate, explicit step.
+#
+# The plan is where the budget guard fires: an estimate above the approved
+# limit fails here rather than appearing on an invoice later.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/terraform-check.yml'
+
+jobs:
+  terraform-check:
+    name: Terraform Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Format check
+        run: terraform -chdir=infra/terraform fmt -check -recursive
+
+      - name: Init with remote state
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AWS_ACCESS_KEY_ID}" ]; then
+            echo "Spaces credentials are not available to this run."
+            exit 1
+          fi
+          terraform -chdir=infra/terraform init -input=false
+
+      - name: Validate
+        run: terraform -chdir=infra/terraform validate
+
+      - name: Inventory SSH keys
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -uo pipefail
+          # Droplets must be created with an SSH key. Without one DigitalOcean
+          # emails a root password, which is both a secret in email and a
+          # password login on a public port. Knowing the key inventory before
+          # writing droplet resources is the point of this step.
+          token=$(printf '%s' "${DIGITALOCEAN_TOKEN}" | tr -d '[:space:]')
+          code=$(curl -sS -o /tmp/keys.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${token}" \
+            -H "accept: application/json" \
+            https://api.digitalocean.com/v2/account/keys || echo "000")
+
+          if [ "${code}" != "200" ]; then
+            echo "Could not read SSH keys. HTTP ${code}."
+            exit 1
+          fi
+
+          count=$(jq -r '(.ssh_keys // []) | length' /tmp/keys.json)
+          names=$(jq -r '(.ssh_keys // []) | map(.name) | join(", ")' /tmp/keys.json)
+          echo "SSH keys registered: ${count}"
+
+          {
+            echo "## Terraform Check"
+            echo ""
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| SSH keys in DigitalOcean | ${count} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [ "${count}" = "0" ]; then
+            {
+              echo ""
+              echo "**No SSH key is registered.** Droplet resources are not written yet for this reason:"
+              echo "a droplet created without a key gets a root password by email, which puts a secret in a mailbox"
+              echo "and a password login on a public port."
+              echo ""
+              echo "Business Owner action: add a public SSH key in the DigitalOcean control panel, then set"
+              echo "\`ssh_key_names\` in \`infra/terraform/variables.tf\`."
+            } >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "Key names: ${names}"
+            echo "| Key names | \`${names}\` |" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Plan
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/terraform plan -input=false -no-color | tee /tmp/plan.txt
+
+          estimate=$(grep -oE 'estimated_monthly_usd[^0-9]*[0-9]+' /tmp/plan.txt | grep -oE '[0-9]+$' | tail -1 || echo "")
+          if [ -n "${estimate}" ]; then
+            echo "| Estimated monthly USD | ${estimate} |" >> "${GITHUB_STEP_SUMMARY}"
+          fi
