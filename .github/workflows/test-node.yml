@@ -246,7 +246,10 @@ jobs:
           if [ "${ready}" != "true" ]; then
             echo "Node did not reach the ready state."
             echo "Last status:"
-            echo "${last}" | sed 's/^/  /'
+            # Fetched fresh rather than reusing the cached copy: a failure often
+            # appends its diagnostics after the poll that noticed it.
+            curl -fsS --max-time 10 "http://${NODE_IP}/status.txt" 2>/dev/null | sed 's/^/  /' \
+              || echo "${last}" | sed 's/^/  /'
             exit 1
           fi
           echo "Node reported ready."
