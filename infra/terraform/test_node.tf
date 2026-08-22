@@ -100,6 +100,12 @@ variable "ws_backend_port" {
   default     = 10000
 }
 
+variable "lego_version" {
+  description = "ACME client release. A single static binary, pinned like Xray: an unpinned client makes bring-up unrepeatable."
+  type        = string
+  default     = "v5.4.0"
+}
+
 variable "xray_version" {
   description = "Xray-core release installed on the node. Pinned: an unpinned install makes the run unrepeatable."
   type        = string
@@ -136,6 +142,7 @@ resource "digitalocean_droplet" "test_node" {
     reality_dest        = var.reality_dest
     reality_server_name = var.reality_server_name
     xray_version        = var.xray_version
+    lego_version        = var.lego_version
   })
 
   tags = ["simple-vpn", "ephemeral", "verification"]
