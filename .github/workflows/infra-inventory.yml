@@ -1,0 +1,221 @@
+name: Infra Inventory
+
+# Read-mostly inventory of DigitalOcean and Spaces.
+#
+# Purpose: establish what the intentionally scoped DIGITALOCEAN_TOKEN can
+# actually do BEFORE any Terraform is written, so a missing permission is
+# discovered here and requested precisely, rather than mid-apply.
+#
+# One deliberate write: a tag is created and immediately deleted. Tags are
+# free, carry no resources and leave no cost. It is the only way to learn
+# whether the token has write scope without creating a billable resource.
+#
+# The repository is public. Account email, resource identifiers and IP
+# addresses are never printed. Only counts, sizes, regions and scope results.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  infra-inventory:
+    name: Infra Inventory
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check configuration
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          SPACES_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          SPACES_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${DIGITALOCEAN_TOKEN}" ] || missing="${missing} secrets.DIGITALOCEAN_TOKEN"
+          [ -n "${SPACES_ACCESS_KEY_ID}" ] || missing="${missing} secrets.SPACES_ACCESS_KEY_ID"
+          [ -n "${SPACES_SECRET_ACCESS_KEY}" ] || missing="${missing} secrets.SPACES_SECRET_ACCESS_KEY"
+          if [ -n "${missing}" ]; then
+            echo "Not configured:${missing}"
+            exit 1
+          fi
+          echo "Configuration is complete."
+
+      - name: Probe DigitalOcean read scopes
+        id: do_read
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -uo pipefail
+          token=$(printf '%s' "${DIGITALOCEAN_TOKEN}" | tr -d '[:space:]')
+
+          {
+            echo "## Infra Inventory"
+            echo ""
+            echo "### DigitalOcean read scopes"
+            echo ""
+            echo "| Endpoint | HTTP | Meaning |"
+            echo "| --- | --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          probe() {
+            path="$1"
+            label="$2"
+            code=$(curl -sS -o "/tmp/do-${label}.json" -w '%{http_code}' \
+              -H "Authorization: Bearer ${token}" \
+              -H "accept: application/json" \
+              "https://api.digitalocean.com/v2/${path}" || echo "000")
+            case "${code}" in
+              200) meaning="readable" ;;
+              401) meaning="token rejected" ;;
+              403) meaning="scope missing" ;;
+              404) meaning="not found" ;;
+              *)   meaning="unexpected" ;;
+            esac
+            echo "${label}: HTTP ${code} (${meaning})"
+            echo "| \`${path}\` | ${code} | ${meaning} |" >> "${GITHUB_STEP_SUMMARY}"
+            printf '%s' "${code}" > "/tmp/code-${label}.txt"
+          }
+
+          probe "account" "account"
+          probe "projects" "projects"
+          probe "droplets?per_page=100" "droplets"
+          probe "account/keys" "sshkeys"
+          probe "tags" "tags"
+          probe "regions" "regions"
+          probe "sizes" "sizes"
+
+          account_code=$(cat /tmp/code-account.txt)
+          if [ "${account_code}" = "200" ]; then
+            # Limits are capacity facts, not secrets. Email and uuid are not printed.
+            limits=$(jq -r '"droplet_limit=\(.account.droplet_limit) status=\(.account.status)"' /tmp/do-account.json 2>/dev/null || echo "unavailable")
+            echo "account limits: ${limits}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+            echo "Account: \`${limits}\`" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+          if [ "$(cat /tmp/code-droplets.txt)" = "200" ]; then
+            count=$(jq -r '(.droplets // []) | length' /tmp/do-droplets.json 2>/dev/null || echo "?")
+            shapes=$(jq -r '(.droplets // []) | map("\(.size_slug)@\(.region.slug)") | join(", ")' /tmp/do-droplets.json 2>/dev/null || echo "-")
+            echo "existing droplets: ${count} [${shapes}]"
+            echo "Existing droplets: ${count} \`${shapes:--}\`" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+          if [ "$(cat /tmp/code-projects.txt)" = "200" ]; then
+            projects=$(jq -r '(.projects // []) | map(.name) | join(", ")' /tmp/do-projects.json 2>/dev/null || echo "-")
+            echo "projects: ${projects}"
+            echo "Projects: \`${projects:--}\`" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+          echo "account_code=${account_code}" >> "${GITHUB_OUTPUT}"
+
+      - name: Probe DigitalOcean write scope
+        id: do_write
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -uo pipefail
+          token=$(printf '%s' "${DIGITALOCEAN_TOKEN}" | tr -d '[:space:]')
+          tag="scope-probe-${GITHUB_RUN_ID}"
+
+          create_code=$(curl -sS -o /tmp/do-tag.json -w '%{http_code}' \
+            -X POST \
+            -H "Authorization: Bearer ${token}" \
+            -H "content-type: application/json" \
+            -d "{\"name\":\"${tag}\"}" \
+            https://api.digitalocean.com/v2/tags || echo "000")
+
+          writable=false
+          case "${create_code}" in
+            201) writable=true; echo "Write scope present: tag created." ;;
+            403) echo "Write scope missing: HTTP 403 on tag create." ;;
+            401) echo "Token rejected: HTTP 401." ;;
+            *)   echo "Unexpected response on tag create: HTTP ${create_code}." ;;
+          esac
+
+          if [ "${writable}" = "true" ]; then
+            del_code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -X DELETE \
+              -H "Authorization: Bearer ${token}" \
+              "https://api.digitalocean.com/v2/tags/${tag}" || echo "000")
+            if [ "${del_code}" = "204" ]; then
+              echo "Probe tag deleted, nothing left behind."
+            else
+              echo "WARNING: probe tag '${tag}' could not be deleted, HTTP ${del_code}. Remove it manually."
+            fi
+          fi
+
+          {
+            echo ""
+            echo "### DigitalOcean write scope"
+            echo ""
+            echo "| Probe | Result |"
+            echo "| --- | --- |"
+            echo "| create+delete tag | ${writable} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          echo "writable=${writable}" >> "${GITHUB_OUTPUT}"
+
+      - name: Probe Spaces bucket
+        id: spaces
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ams3
+          BUCKET: simple-vpn-infra-backups
+          ENDPOINT: https://ams3.digitaloceanspaces.com
+        run: |
+          set -uo pipefail
+          usable=false
+
+          if aws s3api head-bucket --bucket "${BUCKET}" --endpoint-url "${ENDPOINT}" >/dev/null 2>&1; then
+            echo "Bucket reachable."
+            usable=true
+          else
+            echo "Bucket not reachable with these credentials."
+          fi
+
+          objects="-"
+          if [ "${usable}" = "true" ]; then
+            objects=$(aws s3api list-objects-v2 --bucket "${BUCKET}" --endpoint-url "${ENDPOINT}" \
+              --query 'KeyCount' --output text 2>/dev/null || echo "?")
+            echo "Objects currently in bucket: ${objects}"
+          fi
+
+          versioning=$(aws s3api get-bucket-versioning --bucket "${BUCKET}" --endpoint-url "${ENDPOINT}" \
+            --query 'Status' --output text 2>/dev/null || echo "unsupported-or-denied")
+          encryption=$(aws s3api get-bucket-encryption --bucket "${BUCKET}" --endpoint-url "${ENDPOINT}" \
+            --query 'ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.SSEAlgorithm' \
+            --output text 2>/dev/null || echo "unsupported-or-denied")
+
+          echo "versioning: ${versioning}"
+          echo "default encryption: ${encryption}"
+
+          {
+            echo ""
+            echo "### Spaces"
+            echo ""
+            echo "| Property | Value |"
+            echo "| --- | --- |"
+            echo "| Bucket reachable | ${usable} |"
+            echo "| Objects | ${objects} |"
+            echo "| Versioning | ${versioning} |"
+            echo "| Default encryption | ${encryption} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          echo "usable=${usable}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verdict
+        if: always()
+        env:
+          ACCOUNT_CODE: ${{ steps.do_read.outputs.account_code }}
+          DO_WRITABLE: ${{ steps.do_write.outputs.writable }}
+          SPACES_USABLE: ${{ steps.spaces.outputs.usable }}
+        run: |
+          set -euo pipefail
+          failed=0
+          [ "${ACCOUNT_CODE:-000}" = "200" ] || { echo "DigitalOcean token cannot read the account."; failed=1; }
+          [ "${DO_WRITABLE:-false}" = "true" ] || { echo "DigitalOcean token has no write scope. Provisioning is impossible until it is granted."; failed=1; }
+          [ "${SPACES_USABLE:-false}" = "true" ] || { echo "Spaces bucket is not reachable."; failed=1; }
+          if [ "${failed}" -ne 0 ]; then
+            exit 1
+          fi
+          echo "DigitalOcean and Spaces are both usable."
