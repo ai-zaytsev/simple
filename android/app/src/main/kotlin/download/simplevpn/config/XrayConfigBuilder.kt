@@ -30,10 +30,6 @@ object XrayConfigBuilder {
     private const val LOCAL_DNS = "223.5.5.5"
 
     fun build(profile: ConnectionProfile, policy: RoutingPolicy): String {
-        require(profile.transportKind == ConnectionProfile.KIND_VLESS_REALITY) {
-            "Unsupported transport kind: ${profile.transportKind}"
-        }
-
         return JSONObject().apply {
             put("log", buildLog())
             put("dns", buildDns(policy))
@@ -128,47 +124,8 @@ object XrayConfigBuilder {
             JSONObject().apply {
                 put("tag", "proxy")
                 put("protocol", "vless")
-                put(
-                    "settings",
-                    JSONObject().apply {
-                        put(
-                            "vnext",
-                            JSONArray().put(
-                                JSONObject().apply {
-                                    put("address", profile.host)
-                                    put("port", profile.port)
-                                    put(
-                                        "users",
-                                        JSONArray().put(
-                                            JSONObject().apply {
-                                                put("id", profile.credentialUuid)
-                                                put("encryption", "none")
-                                                put("flow", profile.flow)
-                                            },
-                                        ),
-                                    )
-                                },
-                            ),
-                        )
-                    },
-                )
-                put(
-                    "streamSettings",
-                    JSONObject().apply {
-                        put("network", "tcp")
-                        put("security", "reality")
-                        put(
-                            "realitySettings",
-                            JSONObject().apply {
-                                put("serverName", profile.serverName)
-                                put("publicKey", profile.publicKey)
-                                put("shortId", profile.shortId)
-                                put("fingerprint", profile.fingerprint)
-                                put("show", false)
-                            },
-                        )
-                    },
-                )
+                put("settings", buildVlessSettings(profile))
+                put("streamSettings", buildStreamSettings(profile.transport))
             },
         )
         put(
@@ -190,6 +147,82 @@ object XrayConfigBuilder {
                 put("protocol", "dns")
             },
         )
+    }
+
+    private fun buildVlessSettings(profile: ConnectionProfile): JSONObject {
+        val user = JSONObject().apply {
+            put("id", profile.transport.credentialUuid)
+            put("encryption", "none")
+            // flow belongs to REALITY only. Sending it with WebSocket is not
+            // merely useless: the server rejects the handshake.
+            if (profile.transport is TransportParams.VlessReality) {
+                put("flow", profile.transport.flow)
+            }
+        }
+
+        return JSONObject().apply {
+            put(
+                "vnext",
+                JSONArray().put(
+                    JSONObject().apply {
+                        put("address", profile.host)
+                        put("port", profile.port)
+                        put("users", JSONArray().put(user))
+                    },
+                ),
+            )
+        }
+    }
+
+    /**
+     * The only place that knows how each transport is shaped.
+     *
+     * An unknown kind is impossible here because the type is sealed: adding a
+     * transport forces this expression to be updated, which is the point of
+     * modelling transport as a closed set rather than a string.
+     */
+    private fun buildStreamSettings(transport: TransportParams): JSONObject = when (transport) {
+
+        is TransportParams.VlessWsTls -> JSONObject().apply {
+            put("network", "ws")
+            put("security", "tls")
+            put(
+                "wsSettings",
+                JSONObject().apply {
+                    put("path", transport.path)
+                    // The Host header must match the certificate name, because
+                    // Nginx routes on it and any mismatch is a visible anomaly
+                    // in an otherwise ordinary HTTPS request.
+                    put("headers", JSONObject().apply { put("Host", transport.hostHeader) })
+                },
+            )
+            put(
+                "tlsSettings",
+                JSONObject().apply {
+                    put("serverName", transport.serverName)
+                    put("fingerprint", transport.fingerprint)
+                    // Never true. Accepting an invalid certificate would turn a
+                    // detectable interception into a silent one.
+                    put("allowInsecure", false)
+                    put("alpn", JSONArray(listOf("h2", "http/1.1")))
+                },
+            )
+        }
+
+        is TransportParams.VlessReality -> JSONObject().apply {
+            put("network", "tcp")
+            put("security", "reality")
+            put(
+                "realitySettings",
+                JSONObject().apply {
+                    put("serverName", transport.serverName)
+                    put("publicKey", transport.publicKey)
+                    put("shortId", transport.shortId)
+                    put("fingerprint", transport.fingerprint)
+                    put("show", false)
+                },
+            )
+        }
     }
 
     private fun buildRouting(policy: RoutingPolicy): JSONObject {

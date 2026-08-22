@@ -1,0 +1,12 @@
+{
+  "alias": "slice-node-standby",
+  "host": "REPLACE_WITH_NODE_ADDRESS",
+  "port": 8443,
+  "transport_kind": "vless-reality",
+  "credential_uuid": "REPLACE_WITH_UUID",
+  "flow": "xtls-rprx-vision",
+  "server_name": "REPLACE_WITH_SNI",
+  "public_key": "REPLACE_WITH_REALITY_PUBLIC_KEY",
+  "short_id": "",
+  "fingerprint": "chrome"
+}
