@@ -331,7 +331,11 @@ write_files:
       curl -fsSL -o lego.tar.gz "$lego_base/lego_$${lego_ver}_linux_amd64.tar.gz"
       curl -fsSL -o lego.sums "$lego_base/lego_$${lego_num}_checksums.txt"
 
-      expected_lego=$(grep "lego_$${lego_ver}_linux_amd64.tar.gz" lego.sums | awk '{print $1}')
+      # Matched on the exact filename field, not by substring. The checksums
+      # file lists both the archive and its .sbom.json, and a substring match
+      # returned two hashes in one variable, which then compared unequal to
+      # everything.
+      expected_lego=$(awk -v f="lego_$${lego_ver}_linux_amd64.tar.gz" '$2 == f {print $1}' lego.sums)
       actual_lego=$(sha256sum lego.tar.gz | cut -d' ' -f1)
       if [ -z "$expected_lego" ] || [ "$expected_lego" != "$actual_lego" ]; then
         say "lego-checksum-mismatch"
