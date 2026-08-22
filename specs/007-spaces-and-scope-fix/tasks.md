@@ -5,9 +5,9 @@
 - [x] Исправить вердикт `Infra Inventory`
 - [x] Зафиксировать правило проверки доступа в `docs/integrations/digitalocean.md`
 - [x] Добавить workflow `Spaces Configure` с dry run
-- [ ] Merge, прогнать `Infra Inventory`
-- [ ] Прогнать `Spaces Configure` в режиме dry run
-- [ ] Прогнать `Spaces Configure` с apply и проверить round-trip
+- [x] Merge, прогнать `Infra Inventory`
+- [x] Прогнать `Spaces Configure` в режиме dry run
+- [x] Прогнать `Spaces Configure` с apply и проверить round-trip
 - [ ] Business Owner: подтвердить отказ от ClickHouse и Loki на MVP
 - [ ] Business Owner: подтвердить квоту FREE 20 GiB/мес
 - [ ] Business Owner: разрешить создание дроплетов по утверждённой топологии
