@@ -8,7 +8,7 @@
 - [x] Обновить `ADR-018` и `ADR-019` ссылками на план перехода
 - [x] Скелет `infra/terraform/` с remote state и бюджетным guard
 - [x] Workflow `Terraform Check` с инвентаризацией SSH-ключей
-- [ ] Прогнать `Terraform Check` и убедиться, что backend в Spaces работает
-- [ ] Business Owner: добавить SSH-ключ в DigitalOcean
+- [x] Прогнать `Terraform Check`: backend в Spaces работает, оценка $31, запас $14
+- [x] Business Owner: SSH-ключ `simple-vpn-ssh-key` добавлен и подтверждён инвентаризацией
 - [ ] Написать ресурсы дроплетов после подтверждения ключа
 - [ ] Проверить механизм шейпинга на первой VPN-ноде

@@ -37,9 +37,9 @@
 - [x] Business Owner: ключ Brevo и проверочные ящики заданы, домен `mail.simple-vpn.download` аутентифицирован, DKIM и DMARC настроены
 - [x] `Email Provider Check` переведён на фактические секреты, отправляет письма на два ящика и печатает `messageId` по каждому
 - [x] Контракт webhook доставки и правила отключения трекинга зафиксированы в `docs/integrations/brevo.md`
-- [ ] Запустить `Email Provider Check` — возможно только после merge, `workflow_dispatch` работает с ветки по умолчанию
+- [x] Запустить `Email Provider Check`: оба письма приняты Brevo, события `delivered`
 - [ ] Проверить Inbox/Spam вручную и убедиться, что ссылка в письме не переписана
-- [ ] Merge PR — остаётся за человеком
+- [x] Merge PR
 
 ## Что Осталось Открытым
 
