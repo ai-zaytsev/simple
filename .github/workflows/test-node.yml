@@ -231,7 +231,10 @@ jobs:
 
             case "${body}" in
               *ready*) ready=true; break ;;
-              *failed*|*mismatch*|*invalid*|*never*) echo "Bring-up reported a failure."; break ;;
+              *failed*|*mismatch*|*invalid*|*never*|*missing*)
+                echo "Bring-up reported a failure."
+                break
+                ;;
             esac
             sleep 15
           done
