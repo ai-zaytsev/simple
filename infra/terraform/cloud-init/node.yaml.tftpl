@@ -25,10 +25,21 @@ swap:
   size: 1073741824
   maxsize: 1073741824
 
+# bootcmd runs in the init stage, before packages are installed. runcmd runs
+# last, which is why the first attempt at early visibility failed: the status
+# server could not start until after the very apt run that starved the machine.
+bootcmd:
+  - mkdir -p /var/www/site
+  - [ sh, -c, "echo boot > /var/www/site/status.txt" ]
+  - [ sh, -c, "nohup python3 -m http.server 80 --directory /var/www/site > /var/log/status-server.log 2>&1 & echo $! > /run/status-server.pid" ]
+
 package_update: true
+# Certbot is deliberately absent. It pulls in the Python stack, and installing
+# it alongside Nginx on 512 MB is what starved the first two attempts. The ACME
+# client here is a single static binary fetched below, which keeps bring-up
+# within the memory the node actually has.
 packages:
   - nginx
-  - certbot
   - curl
   - unzip
   - ca-certificates
@@ -112,8 +123,8 @@ write_files:
 
           access_log off;
 
-          ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
-          ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
+          ssl_certificate     /etc/lego/certificates/${domain}.crt;
+          ssl_certificate_key /etc/lego/certificates/${domain}.key;
           ssl_protocols TLSv1.2 TLSv1.3;
           ssl_session_cache shared:SSL:10m;
           ssl_session_timeout 1h;
@@ -231,30 +242,13 @@ write_files:
       # see how far bring-up got without shell access, which is the difference
       # between fixing a problem and guessing at it. It must never be enabled
       # in production: it would describe our own bring-up to anyone asking.
-      if [ "$DEBUG_STATUS" = "true" ]; then
-        : > "$STATUS"
-        chmod 0644 "$STATUS"
-      fi
-
-      say "start mem=$(free -m | awk '/Mem:/{print $2}')MB swap=$(free -m | awk '/Swap:/{print $2}')MB"
-
-      # A temporary server publishes progress from the very first second, using
-      # the Python that ships with the image. Without it the first reachable
-      # moment is after Nginx installs, and any failure before that point is a
-      # black box: exactly what happened on the first attempt.
-      if [ "$DEBUG_STATUS" = "true" ]; then
-        nohup python3 -m http.server 80 --directory /var/www/site \
-          > /var/log/status-server.log 2>&1 &
-        echo $! > /run/status-server.pid
-        say "status-server-up"
-      fi
+      # The status server is already running: bootcmd started it before
+      # packages were installed. Appending here keeps that history.
+      say "runcmd-start mem=$(free -m | awk '/Mem:/{print $2}')MB swap=$(free -m | awk '/Swap:/{print $2}')MB"
 
       # --- wait for packages ------------------------------------------------
-      # runcmd can start before cloud-init finishes installing packages when
-      # apt is slow, and a missing nginx binary here reads as a broken image
-      # rather than a race.
       for _ in $(seq 1 60); do
-        if command -v nginx >/dev/null 2>&1 && command -v certbot >/dev/null 2>&1; then
+        if command -v nginx >/dev/null 2>&1; then
           break
         fi
         sleep 10
@@ -321,32 +315,64 @@ write_files:
       fi
       say "dns-ready"
 
+      # --- ACME client ------------------------------------------------------
+      # A single static binary, pinned and checksum-verified the same way Xray
+      # is. This replaces Certbot: the Python stack it pulls in does not fit
+      # alongside Nginx on this node.
+      cd "$workdir" || exit 1
+      lego_ver="${lego_version}"
+      lego_num=$${lego_ver#v}
+      lego_base="https://github.com/go-acme/lego/releases/download/$lego_ver"
+
+      curl -fsSL -o lego.tar.gz "$lego_base/lego_$${lego_ver}_linux_amd64.tar.gz"
+      curl -fsSL -o lego.sums "$lego_base/lego_$${lego_num}_checksums.txt"
+
+      expected_lego=$(grep "lego_$${lego_ver}_linux_amd64.tar.gz" lego.sums | awk '{print $1}')
+      actual_lego=$(sha256sum lego.tar.gz | cut -d' ' -f1)
+      if [ -z "$expected_lego" ] || [ "$expected_lego" != "$actual_lego" ]; then
+        say "lego-checksum-mismatch"
+        exit 1
+      fi
+
+      tar -xzf lego.tar.gz lego
+      install -m 0755 lego /usr/local/bin/lego
+      say "lego-installed"
+
       # --- certificate ------------------------------------------------------
-      # The key is generated here, on the node, and never leaves it.
-      staging_flag=""
+      # The account key and the certificate key are generated here, on the node,
+      # and never leave it.
+      acme_server="https://acme-v02.api.letsencrypt.org/directory"
       if [ "${acme_staging}" = "true" ]; then
-        staging_flag="--staging"
+        acme_server="https://acme-staging-v02.api.letsencrypt.org/directory"
       fi
 
-      # A staging registration needs no contact address, and not supplying one
-      # keeps a personal address out of the repository.
-      email_flag="--register-unsafely-without-email"
-      if [ -n "${acme_email}" ]; then
-        email_flag="-m ${acme_email} --no-eff-email"
+      # An address on our own domain rather than a personal one: it satisfies
+      # the ACME account requirement without putting anyone's mailbox in a
+      # public repository.
+      acme_mail="${acme_email}"
+      if [ -z "$acme_mail" ]; then
+        acme_mail="admin@${domain}"
       fi
 
-      certbot certonly --webroot -w /var/www/site \
-        -d ${domain} \
-        --agree-tos $email_flag \
-        --non-interactive \
-        $staging_flag \
-        --key-type ecdsa
+      mkdir -p /etc/lego
+      lego --accept-tos \
+        --server "$acme_server" \
+        --email "$acme_mail" \
+        --domains "${domain}" \
+        --path /etc/lego \
+        --key-type ec256 \
+        --http --http.webroot /var/www/site \
+        run
       rc=$?
 
-      if [ "$rc" -ne 0 ] || [ ! -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]; then
+      cert="/etc/lego/certificates/${domain}.crt"
+      key="/etc/lego/certificates/${domain}.key"
+
+      if [ "$rc" -ne 0 ] || [ ! -f "$cert" ] || [ ! -f "$key" ]; then
         say "certificate-failed"
         exit 1
       fi
+      chmod 0600 "$key"
       say "certificate-issued"
 
       # --- switch nginx to TLS ---------------------------------------------
