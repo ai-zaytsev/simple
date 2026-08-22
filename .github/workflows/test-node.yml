@@ -229,8 +229,12 @@ jobs:
               last="${body}"
             fi
 
+            # The completion marker is deliberately distinct rather than the
+            # word "ready": the status file accumulates lines, and matching
+            # "ready" also matched the earlier "packages-ready", which let
+            # verification start while the certificate was still being issued.
             case "${body}" in
-              *ready*) ready=true; break ;;
+              *bringup-complete*) ready=true; break ;;
               *failed*|*mismatch*|*invalid*|*never*|*missing*)
                 echo "Bring-up reported a failure."
                 break
