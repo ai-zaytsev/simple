@@ -46,21 +46,43 @@ object SliceProfileSource {
                     alias = json.optString("alias", "slice"),
                     host = json.getString("host"),
                     port = json.getInt("port"),
-                    transportKind = json.optString(
-                        "transport_kind",
-                        ConnectionProfile.KIND_VLESS_REALITY,
-                    ),
-                    credentialUuid = json.getString("credential_uuid"),
-                    flow = json.optString("flow", "xtls-rprx-vision"),
-                    serverName = json.getString("server_name"),
-                    publicKey = json.getString("public_key"),
-                    shortId = json.optString("short_id", ""),
-                    fingerprint = json.optString("fingerprint", "chrome"),
+                    transport = parseTransport(json),
                 ),
             )
         } catch (t: Throwable) {
             Log.w(TAG, "bundled profile is malformed", t)
             Result.Missing("Endpoint configuration is malformed")
+        }
+    }
+
+    private fun parseTransport(json: JSONObject): TransportParams {
+        val kind = json.optString("transport_kind", TransportParams.VlessWsTls.KIND)
+        val fingerprint = json.optString("fingerprint", "chrome")
+
+        return when (kind) {
+            TransportParams.VlessWsTls.KIND -> {
+                val serverName = json.getString("server_name")
+                TransportParams.VlessWsTls(
+                    credentialUuid = json.getString("credential_uuid"),
+                    path = json.getString("path"),
+                    serverName = serverName,
+                    // Defaults to the certificate name: they differ only in
+                    // setups this slice does not have.
+                    hostHeader = json.optString("host_header", serverName),
+                    fingerprint = fingerprint,
+                )
+            }
+
+            TransportParams.VlessReality.KIND -> TransportParams.VlessReality(
+                credentialUuid = json.getString("credential_uuid"),
+                flow = json.optString("flow", "xtls-rprx-vision"),
+                serverName = json.getString("server_name"),
+                publicKey = json.getString("public_key"),
+                shortId = json.optString("short_id", ""),
+                fingerprint = fingerprint,
+            )
+
+            else -> throw IllegalArgumentException("Unsupported transport kind: $kind")
         }
     }
 }
