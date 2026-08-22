@@ -2,6 +2,7 @@ package download.simplevpn.vpn
 
 import android.content.Context
 import android.content.Intent
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,7 +28,9 @@ object VpnController {
         val intent = Intent(context, SimpleVpnService::class.java).apply {
             action = SimpleVpnService.ACTION_START
         }
-        context.startForegroundService(intent)
+        // ContextCompat: startForegroundService exists from API 26 and the
+        // minimum supported level here is 24.
+        ContextCompat.startForegroundService(context, intent)
     }
 
     fun stop(context: Context) {

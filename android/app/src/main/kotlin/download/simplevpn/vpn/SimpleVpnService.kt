@@ -9,6 +9,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import download.simplevpn.MainActivity
 import download.simplevpn.R
 import download.simplevpn.config.RoutingPolicy
@@ -231,12 +232,15 @@ class SimpleVpnService : VpnService() {
             PendingIntent.FLAG_IMMUTABLE,
         )
 
-        return Notification.Builder(this, CHANNEL_ID)
+        // NotificationCompat rather than Notification.Builder: the latter needs
+        // a channel from API 26 and the minimum supported level here is 24.
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_vpn_ic)
+            .setSmallIcon(R.drawable.ic_launcher)
             .setContentIntent(open)
             .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
