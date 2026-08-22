@@ -3,6 +3,15 @@
 #
 # The node receives its whole configuration here and is never touched by hand.
 #
+# THIS TEMPLATE IS ASCII-ONLY, AND MUST STAY THAT WAY.
+# Non-ASCII text placed here arrived on the node double-encoded, cloud-init
+# refused the whole document with "unacceptable character #x0082", and the node
+# came up as a bare Ubuntu with nothing configured. Nothing reported an error:
+# the machine was healthy, cloud-init said "done", and every file was simply
+# absent. Any page or message with non-ASCII content lives in sites/ and is
+# passed through base64, which is why the site itself survived while an inline
+# page did not. Enforced by a check in Baseline Checks.
+#
 # Two logging rules are enforced at the only place that generates configuration,
 # so no runtime switch can undo them:
 #   - Xray access log is off. It records every destination, which is the
@@ -52,14 +61,9 @@ write_files:
     content: ${site_html_b64}
 
   - path: /var/www/site/404.html
+    encoding: b64
     permissions: "0644"
-    content: |
-      <!doctype html>
-      <html lang="ru"><head><meta charset="utf-8"><title>Страница не найдена</title>
-      <style>body{font:17px/1.6 Georgia,serif;margin:0;background:#faf7f2;color:#23201d}
-      .w{max-width:640px;margin:0 auto;padding:64px 20px}a{color:#5a6b7d}</style></head>
-      <body><div class="w"><h1>Страница не найдена</h1>
-      <p>Такой страницы здесь нет. Вернуться на <a href="/">главную</a>.</p></div></body></html>
+    content: ${notfound_html_b64}
 
   - path: /etc/nginx/sites-available/site-http.conf
     permissions: "0644"
