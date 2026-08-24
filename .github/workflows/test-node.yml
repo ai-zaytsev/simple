@@ -108,6 +108,14 @@ jobs:
 
           sudo unzip -o -q /tmp/xray.zip -d /usr/local/bin xray
           sudo chmod 0755 /usr/local/bin/xray
+
+          # The routing database comes out too. Without it a configuration that
+          # mentions geoip is refused outright, so a check that omits it cannot
+          # exercise the configuration the application actually builds.
+          sudo mkdir -p /usr/local/share/xray
+          sudo unzip -o -q /tmp/xray.zip -d /usr/local/share/xray geoip.dat
+          echo "XRAY_LOCATION_ASSET=/usr/local/share/xray" >> "${GITHUB_ENV}"
+
           xray version | head -1
 
       - name: Trust the Let's Encrypt staging root
@@ -457,6 +465,115 @@ jobs:
             exit 1
           fi
           echo "WebSocket transport verified."
+
+      - name: Verify the configuration the application builds
+        id: verify_app_config
+        continue-on-error: true
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          NODE_IP: ${{ steps.create.outputs.node_ip }}
+          UUID: ${{ steps.creds.outputs.ws_uuid }}
+          WS_PATH: ${{ steps.creds.outputs.ws_path }}
+        run: |
+          set -uo pipefail
+          # The step above proves the transport. This one proves the
+          # configuration the client builds on top of it, which is a different
+          # claim: a working transport under a configuration that cannot
+          # resolve a name gives a tunnel that reports success and carries
+          # nothing. That is what a device reported, and guessing at it costs
+          # an install each time.
+          #
+          # Three variants isolate where it breaks, in one run:
+          #   full     what the application builds today
+          #   by-ip    the same, with the node addressed numerically
+          #   no-dns   the same, without the resolver section
+          #
+          # This mirrors XrayConfigBuilder by hand. The duplication is real and
+          # temporary: it exists so that a configuration defect is caught here
+          # rather than on somebody's phone.
+          jq -n \
+            --arg host "${DOMAIN}" --arg uuid "${UUID}" --arg path "${WS_PATH}" \
+            '{
+              log: { access: "none", error: "", loglevel: "info" },
+              dns: {
+                servers: [
+                  "https://1.1.1.1/dns-query",
+                  { address: "77.88.8.8", port: 53, skipFallback: true,
+                    domains: ["domain:gosuslugi.ru","domain:nalog.ru","domain:sberbank.ru",
+                              "domain:vtb.ru","domain:alfabank.ru","domain:tinkoff.ru",
+                              "domain:mos.ru","domain:yandex.ru","domain:mail.ru",
+                              "domain:vk.com","domain:ozon.ru","domain:wildberries.ru",
+                              "domain:avito.ru","domain:rt.ru","domain:2gis.ru"] }
+                ],
+                queryStrategy: "UseIPv4",
+                disableCache: false
+              },
+              inbounds: [
+                { tag: "socks-in", protocol: "socks", listen: "127.0.0.1", port: 10808,
+                  settings: { auth: "noauth", udp: true },
+                  sniffing: { enabled: true, destOverride: ["http","tls","quic"], routeOnly: false } },
+                { tag: "dns-in", protocol: "dokodemo-door", listen: "127.0.0.1", port: 10853,
+                  settings: { address: "10.10.10.2", port: 53, network: "tcp,udp" } }
+              ],
+              outbounds: [
+                { tag: "proxy", protocol: "vless",
+                  settings: { vnext: [ { address: $host, port: 443,
+                    users: [ { id: $uuid, encryption: "none" } ] } ] },
+                  streamSettings: { network: "ws", security: "tls",
+                    wsSettings: { path: $path, headers: { Host: $host } },
+                    tlsSettings: { serverName: $host, fingerprint: "chrome",
+                                   allowInsecure: false, alpn: ["h2","http/1.1"] } } },
+                { tag: "direct", protocol: "freedom", settings: { domainStrategy: "UseIP" } },
+                { tag: "block", protocol: "blackhole" },
+                { tag: "dns-out", protocol: "dns" }
+              ],
+              routing: {
+                domainStrategy: "IPIfNonMatch",
+                rules: [
+                  { type: "field", inboundTag: ["dns-in"], outboundTag: "dns-out" },
+                  { type: "field", port: 53, outboundTag: "dns-out" },
+                  { type: "field", ip: ["geoip:private","geoip:ru"], outboundTag: "direct" },
+                  { type: "field", domain: ["domain:gosuslugi.ru","domain:nalog.ru","domain:sberbank.ru",
+                                            "domain:vtb.ru","domain:alfabank.ru","domain:tinkoff.ru",
+                                            "domain:mos.ru","domain:yandex.ru","domain:mail.ru",
+                                            "domain:vk.com","domain:ozon.ru","domain:wildberries.ru",
+                                            "domain:avito.ru","domain:rt.ru","domain:2gis.ru"],
+                    outboundTag: "direct" }
+                ]
+              }
+            }' > /tmp/app-full.json
+
+          jq --arg ip "${NODE_IP}" \
+            '.outbounds[0].settings.vnext[0].address = $ip' \
+            /tmp/app-full.json > /tmp/app-by-ip.json
+          jq 'del(.dns)' /tmp/app-full.json > /tmp/app-no-dns.json
+
+          failed=""
+          for variant in full by-ip no-dns; do
+            xray run -config "/tmp/app-${variant}.json" > "/tmp/xray-${variant}.log" 2>&1 &
+            pid=$!
+            sleep 6
+
+            out=$(curl -fsS --max-time 25 --socks5-hostname 127.0.0.1:10808 https://api.ipify.org || echo "")
+            kill "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
+            sleep 2
+
+            if [ -n "${out}" ]; then
+              echo "${variant}: traffic passed, exit address ${out}"
+            else
+              echo "${variant}: NO TRAFFIC"
+              sed 's/^/    /' "/tmp/xray-${variant}.log" | tail -25
+              failed="${failed} ${variant}"
+            fi
+            echo ""
+          done
+
+          if [ -n "${failed}" ]; then
+            echo "Variants that carried nothing:${failed}"
+            exit 1
+          fi
+          echo "Every variant of the application configuration carried traffic."
 
       - name: Verify traffic over the standby REALITY transport
         id: verify_reality
