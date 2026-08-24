@@ -99,6 +99,31 @@ jobs:
           cp "${aar}" "${GITHUB_WORKSPACE}/android/app/libs/libxray.aar"
           sha256sum "${GITHUB_WORKSPACE}/android/app/libs/libxray.aar"
 
+      - name: Restore the packet bridge AAR
+        id: bridge
+        uses: actions/cache@v4
+        with:
+          path: android/app/libs/tunbridge.aar
+          key: tunbridge-${{ hashFiles('tunbridge/**') }}
+
+      - name: Build the packet bridge AAR
+        if: steps.bridge.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          # Built from source with a pinned dependency, the same rule the
+          # engine follows (ADR-020). gomobile turns the Go package into an
+          # AAR the application can call directly.
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          export PATH="$(go env GOPATH)/bin:${PATH}"
+          gomobile init
+
+          cd tunbridge
+          go mod tidy
+          gomobile bind -target=android/arm64,android/amd64 -androidapi 24 \
+            -o "${GITHUB_WORKSPACE}/android/app/libs/tunbridge.aar" .
+          sha256sum "${GITHUB_WORKSPACE}/android/app/libs/tunbridge.aar"
+
       - name: Assemble debug APK
         working-directory: android
         run: gradle --no-daemon assembleDebug

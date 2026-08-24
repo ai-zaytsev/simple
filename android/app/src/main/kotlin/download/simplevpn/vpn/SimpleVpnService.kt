@@ -17,6 +17,7 @@ import download.simplevpn.config.SliceProfileSource
 import download.simplevpn.config.XrayConfigBuilder
 import download.simplevpn.core.EngineStartResult
 import download.simplevpn.core.LibXrayEngine
+import download.simplevpn.core.TunBridge
 import download.simplevpn.core.XrayEngine
 import download.simplevpn.net.NetworkMonitor
 import java.util.concurrent.atomic.AtomicBoolean
@@ -32,7 +33,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 class SimpleVpnService : VpnService() {
 
     private val engine: XrayEngine = LibXrayEngine(this)
+    private val bridge = TunBridge()
     private var tunnel: ParcelFileDescriptor? = null
+
+    /**
+     * Once the descriptor is handed to the bridge it is no longer ours to
+     * close: closing it on both sides closes it twice.
+     */
+    private var tunnelHandedOver = false
     private var networkMonitor: NetworkMonitor? = null
     private val starting = AtomicBoolean(false)
 
@@ -88,18 +96,35 @@ class SimpleVpnService : VpnService() {
             val configJson = XrayConfigBuilder.build(profile, policy)
 
             when (val result = engine.start(configJson, descriptor.fd)) {
-                is EngineStartResult.Started -> {
+                is EngineStartResult.Started -> Unit
+
+                is EngineStartResult.Unavailable -> {
+                    failAndStop(result.reason)
+                    return
+                }
+
+                is EngineStartResult.Failed -> {
+                    Log.w(TAG, "engine failed to start", result.cause)
+                    failAndStop(result.reason)
+                    return
+                }
+            }
+
+            // The engine only listens on loopback. Until the bridge is running,
+            // not a single packet from the device reaches it, so the tunnel is
+            // not established until this succeeds.
+            val rawFd = descriptor.detachFd()
+            tunnelHandedOver = true
+
+            when (val bridged = bridge.start(rawFd, TunConfigurator.MTU, XrayConfigBuilder.SOCKS_PORT)) {
+                is TunBridge.Result.Started -> {
                     startNetworkMonitor()
                     VpnController.update(VpnConnectionState.Connected(System.currentTimeMillis()))
                     updateNotification(getString(R.string.status_connected))
                 }
 
-                is EngineStartResult.Unavailable -> failAndStop(result.reason)
-
-                is EngineStartResult.Failed -> {
-                    Log.w(TAG, "engine failed to start", result.cause)
-                    failAndStop(result.reason)
-                }
+                is TunBridge.Result.Unavailable -> failAndStop(bridged.reason)
+                is TunBridge.Result.Failed -> failAndStop(bridged.reason)
             }
         } catch (t: Throwable) {
             // Deliberately broad. Anything thrown while establishing must end
@@ -118,12 +143,11 @@ class SimpleVpnService : VpnService() {
         updateNotification(getString(R.string.status_reconnecting))
 
         try {
+            // Only the engine restarts. The bridge already owns the interface
+            // and talks to loopback, so the address it forwards to does not
+            // change when the underlying network does. Rebuilding the interface
+            // here would drop the tunnel the user is currently using.
             engine.stop()
-            val descriptor = tunnel
-            if (descriptor == null) {
-                failAndStop(getString(R.string.error_tun_lost))
-                return
-            }
 
             val profileResult = SliceProfileSource.load(this)
             if (profileResult !is SliceProfileSource.Result.Available) {
@@ -132,7 +156,7 @@ class SimpleVpnService : VpnService() {
             }
 
             val configJson = XrayConfigBuilder.build(profileResult.profile, RoutingPolicy.DEFAULT)
-            when (val result = engine.start(configJson, descriptor.fd)) {
+            when (val result = engine.start(configJson, TUN_FD_OWNED_BY_BRIDGE)) {
                 is EngineStartResult.Started -> {
                     VpnController.update(VpnConnectionState.Connected(System.currentTimeMillis()))
                     updateNotification(getString(R.string.status_connected))
@@ -179,6 +203,10 @@ class SimpleVpnService : VpnService() {
         networkMonitor?.stop()
         networkMonitor = null
 
+        // Bridge first: it holds the interface, and stopping the engine
+        // underneath it would leave packets arriving with nowhere to go.
+        bridge.stop()
+
         try {
             engine.stop()
         } catch (t: Throwable) {
@@ -186,11 +214,16 @@ class SimpleVpnService : VpnService() {
         }
 
         try {
-            tunnel?.close()
+            // Only when the bridge never took it. After hand-over the bridge
+            // owns the descriptor and has already released it.
+            if (!tunnelHandedOver) {
+                tunnel?.close()
+            }
         } catch (t: Throwable) {
             Log.w(TAG, "closing tunnel failed", t)
         } finally {
             tunnel = null
+            tunnelHandedOver = false
         }
 
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -260,6 +293,14 @@ class SimpleVpnService : VpnService() {
         const val ACTION_STOP = "download.simplevpn.action.STOP"
 
         private const val TAG = "SimpleVpnService"
+
+        /**
+         * The engine never touches the interface: the bridge owns it. The
+         * parameter stays on the interface because a future transport may need
+         * it, and passing a descriptor the engine must not use would be worse
+         * than passing none.
+         */
+        private const val TUN_FD_OWNED_BY_BRIDGE = 0
         private const val CHANNEL_ID = "vpn_status"
         private const val NOTIFICATION_ID = 1
     }

@@ -73,18 +73,19 @@ class TunConfigurator(private val service: VpnService) {
         Log.i(TAG, "excluded $excluded of ${packages.size} direct applications")
     }
 
-    private companion object {
-        const val TAG = "TunConfigurator"
-        const val SESSION_NAME = "Simple VPN"
-
+    companion object {
+        /** The packet bridge must be given the same value the interface was built with. */
         const val MTU = 1500
 
-        const val TUN_ADDRESS_V4 = "10.10.10.1"
-        const val TUN_PREFIX_V4 = 32
-        const val DEFAULT_ROUTE_V4 = "0.0.0.0"
+        private const val TAG = "TunConfigurator"
+        private const val SESSION_NAME = "Simple VPN"
 
-        const val TUN_ADDRESS_V6 = "fd00:1:1:1::1"
-        const val TUN_PREFIX_V6 = 128
-        const val DEFAULT_ROUTE_V6 = "::"
+        private const val TUN_ADDRESS_V4 = "10.10.10.1"
+        private const val TUN_PREFIX_V4 = 32
+        private const val DEFAULT_ROUTE_V4 = "0.0.0.0"
+
+        private const val TUN_ADDRESS_V6 = "fd00:1:1:1::1"
+        private const val TUN_PREFIX_V6 = 128
+        private const val DEFAULT_ROUTE_V6 = "::"
     }
 }
