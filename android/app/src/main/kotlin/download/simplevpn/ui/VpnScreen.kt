@@ -12,7 +12,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -20,7 +24,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import download.simplevpn.R
+import download.simplevpn.core.BridgeDiagnostics
 import download.simplevpn.vpn.VpnConnectionState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -78,8 +84,41 @@ fun VpnScreen(
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyLarge,
             )
+
+            if (state is VpnConnectionState.Connected) {
+                BridgeCounters()
+            }
         }
     }
+}
+
+/**
+ * What the packet bridge has actually seen, refreshed while the screen is open.
+ *
+ * A tunnel that reports success and carries nothing looks the same from the
+ * outside whatever the cause. These numbers separate the causes: no packets in
+ * means the interface is not feeding the bridge, packets in with no connections
+ * means they arrive and go nowhere. It is small and unexplained on purpose -
+ * it is meant to be read out, not interpreted, and it disappears with the
+ * slice.
+ */
+@Composable
+private fun BridgeCounters() {
+    var counters by remember { mutableStateOf(BridgeDiagnostics.snapshot()) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            counters = BridgeDiagnostics.snapshot()
+            delay(1500)
+        }
+    }
+
+    Text(
+        text = counters,
+        modifier = Modifier.padding(top = 24.dp),
+        textAlign = TextAlign.Center,
+        style = MaterialTheme.typography.bodySmall,
+    )
 }
 
 @Composable

@@ -37,6 +37,7 @@ import (
 	"github.com/xjasonlyu/tun2socks/v2/proxy"
 	"github.com/xjasonlyu/tun2socks/v2/tunnel"
 	"github.com/xtls/libxray/xray"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
 	// Registers the socks5 scheme with the parser above. That parser is a
 	// registry filled by package init functions, so a protocol nobody imports
@@ -135,19 +136,41 @@ func EngineVersion() string {
 	return xray.XrayVersion()
 }
 
-// netStack is the part of the network stack this package uses. Declared here
-// rather than imported so that the stack implementation stays an internal
-// detail of the bridge library instead of a dependency of this module.
-type netStack interface {
-	Close()
-	Wait()
-}
-
 var (
 	bridgeMu     sync.Mutex
 	bridgeDevice device.Device
-	bridgeStack  netStack
+	bridgeStack  *stack.Stack
 )
+
+// BridgeStats reports what the bridge has actually seen, as one short line
+// meant to be read off a screen and repeated over a chat.
+//
+// It exists because "connected but nothing loads" has several causes that look
+// identical from the outside, and they are told apart by which number is zero.
+// No packets received means the interface is not feeding the bridge at all.
+// Packets received with no connections opened means they arrive and go
+// nowhere. Connections opened with nothing sent means the far side is the
+// problem. Without this, each guess costs an install.
+func BridgeStats() string {
+	bridgeMu.Lock()
+	defer bridgeMu.Unlock()
+
+	if bridgeStack == nil {
+		return "bridge stopped"
+	}
+
+	s := bridgeStack.Stats()
+	return fmt.Sprintf(
+		"ip in=%d out=%d bad=%d | tcp new=%d live=%d | udp in=%d out=%d",
+		s.IP.PacketsReceived.Value(),
+		s.IP.PacketsSent.Value(),
+		s.IP.MalformedPacketsReceived.Value(),
+		s.TCP.ActiveConnectionOpenings.Value(),
+		s.TCP.CurrentEstablished.Value(),
+		s.UDP.PacketsReceived.Value(),
+		s.UDP.PacketsSent.Value(),
+	)
+}
 
 // StartBridge attaches a TUN file descriptor to the engine's local proxy.
 //

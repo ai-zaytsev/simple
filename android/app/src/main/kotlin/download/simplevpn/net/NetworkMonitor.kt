@@ -8,15 +8,23 @@ import android.net.NetworkRequest
 import android.util.Log
 
 /**
- * Reports when the underlying network changes, for example Wi-Fi to mobile.
+ * Reports when the network the tunnel actually runs over goes away.
  *
- * The TUN interface survives such a change, but sockets the engine opened over
- * the old network do not: they stay open and never deliver anything. Without
- * reacting, the tunnel looks established and passes no traffic, which is the
- * worst of both worlds. So the service restarts the engine on a real change.
+ * The TUN interface survives a change of underlying network, but sockets the
+ * engine opened over the old one do not: they stay open and never deliver
+ * anything. Without reacting, the tunnel looks established and passes no
+ * traffic, which is the worst of both worlds.
  *
- * Only transport-level changes are reported. Capability updates fire constantly
- * and restarting on each would make the tunnel flap on a weak connection.
+ * What this deliberately does NOT report is another network merely appearing.
+ * The callback fires for every network matching the request, and a phone with
+ * Wi-Fi connected usually has mobile data up as well. Treating the second
+ * arrival as a change restarts a tunnel that is working, seconds after it came
+ * up, and a restart that races the stop it follows is refused by the engine as
+ * "already running" - which used to tear the whole tunnel down. A network
+ * appearing beside the one in use is not a change of the one in use.
+ *
+ * Only networks that are not themselves a VPN are considered, so the tunnel
+ * does not react to its own arrival.
  */
 class NetworkMonitor(
     context: Context,
@@ -27,27 +35,56 @@ class NetworkMonitor(
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
+    /**
+     * Every usable network, in arrival order. Kept because losing the one in
+     * use has to be answered with another one immediately, and by then the
+     * system has already announced the alternatives and will not repeat itself.
+     */
+    private val available = LinkedHashSet<Network>()
+
     private var currentNetwork: Network? = null
+
+    /** False until the first network is adopted, so starting is not a change. */
+    private var everAdopted = false
     private var registered = false
 
     private val callback = object : ConnectivityManager.NetworkCallback() {
 
         override fun onAvailable(network: Network) {
-            val previous = currentNetwork
-            currentNetwork = network
-            if (previous != null && previous != network) {
-                Log.i(TAG, "underlying network changed")
-                onUnderlyingNetworkChanged(network)
+            synchronized(available) {
+                available.add(network)
+                if (currentNetwork != null) {
+                    Log.i(TAG, "another network is available, keeping the one in use")
+                    return
+                }
+                adopt(network)
             }
         }
 
         override fun onLost(network: Network) {
-            if (currentNetwork == network) {
+            synchronized(available) {
+                available.remove(network)
+                if (currentNetwork != network) return
+
                 currentNetwork = null
-                Log.i(TAG, "underlying network lost")
-                onNetworkLost()
+                val replacement = available.lastOrNull()
+                if (replacement != null) {
+                    Log.i(TAG, "network in use was lost, another is available")
+                    adopt(replacement)
+                } else {
+                    Log.i(TAG, "no usable network left")
+                    onNetworkLost()
+                }
             }
         }
+    }
+
+    private fun adopt(network: Network) {
+        currentNetwork = network
+        if (everAdopted) {
+            onUnderlyingNetworkChanged(network)
+        }
+        everAdopted = true
     }
 
     fun start() {
@@ -72,7 +109,11 @@ class NetworkMonitor(
             Log.w(TAG, "could not unregister network callback", t)
         } finally {
             registered = false
-            currentNetwork = null
+            synchronized(available) {
+                available.clear()
+                currentNetwork = null
+                everAdopted = false
+            }
         }
     }
 

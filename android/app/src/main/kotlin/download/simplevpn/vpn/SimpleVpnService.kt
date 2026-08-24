@@ -163,7 +163,26 @@ class SimpleVpnService : VpnService() {
                 }
 
                 is EngineStartResult.Unavailable -> failAndStop(result.reason)
-                is EngineStartResult.Failed -> failAndStop(result.reason)
+
+                is EngineStartResult.Failed -> {
+                    // One retry, because the common failure here is a start
+                    // that arrived before the stop it follows had finished and
+                    // was refused as already running. Tearing the tunnel down
+                    // for that turns a recoverable moment into a dropped
+                    // connection the user has to fix by hand.
+                    Log.w(TAG, "restart refused, stopping the engine and retrying: ${result.reason}")
+                    engine.stop()
+
+                    when (val retry = engine.start(configJson, TUN_FD_OWNED_BY_BRIDGE)) {
+                        is EngineStartResult.Started -> {
+                            VpnController.update(VpnConnectionState.Connected(System.currentTimeMillis()))
+                            updateNotification(getString(R.string.status_connected))
+                        }
+
+                        is EngineStartResult.Unavailable -> failAndStop(retry.reason)
+                        is EngineStartResult.Failed -> failAndStop(retry.reason)
+                    }
+                }
             }
         } catch (t: Throwable) {
             Log.e(TAG, "failed to restart after network change", t)
