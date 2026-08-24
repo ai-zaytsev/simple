@@ -16,7 +16,7 @@ import download.simplevpn.config.RoutingPolicy
 import download.simplevpn.config.SliceProfileSource
 import download.simplevpn.config.XrayConfigBuilder
 import download.simplevpn.core.EngineStartResult
-import download.simplevpn.core.PendingXrayEngine
+import download.simplevpn.core.LibXrayEngine
 import download.simplevpn.core.XrayEngine
 import download.simplevpn.net.NetworkMonitor
 import java.util.concurrent.atomic.AtomicBoolean
@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class SimpleVpnService : VpnService() {
 
-    private val engine: XrayEngine = PendingXrayEngine()
+    private val engine: XrayEngine = LibXrayEngine(this)
     private var tunnel: ParcelFileDescriptor? = null
     private var networkMonitor: NetworkMonitor? = null
     private val starting = AtomicBoolean(false)
