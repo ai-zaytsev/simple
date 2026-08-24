@@ -23,11 +23,20 @@ object XrayConfigBuilder {
     const val SOCKS_PORT = 10808
     const val DNS_PORT = 10853
 
+    /** Port DNS actually travels on, as seen by routing. */
+    private const val DNS_PORT_WIRE = 53
+
     /** Address the TUN advertises as DNS; captured and answered by the engine. */
     const val TUN_DNS_ADDRESS = "10.10.10.2"
 
     private const val REMOTE_DOH = "https://1.1.1.1/dns-query"
-    private const val LOCAL_DNS = "223.5.5.5"
+
+    /**
+     * Resolver for the direct list only. A Russian one on purpose: those names
+     * must resolve the way they resolve for a user in Russia, and a resolver
+     * abroad hands back addresses chosen for somebody else's location.
+     */
+    private const val LOCAL_DNS = "77.88.8.8"
 
     fun build(profile: ConnectionProfile, policy: RoutingPolicy): String {
         return JSONObject().apply {
@@ -234,6 +243,26 @@ object XrayConfigBuilder {
             JSONObject().apply {
                 put("type", "field")
                 put("inboundTag", JSONArray(listOf("dns-in")))
+                put("outboundTag", "dns-out")
+            },
+        )
+
+        // And by port, which is the rule that actually carries the device.
+        //
+        // The interface advertises a DNS address inside the tunnel's own
+        // subnet. The packet bridge forwards those queries to the engine as
+        // ordinary traffic to that address, without knowing it is DNS, so they
+        // never reach the inbound above. The private-range rule below would
+        // then send them out as direct traffic to an address that exists
+        // nowhere, and every lookup would time out: a tunnel that connects,
+        // reports success and loads nothing.
+        //
+        // Matching on the port instead catches them wherever they arrive from,
+        // and this rule must stay ahead of the address rules for that reason.
+        rules.put(
+            JSONObject().apply {
+                put("type", "field")
+                put("port", DNS_PORT_WIRE)
                 put("outboundTag", "dns-out")
             },
         )
