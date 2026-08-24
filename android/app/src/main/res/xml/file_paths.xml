@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Only the exported session log is shareable, and only from the cache.
+    Nothing else the application stores is reachable through the provider: the
+    connection profile and the engine's own files stay private.
+-->
+<paths>
+    <cache-path
+        name="session-logs"
+        path="logs/" />
+</paths>

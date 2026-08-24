@@ -1,5 +1,7 @@
 package download.simplevpn.ui
 
+import android.content.Intent
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,11 +13,13 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -24,18 +28,20 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.FileProvider
 import download.simplevpn.R
 import download.simplevpn.config.SliceProfileSource
 import download.simplevpn.config.TransportParams
 import download.simplevpn.config.XrayConfigBuilder
 import download.simplevpn.core.BridgeDiagnostics
-import download.simplevpn.core.EngineLog
+import download.simplevpn.core.SessionLog
 import download.simplevpn.core.EngineSelfTest
 import download.simplevpn.core.NodeReachTest
 import download.simplevpn.vpn.VpnConnectionState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -97,7 +103,53 @@ fun VpnScreen(
             if (state is VpnConnectionState.Connected) {
                 BridgeCounters()
             }
+
+            // Outside the connected branch on purpose: the interesting log is
+            // usually the one from a session that has just ended.
+            ShareSessionLog()
         }
+    }
+}
+
+/**
+ * Hands the whole session log to whatever the user picks to send it with.
+ *
+ * Reading counters off a screen located the broken layer but never the reason,
+ * and every guess cost an install. The file says what the application did, in
+ * order, and what the engine said about it.
+ *
+ * Diagnostic, and it leaves the device only when the user taps this. The engine
+ * writes at a level that names destinations, so this button and the level that
+ * fills it go together when the slice does.
+ */
+@Composable
+private fun ShareSessionLog() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val title = stringResource(R.string.share_log_title)
+
+    TextButton(
+        onClick = {
+            scope.launch {
+                val file = withContext(Dispatchers.IO) { SessionLog.export(context) } ?: return@launch
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.logs", file)
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, title)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                runCatching {
+                    context.startActivity(
+                        Intent.createChooser(send, title)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+            }
+        },
+        modifier = Modifier.padding(top = 20.dp),
+    ) {
+        Text(text = stringResource(R.string.action_share_log))
     }
 }
 
@@ -157,7 +209,7 @@ private fun BridgeCounters() {
     LaunchedEffect(Unit) {
         while (true) {
             counters = BridgeDiagnostics.snapshot()
-            engineLog = withContext(Dispatchers.IO) { EngineLog.lastFailure(context) }
+            engineLog = withContext(Dispatchers.IO) { SessionLog.lastFailure(context) }
             delay(1500)
         }
     }

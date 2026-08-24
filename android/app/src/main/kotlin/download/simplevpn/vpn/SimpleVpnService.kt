@@ -15,9 +15,10 @@ import download.simplevpn.R
 import download.simplevpn.config.RoutingPolicy
 import download.simplevpn.config.SliceProfileSource
 import download.simplevpn.config.XrayConfigBuilder
-import download.simplevpn.core.EngineLog
+import download.simplevpn.core.BridgeDiagnostics
 import download.simplevpn.core.EngineStartResult
 import download.simplevpn.core.LibXrayEngine
+import download.simplevpn.core.SessionLog
 import download.simplevpn.core.TunBridge
 import download.simplevpn.core.XrayEngine
 import download.simplevpn.net.NetworkMonitor
@@ -74,39 +75,52 @@ class SimpleVpnService : VpnService() {
             return
         }
 
+        // Cleared here and not later: everything below belongs to this attempt,
+        // and a log holding two of them is worse than none.
+        SessionLog.reset(this)
+
         try {
             startForeground(NOTIFICATION_ID, buildNotification(getString(R.string.status_connecting)))
             VpnController.update(VpnConnectionState.Connecting)
 
             val profileResult = SliceProfileSource.load(this)
             if (profileResult is SliceProfileSource.Result.Missing) {
+                SessionLog.record(this, "no endpoint: ${profileResult.reason}")
                 failAndStop(profileResult.reason)
                 return
             }
             val profile = (profileResult as SliceProfileSource.Result.Available).profile
+            SessionLog.record(
+                this,
+                "endpoint ${profile.host}:${profile.port} " +
+                    "transport ${profile.transport::class.simpleName}",
+            )
 
             val policy = RoutingPolicy.DEFAULT
 
             val descriptor = TunConfigurator(this).establish(policy)
             if (descriptor == null) {
+                SessionLog.record(this, "interface not established")
                 failAndStop(getString(R.string.error_tun_not_established))
                 return
             }
             tunnel = descriptor
+            SessionLog.record(this, "interface established, mtu ${TunConfigurator.MTU}")
 
-            EngineLog.reset(this)
-            val configJson = XrayConfigBuilder.build(profile, policy, EngineLog.file(this).absolutePath)
+            val configJson = XrayConfigBuilder.build(profile, policy, SessionLog.engineFile(this).absolutePath)
 
             when (val result = engine.start(configJson, descriptor.fd)) {
-                is EngineStartResult.Started -> Unit
+                is EngineStartResult.Started -> SessionLog.record(this, "engine started")
 
                 is EngineStartResult.Unavailable -> {
+                    SessionLog.record(this, "engine unavailable: ${result.reason}")
                     failAndStop(result.reason)
                     return
                 }
 
                 is EngineStartResult.Failed -> {
                     Log.w(TAG, "engine failed to start", result.cause)
+                    SessionLog.record(this, "engine failed: ${result.reason}")
                     failAndStop(result.reason)
                     return
                 }
@@ -120,15 +134,25 @@ class SimpleVpnService : VpnService() {
 
             when (val bridged = bridge.start(rawFd, TunConfigurator.MTU, XrayConfigBuilder.SOCKS_PORT)) {
                 is TunBridge.Result.Started -> {
+                    SessionLog.record(this, "bridge started, socks ${XrayConfigBuilder.SOCKS_PORT}")
                     startNetworkMonitor()
                     VpnController.update(VpnConnectionState.Connected(System.currentTimeMillis()))
                     updateNotification(getString(R.string.status_connected))
+                    SessionLog.record(this, "connected")
                 }
 
-                is TunBridge.Result.Unavailable -> failAndStop(bridged.reason)
-                is TunBridge.Result.Failed -> failAndStop(bridged.reason)
+                is TunBridge.Result.Unavailable -> {
+                    SessionLog.record(this, "bridge unavailable: ${bridged.reason}")
+                    failAndStop(bridged.reason)
+                }
+
+                is TunBridge.Result.Failed -> {
+                    SessionLog.record(this, "bridge failed: ${bridged.reason}")
+                    failAndStop(bridged.reason)
+                }
             }
         } catch (t: Throwable) {
+            SessionLog.record(this, "unexpected failure while starting: ${t.message}")
             // Deliberately broad. Anything thrown while establishing must end
             // as a reported failure: a crash here would take the process down
             // and leave the system VPN slot in an unclear state.
@@ -141,6 +165,7 @@ class SimpleVpnService : VpnService() {
 
     private fun restartEngineForNewNetwork() {
         if (!engine.isRunning) return
+        SessionLog.record(this, "underlying network changed, restarting the engine")
         VpnController.update(VpnConnectionState.Reconnecting)
         updateNotification(getString(R.string.status_reconnecting))
 
@@ -160,7 +185,7 @@ class SimpleVpnService : VpnService() {
             val configJson = XrayConfigBuilder.build(
                 profileResult.profile,
                 RoutingPolicy.DEFAULT,
-                EngineLog.file(this).absolutePath,
+                SessionLog.engineFile(this).absolutePath,
             )
             when (val result = engine.start(configJson, TUN_FD_OWNED_BY_BRIDGE)) {
                 is EngineStartResult.Started -> {
@@ -212,12 +237,14 @@ class SimpleVpnService : VpnService() {
     }
 
     private fun failAndStop(reason: String) {
+        SessionLog.record(this, "stopping after failure: " + reason)
         VpnController.update(VpnConnectionState.Failed(reason))
         teardown()
         stopSelf()
     }
 
     private fun handleStop(finalState: VpnConnectionState) {
+        SessionLog.record(this, "stop requested")
         VpnController.update(VpnConnectionState.Disconnecting)
         teardown()
         VpnController.update(finalState)
@@ -225,6 +252,7 @@ class SimpleVpnService : VpnService() {
     }
 
     private fun teardown() {
+        SessionLog.record(this, "teardown, bridge counters: " + BridgeDiagnostics.snapshot())
         networkMonitor?.stop()
         networkMonitor = null
 
@@ -257,6 +285,7 @@ class SimpleVpnService : VpnService() {
     /** The user revoked consent, or another VPN application took over. */
     override fun onRevoke() {
         Log.i(TAG, "consent revoked")
+        SessionLog.record(this, "consent revoked or another VPN took over")
         teardown()
         VpnController.update(VpnConnectionState.Disconnected)
         stopSelf()
