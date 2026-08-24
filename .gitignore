@@ -38,3 +38,8 @@ crash.log
 *.iml
 .DS_Store
 Thumbs.db
+
+# Build inputs fetched by CI, not stored in the repository.
+android/app/libs/*.aar
+android/app/src/main/assets/geoip.dat
+vpncore/go.sum

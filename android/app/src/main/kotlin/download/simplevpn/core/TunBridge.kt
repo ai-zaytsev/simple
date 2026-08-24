@@ -1,7 +1,7 @@
 package download.simplevpn.core
 
 import android.util.Log
-import tunbridge.Tunbridge
+import vpncore.Vpncore
 
 /**
  * Moves packets between the TUN interface and the engine's local proxy.
@@ -18,7 +18,7 @@ class TunBridge {
 
     val isRunning: Boolean
         get() = try {
-            Tunbridge.isRunning()
+            Vpncore.bridgeRunning()
         } catch (t: Throwable) {
             false
         }
@@ -29,7 +29,7 @@ class TunBridge {
      */
     fun start(tunFd: Int, mtu: Int, socksPort: Int): Result {
         return try {
-            Tunbridge.start(tunFd.toLong(), mtu.toLong(), "socks5://127.0.0.1:$socksPort")
+            Vpncore.startBridge(tunFd.toLong(), mtu.toLong(), "socks5://127.0.0.1:$socksPort")
             Result.Started
         } catch (t: UnsatisfiedLinkError) {
             Log.e(TAG, "bridge library is missing", t)
@@ -42,7 +42,7 @@ class TunBridge {
 
     fun stop() {
         try {
-            Tunbridge.stop()
+            Vpncore.stopBridge()
         } catch (t: Throwable) {
             Log.w(TAG, "bridge stop failed", t)
         }

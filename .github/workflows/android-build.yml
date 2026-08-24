@@ -9,19 +9,24 @@ name: Android Build
 #
 # Reproducibility here means: pinned Gradle, pinned AGP and Kotlin through the
 # version catalog, no dependency ranges, no wrapper binary in the repository,
-# and a recorded SHA-256 for the artifact. It does not yet mean bit-identical
-# release APKs, which additionally requires a fixed signing setup.
+# a pinned routing database and a recorded SHA-256 for the artifact. It does
+# not yet mean bit-identical release APKs, which additionally requires a fixed
+# signing setup.
 
 on:
   workflow_dispatch:
   pull_request:
     paths:
       - 'android/**'
+      - 'vpncore/**'
       - '.github/workflows/android-build.yml'
 
 env:
-  # Pinned together with the checksum recorded in docs/integrations/libxray.md.
-  LIBXRAY_REF: 68119ddec6a16ea635838af0e9e11fd93316812c
+  # Routing sends Russian and private addresses straight out, and both rules
+  # are expressed as geoip entries the engine reads from this database. Pinned
+  # to a release rather than tracking latest, so that two builds of the same
+  # commit route identically.
+  GEOIP_TAG: '202608050239'
 
 permissions:
   contents: read
@@ -62,67 +67,74 @@ jobs:
             echo "| --- | --- |"
             echo "| Gradle | 8.11.1 |"
             echo "| JDK | temurin 17 |"
+            echo "| Routing database | ${GEOIP_TAG} |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Restore the engine AAR
-        id: engine
+      - name: Restore the routing database
+        id: geoip
         uses: actions/cache@v4
         with:
-          path: android/app/libs/libxray.aar
-          key: libxray-${{ env.LIBXRAY_REF }}
+          path: android/app/src/main/assets/geoip.dat
+          key: geoip-${{ env.GEOIP_TAG }}
 
-      - name: Setup Go
-        if: steps.engine.outputs.cache-hit != 'true'
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.23'
-
-      - name: Build the engine AAR
-        if: steps.engine.outputs.cache-hit != 'true'
+      - name: Download the routing database
+        if: steps.geoip.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          # Built from XTLS source at a pinned commit rather than taken from a
-          # third-party republish, see ADR-020. Cached by that commit, so it is
-          # built once per engine version and not on every application build.
-          git clone --quiet https://github.com/XTLS/libXray.git /tmp/libxray-src
-          cd /tmp/libxray-src
-          git checkout --quiet "${LIBXRAY_REF}"
-          python3 build/main.py android
+          base="https://github.com/v2fly/geoip/releases/download/${GEOIP_TAG}"
+          mkdir -p android/app/src/main/assets
+          curl -fsSL -o /tmp/geoip.dat "${base}/geoip.dat"
+          curl -fsSL -o /tmp/geoip.dat.sha256sum "${base}/geoip.dat.sha256sum"
 
-          aar=$(find . -name '*.aar' | head -1)
-          if [ -z "${aar}" ]; then
-            echo "The engine build produced no artifact."
+          # The published sum is compared field by field rather than by
+          # searching the file, because a substring match once accepted the
+          # wrong line and put two hashes into one variable.
+          expected=$(awk '{print $1}' /tmp/geoip.dat.sha256sum | head -1)
+          actual=$(sha256sum /tmp/geoip.dat | awk '{print $1}')
+          if [ "${expected}" != "${actual}" ]; then
+            echo "Routing database checksum mismatch."
+            echo "  expected: ${expected}"
+            echo "  actual:   ${actual}"
             exit 1
           fi
 
-          mkdir -p "${GITHUB_WORKSPACE}/android/app/libs"
-          cp "${aar}" "${GITHUB_WORKSPACE}/android/app/libs/libxray.aar"
-          sha256sum "${GITHUB_WORKSPACE}/android/app/libs/libxray.aar"
+          mv /tmp/geoip.dat android/app/src/main/assets/geoip.dat
+          echo "Routing database verified: ${actual}"
 
-      - name: Restore the packet bridge AAR
-        id: bridge
+      - name: Restore the native library
+        id: native
         uses: actions/cache@v4
         with:
-          path: android/app/libs/tunbridge.aar
-          key: tunbridge-${{ hashFiles('tunbridge/**') }}
+          path: android/app/libs/vpncore.aar
+          key: vpncore-${{ hashFiles('vpncore/**') }}
 
-      - name: Build the packet bridge AAR
-        if: steps.bridge.outputs.cache-hit != 'true'
+      - name: Setup Go
+        if: steps.native.outputs.cache-hit != 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build the native library
+        if: steps.native.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          # Built from source with a pinned dependency, the same rule the
-          # engine follows (ADR-020). gomobile turns the Go package into an
-          # AAR the application can call directly.
+          # One library, not two. The engine and the packet bridge are bound
+          # together because each gomobile binding carries its own copy of the
+          # Go runtime, and two copies in one APK fail the build on duplicated
+          # runtime classes. Both dependencies are pinned in vpncore/go.mod,
+          # which is the same source-pinning rule the engine already followed
+          # (ADR-020).
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
           export PATH="$(go env GOPATH)/bin:${PATH}"
           gomobile init
 
-          cd tunbridge
+          mkdir -p "${GITHUB_WORKSPACE}/android/app/libs"
+          cd vpncore
           go mod tidy
-          gomobile bind -target=android/arm64,android/amd64 -androidapi 24 \
-            -o "${GITHUB_WORKSPACE}/android/app/libs/tunbridge.aar" .
-          sha256sum "${GITHUB_WORKSPACE}/android/app/libs/tunbridge.aar"
+          gomobile bind -target=android/arm64 -androidapi 24 \
+            -o "${GITHUB_WORKSPACE}/android/app/libs/vpncore.aar" .
+          sha256sum "${GITHUB_WORKSPACE}/android/app/libs/vpncore.aar"
 
       - name: Assemble debug APK
         working-directory: android
@@ -151,13 +163,19 @@ jobs:
             echo "| Commit | \`${GITHUB_SHA}\` |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-          # The engine is not bundled yet. Saying so here keeps the build
-          # report honest: an APK that installs is not the same as an APK that
-          # can establish a tunnel.
-          if find app/libs -name '*.aar' 2>/dev/null | grep -q .; then
-            echo "| Transport engine | bundled |" >> "${GITHUB_STEP_SUMMARY}"
+          # An APK that installs is not the same as an APK that can establish a
+          # tunnel. Both parts are named separately so the report cannot claim
+          # more than was actually bundled.
+          if [ -f app/libs/vpncore.aar ]; then
+            echo "| Engine and packet bridge | bundled |" >> "${GITHUB_STEP_SUMMARY}"
           else
-            echo "| Transport engine | NOT bundled, tunnel cannot be established |" >> "${GITHUB_STEP_SUMMARY}"
+            echo "| Engine and packet bridge | NOT bundled, no tunnel possible |" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+          if [ -f app/src/main/assets/geoip.dat ]; then
+            echo "| Routing database | bundled |" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "| Routing database | NOT bundled, engine will refuse to start |" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
       - name: Upload APK
