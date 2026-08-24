@@ -233,6 +233,30 @@ jobs:
             exit 1
           fi
 
+          # Every A record already on this exact name goes first.
+          #
+          # A kept node leaves its record behind on purpose, so the next run
+          # finds one. Adding a second beside it makes the name resolve to
+          # both, at random: certificate validation reached a machine that had
+          # just been destroyed and reported a firewall problem, which is not
+          # what was wrong.
+          #
+          # Compared field by field rather than filtered by the query alone.
+          # Trusting a search to mean an exact match is the mistake that put
+          # two values where one belonged before.
+          existing=$(curl -sS -H "Authorization: Bearer ${token}" \
+            -G --data-urlencode "type=A" --data-urlencode "name=${DOMAIN}" \
+            "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
+            | jq -r --arg n "${DOMAIN}" \
+              '(.result // [])[] | select(.name == $n and .type == "A") | .id')
+
+          for stale in ${existing}; do
+            curl -sS -X DELETE -H "Authorization: Bearer ${token}" \
+              "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${stale}" \
+              > /dev/null
+            echo "Removed an existing A record for ${DOMAIN}."
+          done
+
           # proxied must stay false. Cloudflare proxying terminates TLS, which
           # would break both the certificate we just issued and the tunnel.
           record_id=$(curl -sS -X POST \
