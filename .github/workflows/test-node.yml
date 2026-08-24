@@ -41,6 +41,11 @@ on:
         required: true
         default: false
         type: boolean
+      reuse_node:
+        description: Keep the node that already exists and reuse its credentials, spending no certificate.
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -132,6 +137,7 @@ jobs:
 
       - name: Generate ephemeral credentials
         id: creds
+        if: ${{ !inputs.reuse_node }}
         run: |
           set -euo pipefail
           ws_uuid=$(xray uuid)
@@ -194,6 +200,36 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
         run: terraform init -input=false
 
+      - name: Read the node that already exists
+        id: existing
+        if: ${{ inputs.reuse_node }}
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          # Reusing means producing byte-identical user data, which is what
+          # leaves the droplet untouched and its certificate unspent. So every
+          # value comes from the recorded state, including the domain: taking
+          # the domain from the run input instead would change the user data
+          # and replace the node, which is the cost being avoided.
+          for name in test_node_domain test_node_ws_uuid test_node_ws_path \
+                      test_node_reality_uuid test_node_reality_private_key \
+                      test_node_reality_short_id test_node_acme_staging; do
+            value=$(terraform output -raw "${name}" 2>/dev/null || echo "")
+            if [ -z "${value}" ]; then
+              echo "No recorded node to reuse: ${name} is empty."
+              echo "Run once without reuse_node to create one."
+              exit 1
+            fi
+            if [ "${name}" != "test_node_domain" ]; then
+              echo "::add-mask::${value}"
+            fi
+            echo "${name#test_node_}=${value}" >> "${GITHUB_OUTPUT}"
+          done
+          echo "Reusing the recorded node, no certificate will be spent."
+
       - name: Create node
         id: create
         working-directory: infra/terraform
@@ -202,13 +238,13 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
           TF_VAR_test_node_enabled: "true"
-          TF_VAR_test_node_domain: ${{ inputs.domain }}
-          TF_VAR_test_node_ws_uuid: ${{ steps.creds.outputs.ws_uuid }}
-          TF_VAR_test_node_ws_path: ${{ steps.creds.outputs.ws_path }}
-          TF_VAR_test_node_reality_uuid: ${{ steps.creds.outputs.reality_uuid }}
-          TF_VAR_test_node_reality_private_key: ${{ steps.creds.outputs.private }}
-          TF_VAR_test_node_reality_short_id: ${{ steps.creds.outputs.short }}
-          TF_VAR_acme_staging: ${{ inputs.production_certificate && 'false' || 'true' }}
+          TF_VAR_test_node_domain: ${{ inputs.reuse_node && steps.existing.outputs.domain || inputs.domain }}
+          TF_VAR_test_node_ws_uuid: ${{ inputs.reuse_node && steps.existing.outputs.ws_uuid || steps.creds.outputs.ws_uuid }}
+          TF_VAR_test_node_ws_path: ${{ inputs.reuse_node && steps.existing.outputs.ws_path || steps.creds.outputs.ws_path }}
+          TF_VAR_test_node_reality_uuid: ${{ inputs.reuse_node && steps.existing.outputs.reality_uuid || steps.creds.outputs.reality_uuid }}
+          TF_VAR_test_node_reality_private_key: ${{ inputs.reuse_node && steps.existing.outputs.reality_private_key || steps.creds.outputs.private }}
+          TF_VAR_test_node_reality_short_id: ${{ inputs.reuse_node && steps.existing.outputs.reality_short_id || steps.creds.outputs.short }}
+          TF_VAR_acme_staging: ${{ inputs.reuse_node && steps.existing.outputs.acme_staging || (inputs.production_certificate && 'false' || 'true') }}
           TF_VAR_acme_production_ack: ${{ inputs.production_certificate }}
           TF_VAR_debug_status: "true"
         run: |
@@ -222,11 +258,34 @@ jobs:
           echo "node_ip=${ip}" >> "${GITHUB_OUTPUT}"
           echo "Node created at ${ip}"
 
+      - name: Settle the endpoint
+        env:
+          DOMAIN: ${{ inputs.reuse_node && steps.existing.outputs.domain || inputs.domain }}
+          WS_UUID: ${{ inputs.reuse_node && steps.existing.outputs.ws_uuid || steps.creds.outputs.ws_uuid }}
+          WS_PATH: ${{ inputs.reuse_node && steps.existing.outputs.ws_path || steps.creds.outputs.ws_path }}
+          REALITY_UUID: ${{ inputs.reuse_node && steps.existing.outputs.reality_uuid || steps.creds.outputs.reality_uuid }}
+          REALITY_PUBLIC: ${{ env.NODE_REALITY_PUBLIC }}
+          REALITY_SHORT: ${{ inputs.reuse_node && steps.existing.outputs.reality_short_id || steps.creds.outputs.short }}
+        run: |
+          set -euo pipefail
+          # One place decides where the values came from. Every step below reads
+          # these, so a reused node and a fresh one are indistinguishable to the
+          # checks and to the build.
+          {
+            echo "NODE_DOMAIN=${DOMAIN}"
+            echo "NODE_WS_UUID=${WS_UUID}"
+            echo "NODE_WS_PATH=${WS_PATH}"
+            echo "NODE_REALITY_UUID=${REALITY_UUID}"
+            echo "NODE_REALITY_PUBLIC=${REALITY_PUBLIC}"
+            echo "NODE_REALITY_SHORT=${REALITY_SHORT}"
+          } >> "${GITHUB_ENV}"
+          echo "Endpoint settled on ${DOMAIN}."
+
       - name: Point DNS at the node
         id: dns
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          DOMAIN: ${{ inputs.domain }}
+          DOMAIN: ${{ env.NODE_DOMAIN }}
           NODE_IP: ${{ steps.create.outputs.node_ip }}
         run: |
           set -euo pipefail
@@ -287,7 +346,7 @@ jobs:
         id: wait
         env:
           NODE_IP: ${{ steps.create.outputs.node_ip }}
-          DOMAIN: ${{ inputs.domain }}
+          DOMAIN: ${{ env.NODE_DOMAIN }}
         run: |
           set -uo pipefail
           # The node publishes its progress at /status.txt while bringing up.
@@ -340,7 +399,7 @@ jobs:
 
       - name: Verify the site answers on our own certificate
         env:
-          DOMAIN: ${{ inputs.domain }}
+          DOMAIN: ${{ env.NODE_DOMAIN }}
         run: |
           set -euo pipefail
           code=$(curl -sS -o /tmp/site.html -w '%{http_code}' --max-time 20 "https://${DOMAIN}/")
@@ -374,8 +433,8 @@ jobs:
 
       - name: Verify the tunnel path is indistinguishable from a missing page
         env:
-          DOMAIN: ${{ inputs.domain }}
-          WS_PATH: ${{ steps.creds.outputs.ws_path }}
+          DOMAIN: ${{ env.NODE_DOMAIN }}
+          WS_PATH: ${{ env.NODE_WS_PATH }}
         run: |
           set -euo pipefail
           # The adversary in the threat model has an account, so the path is not
@@ -421,10 +480,10 @@ jobs:
       - name: Verify traffic over WebSocket
         id: verify_ws
         env:
-          DOMAIN: ${{ inputs.domain }}
+          DOMAIN: ${{ env.NODE_DOMAIN }}
           NODE_IP: ${{ steps.create.outputs.node_ip }}
-          UUID: ${{ steps.creds.outputs.ws_uuid }}
-          WS_PATH: ${{ steps.creds.outputs.ws_path }}
+          UUID: ${{ env.NODE_WS_UUID }}
+          WS_PATH: ${{ env.NODE_WS_PATH }}
         run: |
           set -euo pipefail
           # Connects to the node by address while presenting the domain name:
@@ -470,10 +529,10 @@ jobs:
         id: verify_app_config
         continue-on-error: true
         env:
-          DOMAIN: ${{ inputs.domain }}
+          DOMAIN: ${{ env.NODE_DOMAIN }}
           NODE_IP: ${{ steps.create.outputs.node_ip }}
-          UUID: ${{ steps.creds.outputs.ws_uuid }}
-          WS_PATH: ${{ steps.creds.outputs.ws_path }}
+          UUID: ${{ env.NODE_WS_UUID }}
+          WS_PATH: ${{ env.NODE_WS_PATH }}
         run: |
           set -uo pipefail
           # The step above proves the transport. This one proves the
@@ -643,6 +702,10 @@ jobs:
 
       - name: Verify traffic over the standby REALITY transport
         id: verify_reality
+        # Skipped when reusing: the standby needs the public half of a key pair
+        # that was never recorded, only its private half, and deriving one would
+        # mean regenerating the pair and replacing the node.
+        if: ${{ !inputs.reuse_node }}
         # Not fatal, and the distinction is deliberate. REALITY is the standby
         # on a separate port (ADR-024); the primary transport is the domain,
         # Nginx and WebSocket. A standby that does not answer is a gap worth
@@ -652,9 +715,9 @@ jobs:
         continue-on-error: true
         env:
           NODE_IP: ${{ steps.create.outputs.node_ip }}
-          UUID: ${{ steps.creds.outputs.reality_uuid }}
-          PUBLIC: ${{ steps.creds.outputs.public }}
-          SHORT: ${{ steps.creds.outputs.short }}
+          UUID: ${{ env.NODE_REALITY_UUID }}
+          PUBLIC: ${{ env.NODE_REALITY_PUBLIC }}
+          SHORT: ${{ env.NODE_REALITY_SHORT }}
         run: |
           set -euo pipefail
           jq -n \
@@ -699,7 +762,7 @@ jobs:
       - name: Summary
         if: ${{ always() }}
         env:
-          DOMAIN: ${{ inputs.domain }}
+          DOMAIN: ${{ env.NODE_DOMAIN }}
           WS_RESULT: ${{ steps.verify_ws.outcome }}
           REALITY_RESULT: ${{ steps.verify_reality.outcome }}
         run: |
@@ -740,10 +803,10 @@ jobs:
       - name: Bundle this node as the endpoint
         if: ${{ inputs.build_apk }}
         env:
-          DOMAIN: ${{ inputs.domain }}
+          DOMAIN: ${{ env.NODE_DOMAIN }}
           NODE_IP: ${{ steps.create.outputs.node_ip }}
-          WS_UUID: ${{ steps.creds.outputs.ws_uuid }}
-          WS_PATH: ${{ steps.creds.outputs.ws_path }}
+          WS_UUID: ${{ env.NODE_WS_UUID }}
+          WS_PATH: ${{ env.NODE_WS_PATH }}
         run: |
           set -euo pipefail
           mkdir -p android/app/src/main/assets

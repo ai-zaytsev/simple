@@ -190,3 +190,56 @@ output "test_node_ip" {
   description = "Public address of the verification node, empty when it does not exist."
   value       = var.test_node_enabled ? digitalocean_droplet.test_node[0].ipv4_address : ""
 }
+
+# Credentials are published back as outputs so that a later run can reuse them.
+#
+# Every rebuild of the application used to generate fresh credentials, which
+# changed the node's user data, which replaced the droplet, which spent another
+# certificate. Five per name per week is a budget that ran out in an afternoon
+# of debugging a client that the node had nothing to do with.
+#
+# Reading these back and passing them in again produces identical user data, so
+# the droplet is left alone and its certificate keeps its full lifetime.
+#
+# They are marked sensitive: Terraform then refuses to print them in a plan or
+# an apply, and they only leave through an explicit request for one value.
+
+output "test_node_domain" {
+  description = "Domain the existing verification node serves, empty when there is none."
+  value       = var.test_node_domain
+}
+
+output "test_node_ws_uuid" {
+  description = "VLESS credential of the existing node."
+  value       = var.test_node_ws_uuid
+  sensitive   = true
+}
+
+output "test_node_ws_path" {
+  description = "Tunnel path of the existing node."
+  value       = var.test_node_ws_path
+  sensitive   = true
+}
+
+output "test_node_reality_uuid" {
+  description = "Standby transport credential of the existing node."
+  value       = var.test_node_reality_uuid
+  sensitive   = true
+}
+
+output "test_node_reality_private_key" {
+  description = "Standby transport private key of the existing node."
+  value       = var.test_node_reality_private_key
+  sensitive   = true
+}
+
+output "test_node_reality_short_id" {
+  description = "Standby transport short id of the existing node."
+  value       = var.test_node_reality_short_id
+  sensitive   = true
+}
+
+output "test_node_acme_staging" {
+  description = "Whether the existing node was built against the staging environment."
+  value       = var.acme_staging ? "true" : "false"
+}
