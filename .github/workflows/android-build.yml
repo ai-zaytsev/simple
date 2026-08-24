@@ -19,6 +19,10 @@ on:
       - 'android/**'
       - '.github/workflows/android-build.yml'
 
+env:
+  # Pinned together with the checksum recorded in docs/integrations/libxray.md.
+  LIBXRAY_REF: 68119ddec6a16ea635838af0e9e11fd93316812c
+
 permissions:
   contents: read
 
@@ -59,6 +63,41 @@ jobs:
             echo "| Gradle | 8.11.1 |"
             echo "| JDK | temurin 17 |"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Restore the engine AAR
+        id: engine
+        uses: actions/cache@v4
+        with:
+          path: android/app/libs/libxray.aar
+          key: libxray-${{ env.LIBXRAY_REF }}
+
+      - name: Setup Go
+        if: steps.engine.outputs.cache-hit != 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build the engine AAR
+        if: steps.engine.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          # Built from XTLS source at a pinned commit rather than taken from a
+          # third-party republish, see ADR-020. Cached by that commit, so it is
+          # built once per engine version and not on every application build.
+          git clone --quiet https://github.com/XTLS/libXray.git /tmp/libxray-src
+          cd /tmp/libxray-src
+          git checkout --quiet "${LIBXRAY_REF}"
+          python3 build/main.py android
+
+          aar=$(find . -name '*.aar' | head -1)
+          if [ -z "${aar}" ]; then
+            echo "The engine build produced no artifact."
+            exit 1
+          fi
+
+          mkdir -p "${GITHUB_WORKSPACE}/android/app/libs"
+          cp "${aar}" "${GITHUB_WORKSPACE}/android/app/libs/libxray.aar"
+          sha256sum "${GITHUB_WORKSPACE}/android/app/libs/libxray.aar"
 
       - name: Assemble debug APK
         working-directory: android
