@@ -216,7 +216,7 @@ jobs:
           # and replace the node, which is the cost being avoided.
           for name in test_node_domain test_node_ws_uuid test_node_ws_path \
                       test_node_reality_uuid test_node_reality_private_key \
-                      test_node_reality_short_id test_node_acme_staging; do
+                      test_node_reality_short_id test_node_acme_staging test_node_ip; do
             value=$(terraform output -raw "${name}" 2>/dev/null || echo "")
             if [ -z "${value}" ]; then
               echo "No recorded node to reuse: ${name} is empty."
@@ -232,6 +232,7 @@ jobs:
 
       - name: Create node
         id: create
+        if: ${{ !inputs.reuse_node }}
         working-directory: infra/terraform
         env:
           DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
@@ -260,6 +261,7 @@ jobs:
 
       - name: Settle the endpoint
         env:
+          NODE_IP: ${{ inputs.reuse_node && steps.existing.outputs.ip || steps.create.outputs.node_ip }}
           DOMAIN: ${{ inputs.reuse_node && steps.existing.outputs.domain || inputs.domain }}
           WS_UUID: ${{ inputs.reuse_node && steps.existing.outputs.ws_uuid || steps.creds.outputs.ws_uuid }}
           WS_PATH: ${{ inputs.reuse_node && steps.existing.outputs.ws_path || steps.creds.outputs.ws_path }}
@@ -272,6 +274,7 @@ jobs:
           # these, so a reused node and a fresh one are indistinguishable to the
           # checks and to the build.
           {
+            echo "NODE_IP=${NODE_IP}"
             echo "NODE_DOMAIN=${DOMAIN}"
             echo "NODE_WS_UUID=${WS_UUID}"
             echo "NODE_WS_PATH=${WS_PATH}"
@@ -283,12 +286,13 @@ jobs:
 
       - name: Point DNS at the node
         id: dns
+        if: ${{ !inputs.reuse_node }}
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           SS_KEY: ${{ secrets.SPACESHIP_API_KEY }}
           SS_SECRET: ${{ secrets.SPACESHIP_API_SECRET }}
           DOMAIN: ${{ env.NODE_DOMAIN }}
-          NODE_IP: ${{ steps.create.outputs.node_ip }}
+          NODE_IP: ${{ env.NODE_IP }}
         run: |
           set -euo pipefail
           token=$(printf '%s' "${CF_TOKEN}" | tr -d '[:space:]')
@@ -383,9 +387,10 @@ jobs:
           echo "A record created for ${DOMAIN}"
 
       - name: Wait for bring-up
+        if: ${{ !inputs.reuse_node }}
         id: wait
         env:
-          NODE_IP: ${{ steps.create.outputs.node_ip }}
+          NODE_IP: ${{ env.NODE_IP }}
           DOMAIN: ${{ env.NODE_DOMAIN }}
         run: |
           set -uo pipefail
@@ -521,7 +526,7 @@ jobs:
         id: verify_ws
         env:
           DOMAIN: ${{ env.NODE_DOMAIN }}
-          NODE_IP: ${{ steps.create.outputs.node_ip }}
+          NODE_IP: ${{ env.NODE_IP }}
           UUID: ${{ env.NODE_WS_UUID }}
           WS_PATH: ${{ env.NODE_WS_PATH }}
         run: |
@@ -570,7 +575,7 @@ jobs:
         continue-on-error: true
         env:
           DOMAIN: ${{ env.NODE_DOMAIN }}
-          NODE_IP: ${{ steps.create.outputs.node_ip }}
+          NODE_IP: ${{ env.NODE_IP }}
           UUID: ${{ env.NODE_WS_UUID }}
           WS_PATH: ${{ env.NODE_WS_PATH }}
         run: |
@@ -754,7 +759,7 @@ jobs:
         # still reported below, so this cannot quietly pass as success.
         continue-on-error: true
         env:
-          NODE_IP: ${{ steps.create.outputs.node_ip }}
+          NODE_IP: ${{ env.NODE_IP }}
           UUID: ${{ env.NODE_REALITY_UUID }}
           PUBLIC: ${{ env.NODE_REALITY_PUBLIC }}
           SHORT: ${{ env.NODE_REALITY_SHORT }}
@@ -844,7 +849,7 @@ jobs:
         if: ${{ inputs.build_apk }}
         env:
           DOMAIN: ${{ env.NODE_DOMAIN }}
-          NODE_IP: ${{ steps.create.outputs.node_ip }}
+          NODE_IP: ${{ env.NODE_IP }}
           WS_UUID: ${{ env.NODE_WS_UUID }}
           WS_PATH: ${{ env.NODE_WS_PATH }}
         run: |
