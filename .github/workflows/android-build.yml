@@ -132,7 +132,15 @@ jobs:
           mkdir -p "${GITHUB_WORKSPACE}/android/app/libs"
           cd vpncore
           go mod tidy
+
+          # -checklinkname=0 is required, not a convenience. The bridge reads
+          # network interfaces through a library that reaches into private
+          # runtime symbols with go:linkname, because Android blocks the normal
+          # way of listing interfaces. Go 1.23 started rejecting those
+          # references at link time:
+          #   link: github.com/wlynxg/anet: invalid reference to net.zoneCache
           gomobile bind -target=android/arm64 -androidapi 24 \
+            -ldflags="-checklinkname=0" \
             -o "${GITHUB_WORKSPACE}/android/app/libs/vpncore.aar" .
           sha256sum "${GITHUB_WORKSPACE}/android/app/libs/vpncore.aar"
 

@@ -31,6 +31,16 @@ on:
         required: true
         default: false
         type: boolean
+      production_certificate:
+        description: Spend a real certificate instead of a staging one. Five per identical name set per week.
+        required: true
+        default: false
+        type: boolean
+      build_apk:
+        description: Build an installable APK carrying this node as its endpoint.
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -73,6 +83,7 @@ jobs:
           xray version | head -1
 
       - name: Trust the Let's Encrypt staging root
+        if: ${{ !inputs.production_certificate }}
         run: |
           set -euo pipefail
           # Without this the client would have to skip certificate verification,
@@ -161,7 +172,8 @@ jobs:
           TF_VAR_test_node_reality_uuid: ${{ steps.creds.outputs.reality_uuid }}
           TF_VAR_test_node_reality_private_key: ${{ steps.creds.outputs.private }}
           TF_VAR_test_node_reality_short_id: ${{ steps.creds.outputs.short }}
-          TF_VAR_acme_staging: "true"
+          TF_VAR_acme_staging: ${{ inputs.production_certificate && 'false' || 'true' }}
+          TF_VAR_acme_production_ack: ${{ inputs.production_certificate }}
           TF_VAR_debug_status: "true"
         run: |
           set -euo pipefail
