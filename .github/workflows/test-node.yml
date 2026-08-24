@@ -436,6 +436,13 @@ jobs:
 
       - name: Verify traffic over the standby REALITY transport
         id: verify_reality
+        # Not fatal, and the distinction is deliberate. REALITY is the standby
+        # on a separate port (ADR-024); the primary transport is the domain,
+        # Nginx and WebSocket. A standby that does not answer is a gap worth
+        # seeing in the summary, but stopping the run on it would mean no
+        # installable build exists because a fallback is broken. The outcome is
+        # still reported below, so this cannot quietly pass as success.
+        continue-on-error: true
         env:
           NODE_IP: ${{ steps.create.outputs.node_ip }}
           UUID: ${{ steps.creds.outputs.reality_uuid }}
@@ -632,8 +639,12 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # Only for a node that is going away. A kept node whose name no longer
+      # resolves is worse than either outcome on its own: it keeps costing
+      # money, and nothing can reach it. That happened once, on a run that
+      # failed after the node was already up.
       - name: Remove the DNS record
-        if: ${{ always() && steps.dns.outputs.record_id != '' }}
+        if: ${{ always() && !inputs.keep_node && steps.dns.outputs.record_id != '' }}
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           ZONE_ID: ${{ steps.dns.outputs.zone_id }}
