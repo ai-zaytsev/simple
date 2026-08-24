@@ -215,6 +215,7 @@ jobs:
         id: wait
         env:
           NODE_IP: ${{ steps.create.outputs.node_ip }}
+          DOMAIN: ${{ inputs.domain }}
         run: |
           set -uo pipefail
           # The node publishes its progress at /status.txt while bringing up.
@@ -223,7 +224,17 @@ jobs:
           last=""
           ready=false
           for attempt in $(seq 1 60); do
+            # Two addresses on purpose. Before the certificate exists only
+            # plain HTTP on the address works. The moment the node switches to
+            # the TLS configuration, port 80 starts redirecting everything, and
+            # polling it returns a redirect page instead of the status: the
+            # poller went blind at exactly the moment bring-up succeeded.
             body=$(curl -fsS --max-time 8 "http://${NODE_IP}/status.txt" 2>/dev/null || true)
+            case "${body}" in
+              ""|*"301 Moved"*|*"<html>"*)
+                body=$(curl -fsS --max-time 8 "https://${DOMAIN}/status.txt" 2>/dev/null || true)
+                ;;
+            esac
             if [ -n "${body}" ] && [ "${body}" != "${last}" ]; then
               echo "${body}" | tail -3 | sed 's/^/  /'
               last="${body}"
@@ -248,8 +259,9 @@ jobs:
             echo "Last status:"
             # Fetched fresh rather than reusing the cached copy: a failure often
             # appends its diagnostics after the poll that noticed it.
-            curl -fsS --max-time 10 "http://${NODE_IP}/status.txt" 2>/dev/null | sed 's/^/  /' \
-              || echo "${last}" | sed 's/^/  /'
+            { curl -fsS --max-time 10 "https://${DOMAIN}/status.txt" 2>/dev/null \
+              || curl -fsS --max-time 10 "http://${NODE_IP}/status.txt" 2>/dev/null \
+              || echo "${last}"; } | sed 's/^/  /'
             exit 1
           fi
           echo "Node reported ready."
