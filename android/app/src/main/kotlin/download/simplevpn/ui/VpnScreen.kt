@@ -23,10 +23,14 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.ui.platform.LocalContext
 import download.simplevpn.R
+import download.simplevpn.config.SliceProfileSource
+import download.simplevpn.config.TransportParams
 import download.simplevpn.config.XrayConfigBuilder
 import download.simplevpn.core.BridgeDiagnostics
 import download.simplevpn.core.EngineSelfTest
+import download.simplevpn.core.NodeReachTest
 import download.simplevpn.vpn.VpnConnectionState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -108,11 +112,40 @@ fun VpnScreen(
  */
 @Composable
 private fun BridgeCounters() {
+    val context = LocalContext.current
     var counters by remember { mutableStateOf(BridgeDiagnostics.snapshot()) }
+    var node by remember { mutableStateOf("node: checking") }
     var engine by remember { mutableStateOf("engine: checking") }
 
     LaunchedEffect(Unit) {
-        // Once, and off the main thread: it opens a socket and waits.
+        // The node first, and without the engine. A browser reaching the node
+        // with the tunnel switched off proves the network allows it, not that
+        // this application's own traffic escapes the tunnel it is running.
+        node = withContext(Dispatchers.IO) {
+            when (val profile = SliceProfileSource.load(context)) {
+                is SliceProfileSource.Result.Missing -> "node: no endpoint configured"
+                is SliceProfileSource.Result.Available -> {
+                    val transport = profile.profile.transport
+                    val serverName = when (transport) {
+                        is TransportParams.VlessWsTls -> transport.serverName
+                        is TransportParams.VlessReality -> transport.serverName
+                    }
+                    when (
+                        val reach = NodeReachTest.run(
+                            host = profile.profile.host,
+                            port = profile.profile.port,
+                            serverName = serverName,
+                        )
+                    ) {
+                        is NodeReachTest.Result.Reached -> "node: reachable, ${reach.certificateName}"
+                        is NodeReachTest.Result.Failed -> "node: unreachable, ${reach.reason}"
+                    }
+                }
+            }
+        }
+
+        // Then the same question through the engine. Off the main thread: both
+        // open sockets and wait.
         engine = when (val result = withContext(Dispatchers.IO) { EngineSelfTest.run(SOCKS_PORT) }) {
             is EngineSelfTest.Result.Reached -> "engine: reaches node, exit ${result.exitAddress}"
             is EngineSelfTest.Result.Failed -> "engine: cannot reach node, ${result.reason}"
@@ -129,6 +162,13 @@ private fun BridgeCounters() {
     Text(
         text = counters,
         modifier = Modifier.padding(top = 24.dp),
+        textAlign = TextAlign.Center,
+        style = MaterialTheme.typography.bodySmall,
+    )
+
+    Text(
+        text = node,
+        modifier = Modifier.padding(top = 12.dp),
         textAlign = TextAlign.Center,
         style = MaterialTheme.typography.bodySmall,
     )
