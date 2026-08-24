@@ -65,9 +65,15 @@ variable "acme_email" {
 }
 
 variable "acme_staging" {
-  description = "Use the Let's Encrypt staging environment. Always true for verification nodes."
+  description = "Use the Let's Encrypt staging environment. True unless a run explicitly asks to spend a real certificate."
   type        = bool
   default     = true
+}
+
+variable "acme_production_ack" {
+  description = "Explicit acknowledgement that this run may spend one real certificate against the domain's weekly budget."
+  type        = bool
+  default     = false
 }
 
 variable "debug_status" {
@@ -162,8 +168,14 @@ resource "digitalocean_droplet" "test_node" {
     }
 
     precondition {
-      condition     = !var.test_node_enabled || var.acme_staging
-      error_message = "Verification nodes must use the Let's Encrypt staging environment. Five certificates per identical name set per week means a create-verify-destroy loop would exhaust the domain's weekly budget."
+      # Staging stays the default, and leaving it takes a deliberate second
+      # flag. One switch could be flipped by a run that only meant to test
+      # something else; two cannot be flipped by accident. Five certificates
+      # per identical name set per week means an automated
+      # create-verify-destroy loop on production would exhaust a domain's
+      # weekly budget in one afternoon.
+      condition     = !var.test_node_enabled || var.acme_staging || var.acme_production_ack
+      error_message = "Spending a real certificate needs an explicit acknowledgement. Set acme_production_ack when the run is meant to produce a node a device will actually connect to."
     }
   }
 }

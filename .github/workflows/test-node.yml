@@ -49,6 +49,9 @@ env:
   XRAY_VERSION: v25.8.3
   TF_IN_AUTOMATION: "1"
   REALITY_PORT: "8443"
+  # Kept identical to the Android Build workflow so both share one cache entry
+  # and one routing behaviour.
+  GEOIP_TAG: '202608050239'
 
 jobs:
   test-node:
@@ -58,6 +61,31 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Check the run makes sense
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          PRODUCTION: ${{ inputs.production_certificate }}
+          KEEP: ${{ inputs.keep_node }}
+          BUILD: ${{ inputs.build_apk }}
+        run: |
+          set -euo pipefail
+          # A real certificate is one of five the domain gets in a week. Spent
+          # on a node that is destroyed minutes later, it buys nothing.
+          if [ "${PRODUCTION}" = "true" ] && [ "${KEEP}" != "true" ]; then
+            echo "Refusing to spend a real certificate on a node this run will destroy."
+            echo "Either keep the node, or leave the staging environment on."
+            exit 1
+          fi
+          # An APK pointing at a node that no longer exists installs fine and
+          # never connects, which is the most confusing possible outcome.
+          if [ "${BUILD}" = "true" ] && [ "${KEEP}" != "true" ]; then
+            echo "Refusing to build an APK whose endpoint this run will destroy."
+            exit 1
+          fi
+          if [ "${PRODUCTION}" = "true" ]; then
+            echo "This run spends one real certificate for ${DOMAIN}."
+          fi
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -470,6 +498,139 @@ jobs:
             echo "| WebSocket transport | ${WS_RESULT:-not reached} |"
             echo "| REALITY standby | ${REALITY_RESULT:-not reached} |"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      # The APK is built here, in the same run that created the node, and not
+      # by the ordinary build workflow. The endpoint credential is generated
+      # inside this run and must never leave it in readable form: passing it to
+      # another workflow would mean putting it into an input, an output or a
+      # secret, and the first two are visible. Built here, it exists only
+      # inside the artifact.
+
+      - name: Setup JDK
+        if: ${{ inputs.build_apk }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        if: ${{ inputs.build_apk }}
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        if: ${{ inputs.build_apk }}
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Bundle this node as the endpoint
+        if: ${{ inputs.build_apk }}
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          WS_UUID: ${{ steps.creds.outputs.ws_uuid }}
+          WS_PATH: ${{ steps.creds.outputs.ws_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p android/app/src/main/assets
+          # Written with jq rather than by hand: the credential must not pass
+          # through an echo, and quoting it correctly by hand is how a value
+          # ends up in a log.
+          jq -n \
+            --arg host "${DOMAIN}" \
+            --arg uuid "${WS_UUID}" \
+            --arg path "${WS_PATH}" \
+            '{
+               alias: "slice",
+               host: $host,
+               port: 443,
+               transport_kind: "vless-ws-tls",
+               credential_uuid: $uuid,
+               path: $path,
+               server_name: $host,
+               fingerprint: "chrome"
+             }' > android/app/src/main/assets/slice-profile.json
+          echo "Endpoint bundled for ${DOMAIN}."
+
+      - name: Restore the routing database
+        if: ${{ inputs.build_apk }}
+        id: geoip
+        uses: actions/cache@v4
+        with:
+          path: android/app/src/main/assets/geoip.dat
+          key: geoip-${{ env.GEOIP_TAG }}
+
+      - name: Download the routing database
+        if: ${{ inputs.build_apk && steps.geoip.outputs.cache-hit != 'true' }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/v2fly/geoip/releases/download/${GEOIP_TAG}"
+          curl -fsSL -o /tmp/geoip.dat "${base}/geoip.dat"
+          curl -fsSL -o /tmp/geoip.dat.sha256sum "${base}/geoip.dat.sha256sum"
+
+          expected=$(awk '{print $1}' /tmp/geoip.dat.sha256sum | head -1)
+          actual=$(sha256sum /tmp/geoip.dat | awk '{print $1}')
+          if [ "${expected}" != "${actual}" ]; then
+            echo "Routing database checksum mismatch."
+            exit 1
+          fi
+
+          mv /tmp/geoip.dat android/app/src/main/assets/geoip.dat
+          echo "Routing database verified: ${actual}"
+
+      - name: Restore the native library
+        if: ${{ inputs.build_apk }}
+        id: native
+        uses: actions/cache@v4
+        with:
+          path: android/app/libs/vpncore.aar
+          key: vpncore-${{ hashFiles('vpncore/**') }}
+
+      - name: Setup Go
+        if: ${{ inputs.build_apk && steps.native.outputs.cache-hit != 'true' }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build the native library
+        if: ${{ inputs.build_apk && steps.native.outputs.cache-hit != 'true' }}
+        run: |
+          set -euo pipefail
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          export PATH="$(go env GOPATH)/bin:${PATH}"
+          gomobile init
+
+          mkdir -p "${GITHUB_WORKSPACE}/android/app/libs"
+          cd vpncore
+          go mod tidy
+          gomobile bind -target=android/arm64 -androidapi 24 \
+            -ldflags="-checklinkname=0" \
+            -o "${GITHUB_WORKSPACE}/android/app/libs/vpncore.aar" .
+
+      - name: Assemble the APK
+        if: ${{ inputs.build_apk }}
+        working-directory: android
+        run: |
+          set -euo pipefail
+          gradle --no-daemon assembleDebug
+          apk=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
+          if [ -z "${apk}" ]; then
+            echo "No APK was produced."
+            exit 1
+          fi
+          {
+            echo "| APK SHA-256 | \`$(sha256sum "${apk}" | cut -d' ' -f1)\` |"
+            echo "| APK size | $(stat -c%s "${apk}") bytes |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload the APK
+        if: ${{ inputs.build_apk }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: simple-vpn-device-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Remove the DNS record
         if: ${{ always() && steps.dns.outputs.record_id != '' }}
