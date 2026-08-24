@@ -575,6 +575,72 @@ jobs:
           fi
           echo "Every variant of the application configuration carried traffic."
 
+      - name: Verify a name resolves through the proxy over UDP
+        id: verify_udp_dns
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          # The checks above all speak TCP. The device does not start there: it
+          # sends a DNS query over UDP first, and nothing it wants to reach has
+          # a name resolved yet.
+          #
+          # This is the exact exchange the packet bridge performs - UDP
+          # ASSOCIATE against the engine's SOCKS inbound, then a query aimed at
+          # the address the interface advertises as its resolver. If it fails,
+          # every name fails, and the tunnel reports success while carrying
+          # nothing. That is what a device reported and what no TCP check here
+          # could have caught.
+          python3 -m pip install --quiet pysocks
+
+          xray run -config /tmp/app-full.json > /tmp/xray-udp.log 2>&1 &
+          pid=$!
+          sleep 6
+
+          python3 - <<'PY'
+          import socket
+          import struct
+          import sys
+
+          import socks
+
+          query = struct.pack(">HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0)
+          for label in (b"example", b"com"):
+              query += bytes([len(label)]) + label
+          query += b"\x00" + struct.pack(">HH", 1, 1)
+
+          sock = socks.socksocket(socket.AF_INET, socket.SOCK_DGRAM)
+          sock.set_proxy(socks.SOCKS5, "127.0.0.1", 10808)
+          sock.settimeout(20)
+
+          try:
+              # The address the tunnel advertises as its resolver. Nothing
+              # listens there: the engine is expected to answer by routing the
+              # port, which is the rule being tested.
+              sock.sendto(query, ("10.10.10.2", 53))
+              data, _ = sock.recvfrom(4096)
+          except Exception as exc:
+              print("UDP: no answer through the proxy: %s" % exc)
+              sys.exit(1)
+
+          if len(data) < 12 or data[:2] != b"\x12\x34":
+              print("UDP: answer did not match the query")
+              sys.exit(1)
+
+          answers = struct.unpack(">H", data[6:8])[0]
+          print("UDP: resolver answered through the proxy, %d record(s)" % answers)
+          sys.exit(0 if answers > 0 else 1)
+          PY
+          rc=$?
+
+          kill "${pid}" 2>/dev/null || true
+          wait "${pid}" 2>/dev/null || true
+
+          if [ "${rc}" -ne 0 ]; then
+            echo "Engine log:"
+            sed 's/^/    /' /tmp/xray-udp.log | tail -30
+            exit 1
+          fi
+
       - name: Verify traffic over the standby REALITY transport
         id: verify_reality
         # Not fatal, and the distinction is deliberate. REALITY is the standby
