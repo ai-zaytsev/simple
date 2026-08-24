@@ -285,6 +285,8 @@ jobs:
         id: dns
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SS_KEY: ${{ secrets.SPACESHIP_API_KEY }}
+          SS_SECRET: ${{ secrets.SPACESHIP_API_SECRET }}
           DOMAIN: ${{ env.NODE_DOMAIN }}
           NODE_IP: ${{ steps.create.outputs.node_ip }}
         run: |
@@ -296,9 +298,47 @@ jobs:
             https://api.cloudflare.com/client/v4/zones | jq -r '(.result // []) | .[0].id // empty')
 
           if [ -z "${zone_id}" ]; then
-            echo "Domain ${DOMAIN} is not a zone this token can see."
-            exit 1
+            # Not every entry domain is on Cloudflare, and which one is where is
+            # recorded in docs/integrations/dns.md rather than discoverable from
+            # the name. Falling back keeps the choice of domain a matter of
+            # certificate budget instead of a matter of which provider the
+            # workflow happens to speak to.
+            echo "Domain ${DOMAIN} is not a Cloudflare zone, trying the other provider."
+
+            ss_key=$(printf '%s' "${SS_KEY}" | tr -d '[:space:]')
+            ss_secret=$(printf '%s' "${SS_SECRET}" | tr -d '[:space:]')
+            if [ -z "${ss_key}" ] || [ -z "${ss_secret}" ]; then
+              echo "No credentials for the other provider either."
+              exit 1
+            fi
+
+            # force replaces whatever sits on the same name and type, which is
+            # the behaviour needed here: a kept node leaves its record behind,
+            # and a second record beside it makes the name resolve to both.
+            body=$(jq -n --arg ip "${NODE_IP}" \
+              '{force: true, items: [{type: "A", name: "@", address: $ip, ttl: 60}]}')
+
+            code=$(curl -sS -o /tmp/ss-put.json -w '%{http_code}' -X PUT \
+              -H "X-API-Key: ${ss_key}" \
+              -H "X-API-Secret: ${ss_secret}" \
+              -H "content-type: application/json" \
+              -d "${body}" \
+              "https://spaceship.dev/api/v1/dns/records/${DOMAIN}" || echo "000")
+
+            if [ "${code}" != "200" ] && [ "${code}" != "204" ]; then
+              echo "The other provider refused the record. HTTP ${code}."
+              # Its own words, because guessing at a schema costs a whole run.
+              sed 's/^/  /' /tmp/ss-put.json 2>/dev/null | head -20
+              exit 1
+            fi
+
+            echo "provider=spaceship" >> "${GITHUB_OUTPUT}"
+            echo "record_id=spaceship" >> "${GITHUB_OUTPUT}"
+            echo "A record written for ${DOMAIN} at the other provider."
+            exit 0
           fi
+
+          echo "provider=cloudflare" >> "${GITHUB_OUTPUT}"
 
           # Every A record already on this exact name goes first.
           #
@@ -928,7 +968,7 @@ jobs:
       # money, and nothing can reach it. That happened once, on a run that
       # failed after the node was already up.
       - name: Remove the DNS record
-        if: ${{ always() && !inputs.keep_node && steps.dns.outputs.record_id != '' }}
+        if: ${{ always() && !inputs.keep_node && steps.dns.outputs.provider == 'cloudflare' && steps.dns.outputs.record_id != '' }}
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           ZONE_ID: ${{ steps.dns.outputs.zone_id }}
