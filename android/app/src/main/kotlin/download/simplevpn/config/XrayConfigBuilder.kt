@@ -23,6 +23,9 @@ object XrayConfigBuilder {
     const val SOCKS_PORT = 10808
     const val DNS_PORT = 10853
 
+    /** Port QUIC travels on, refused so that browsers fall back to TCP. */
+    private const val QUIC_PORT = 443
+
     /** Port DNS actually travels on, as seen by routing. */
     private const val DNS_PORT_WIRE = 53
 
@@ -317,6 +320,29 @@ object XrayConfigBuilder {
                 put("inboundTag", JSONArray(listOf("socks-in")))
                 put("port", DNS_PORT_WIRE)
                 put("outboundTag", "dns-out")
+            },
+        )
+
+        // QUIC is refused, which sends browsers back to TCP.
+        //
+        // The tunnel is a TCP stream, and every UDP session crossing it opens
+        // its own connection to the node. A phone browsing normally opens
+        // hundreds: a device log showed 967 UDP packets in under two minutes,
+        // against a node with 512 MB of memory, and connections through the
+        // tunnel were being lost wholesale - "http2: client connection lost"
+        // on a resolver that had answered in 54 ms minutes earlier.
+        //
+        // Refusing it is better than dropping it silently: a refused QUIC
+        // attempt makes the browser fall back to TCP immediately, while a
+        // black hole makes it wait for a timeout first. Carrying QUIC over a
+        // TCP tunnel is a poor trade in any case, since a stall in the outer
+        // stream stalls every stream inside it.
+        rules.put(
+            JSONObject().apply {
+                put("type", "field")
+                put("network", "udp")
+                put("port", QUIC_PORT)
+                put("outboundTag", "block")
             },
         )
 
