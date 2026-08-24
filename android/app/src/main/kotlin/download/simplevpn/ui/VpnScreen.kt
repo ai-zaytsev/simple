@@ -29,6 +29,7 @@ import download.simplevpn.config.SliceProfileSource
 import download.simplevpn.config.TransportParams
 import download.simplevpn.config.XrayConfigBuilder
 import download.simplevpn.core.BridgeDiagnostics
+import download.simplevpn.core.EngineLog
 import download.simplevpn.core.EngineSelfTest
 import download.simplevpn.core.NodeReachTest
 import download.simplevpn.vpn.VpnConnectionState
@@ -116,6 +117,7 @@ private fun BridgeCounters() {
     var counters by remember { mutableStateOf(BridgeDiagnostics.snapshot()) }
     var node by remember { mutableStateOf("node: checking") }
     var engine by remember { mutableStateOf("engine: checking") }
+    var engineLog by remember { mutableStateOf("log: waiting") }
 
     LaunchedEffect(Unit) {
         // The node first, and without the engine. A browser reaching the node
@@ -155,6 +157,7 @@ private fun BridgeCounters() {
     LaunchedEffect(Unit) {
         while (true) {
             counters = BridgeDiagnostics.snapshot()
+            engineLog = withContext(Dispatchers.IO) { EngineLog.lastFailure(context) }
             delay(1500)
         }
     }
@@ -175,6 +178,13 @@ private fun BridgeCounters() {
 
     Text(
         text = engine,
+        modifier = Modifier.padding(top = 12.dp),
+        textAlign = TextAlign.Center,
+        style = MaterialTheme.typography.bodySmall,
+    )
+
+    Text(
+        text = engineLog,
         modifier = Modifier.padding(top = 12.dp),
         textAlign = TextAlign.Center,
         style = MaterialTheme.typography.bodySmall,

@@ -15,6 +15,7 @@ import download.simplevpn.R
 import download.simplevpn.config.RoutingPolicy
 import download.simplevpn.config.SliceProfileSource
 import download.simplevpn.config.XrayConfigBuilder
+import download.simplevpn.core.EngineLog
 import download.simplevpn.core.EngineStartResult
 import download.simplevpn.core.LibXrayEngine
 import download.simplevpn.core.TunBridge
@@ -93,7 +94,8 @@ class SimpleVpnService : VpnService() {
             }
             tunnel = descriptor
 
-            val configJson = XrayConfigBuilder.build(profile, policy)
+            EngineLog.reset(this)
+            val configJson = XrayConfigBuilder.build(profile, policy, EngineLog.file(this).absolutePath)
 
             when (val result = engine.start(configJson, descriptor.fd)) {
                 is EngineStartResult.Started -> Unit
@@ -155,7 +157,11 @@ class SimpleVpnService : VpnService() {
                 return
             }
 
-            val configJson = XrayConfigBuilder.build(profileResult.profile, RoutingPolicy.DEFAULT)
+            val configJson = XrayConfigBuilder.build(
+                profileResult.profile,
+                RoutingPolicy.DEFAULT,
+                EngineLog.file(this).absolutePath,
+            )
             when (val result = engine.start(configJson, TUN_FD_OWNED_BY_BRIDGE)) {
                 is EngineStartResult.Started -> {
                     VpnController.update(VpnConnectionState.Connected(System.currentTimeMillis()))

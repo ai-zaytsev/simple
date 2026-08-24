@@ -38,9 +38,13 @@ object XrayConfigBuilder {
      */
     private const val LOCAL_DNS = "77.88.8.8"
 
-    fun build(profile: ConnectionProfile, policy: RoutingPolicy): String {
+    fun build(
+        profile: ConnectionProfile,
+        policy: RoutingPolicy,
+        errorLogPath: String? = null,
+    ): String {
         return JSONObject().apply {
-            put("log", buildLog())
+            put("log", buildLog(errorLogPath))
             put("dns", buildDns(policy))
             put("inbounds", buildInbounds())
             put("outbounds", buildOutbounds(profile))
@@ -48,12 +52,27 @@ object XrayConfigBuilder {
         }.toString()
     }
 
-    private fun buildLog(): JSONObject = JSONObject().apply {
+    private fun buildLog(errorLogPath: String?): JSONObject = JSONObject().apply {
         // Not a default that can be overridden elsewhere: this is the only
         // generator, so an access log cannot appear at runtime.
         put("access", "none")
-        put("error", "")
-        put("loglevel", "warning")
+
+        if (errorLogPath == null) {
+            put("error", "")
+            put("loglevel", "warning")
+        } else {
+            // Diagnostic path, used while the slice is being brought up on a
+            // real device. The engine reports a refused or stalled outbound at
+            // info level, so warning hides exactly the line worth having.
+            //
+            // The cost is real and is why this is not the default: at info
+            // level the engine names the destinations it dials, which is the
+            // browsing history the privacy model forbids keeping. The file
+            // lives in the application's private storage, is truncated at every
+            // start, and this level goes away with the slice.
+            put("error", errorLogPath)
+            put("loglevel", "info")
+        }
     }
 
     private fun buildDns(policy: RoutingPolicy): JSONObject {
@@ -213,7 +232,16 @@ object XrayConfigBuilder {
                     // Never true. Accepting an invalid certificate would turn a
                     // detectable interception into a silent one.
                     put("allowInsecure", false)
-                    put("alpn", JSONArray(listOf("h2", "http/1.1")))
+                    // http/1.1 only, and the omission of h2 is the point.
+                    //
+                    // The tunnel is carried by a WebSocket, and a WebSocket is
+                    // opened by an HTTP/1.1 upgrade. Offering h2 lets the
+                    // server choose it - ours does, since it serves an ordinary
+                    // site over HTTP/2 - and the upgrade request then arrives
+                    // on a connection where the server expects HTTP/2 frames.
+                    // Neither side errors: each waits for the other, and the
+                    // connection hangs after a handshake that looked perfect.
+                    put("alpn", JSONArray(listOf("http/1.1")))
                 },
             )
         }
