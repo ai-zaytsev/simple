@@ -1,0 +1,146 @@
+name: Region Sweep
+
+# Puts one small machine in each region, each serving the same file, so that a
+# network somewhere else can measure them all against each other.
+#
+# It exists because a device proved that our client, our node and our
+# configuration all work, and that the same build reaches 126 live connections
+# through a server in one country and five through a server in another. The
+# remaining variable is which address range the node sits in, and the only way
+# to compare ranges is to hold everything else still and try them.
+#
+# Deliberately not Terraform. These machines are an instrument, not
+# infrastructure: they exist for minutes, they are never part of the fleet, and
+# recording them in the state used by real nodes would mix the two. They carry a
+# tag instead, and destruction matches on it.
+#
+# Billing is per second, so the whole sweep costs a few cents provided the
+# destroy runs. It runs on its own, and can be run again by hand at any time.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Create the probes or remove them.
+        required: true
+        default: create
+        type: choice
+        options:
+          - create
+          - destroy
+      regions:
+        description: Comma separated region slugs.
+        required: true
+        default: ams3,fra1,lon1,nyc3,tor1,sfo3
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PROBE_TAG: region-sweep
+  PROBE_SIZE: s-1vcpu-512mb-10gb
+  PROBE_IMAGE: ubuntu-24-04-x64
+
+jobs:
+  region-sweep:
+    name: Region Sweep
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Remove any probes already running
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Always first, whichever action was asked for. A sweep left running
+          # from an earlier attempt is a charge nobody is watching, and a second
+          # set beside it would make the measurement meaningless anyway.
+          token=$(printf '%s' "${DO_TOKEN}" | tr -d '[:space:]')
+          ids=$(curl -sS -H "Authorization: Bearer ${token}" \
+            "https://api.digitalocean.com/v2/droplets?tag_name=${PROBE_TAG}&per_page=200" \
+            | jq -r '(.droplets // [])[] | .id')
+
+          for id in ${ids}; do
+            curl -sS -X DELETE -H "Authorization: Bearer ${token}" \
+              "https://api.digitalocean.com/v2/droplets/${id}" > /dev/null
+            echo "Removed probe ${id}."
+          done
+          echo "Probes running before this step: $(echo "${ids}" | grep -c . || true)"
+
+      - name: Create one probe per region
+        if: ${{ inputs.action == 'create' }}
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          REGIONS: ${{ inputs.regions }}
+        run: |
+          set -euo pipefail
+          token=$(printf '%s' "${DO_TOKEN}" | tr -d '[:space:]')
+
+          # Nothing on these machines but a file and something to serve it.
+          # The file is random bytes so that nothing along the way can compress
+          # it and flatter the result.
+          user_data=$(cat <<'CLOUDINIT'
+          #cloud-config
+          runcmd:
+            - [ sh, -c, "head -c 5000000 /dev/urandom > /root/5mb.bin" ]
+            - [ sh, -c, "cd /root && nohup python3 -m http.server 80 > /var/log/probe.log 2>&1 &" ]
+          CLOUDINIT
+          )
+
+          echo "| Region | Address |" >> "${GITHUB_STEP_SUMMARY}"
+          echo "| --- | --- |" >> "${GITHUB_STEP_SUMMARY}"
+
+          for region in $(printf '%s' "${REGIONS}" | tr ',' ' '); do
+            body=$(jq -n \
+              --arg name "probe-${region}" \
+              --arg region "${region}" \
+              --arg size "${PROBE_SIZE}" \
+              --arg image "${PROBE_IMAGE}" \
+              --arg tag "${PROBE_TAG}" \
+              --arg ud "${user_data}" \
+              '{name: $name, region: $region, size: $size, image: $image,
+                tags: [$tag], user_data: $ud, monitoring: false, ipv6: false}')
+
+            created=$(curl -sS -X POST \
+              -H "Authorization: Bearer ${token}" \
+              -H "content-type: application/json" \
+              -d "${body}" \
+              "https://api.digitalocean.com/v2/droplets")
+
+            id=$(printf '%s' "${created}" | jq -r '.droplet.id // empty')
+            if [ -z "${id}" ]; then
+              echo "Region ${region} refused:"
+              printf '%s' "${created}" | jq -r '.message // .' | sed 's/^/  /'
+              continue
+            fi
+            echo "${region} ${id}" >> /tmp/probes.txt
+          done
+
+          echo "Waiting for addresses."
+          sleep 45
+
+          while read -r region id; do
+            address=$(curl -sS -H "Authorization: Bearer ${token}" \
+              "https://api.digitalocean.com/v2/droplets/${id}" \
+              | jq -r '[.droplet.networks.v4[] | select(.type == "public") | .ip_address] | .[0] // empty')
+            printf '%-6s %s\n' "${region}" "${address:-pending}"
+            echo "| ${region} | \`${address:-pending}\` |" >> "${GITHUB_STEP_SUMMARY}"
+          done < /tmp/probes.txt
+
+          echo ""
+          echo "Each serves http://ADDRESS/5mb.bin once it has booted."
+          echo "Run this workflow again with action=destroy when the measurement is done."
+
+      - name: Confirm what is left running
+        if: ${{ always() }}
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -euo pipefail
+          token=$(printf '%s' "${DO_TOKEN}" | tr -d '[:space:]')
+          count=$(curl -sS -H "Authorization: Bearer ${token}" \
+            "https://api.digitalocean.com/v2/droplets?tag_name=${PROBE_TAG}&per_page=200" \
+            | jq -r '(.droplets // []) | length')
+          echo "Probes now running: ${count}"
+          echo "| Probes running | ${count} |" >> "${GITHUB_STEP_SUMMARY}"
