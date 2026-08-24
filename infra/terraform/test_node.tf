@@ -65,9 +65,15 @@ variable "acme_email" {
 }
 
 variable "acme_staging" {
-  description = "Use the Let's Encrypt staging environment. Always true for verification nodes."
+  description = "Use the Let's Encrypt staging environment. True unless a run explicitly asks to spend a real certificate."
   type        = bool
   default     = true
+}
+
+variable "acme_production_ack" {
+  description = "Explicit acknowledgement that this run may spend one real certificate against the domain's weekly budget."
+  type        = bool
+  default     = false
 }
 
 variable "debug_status" {
@@ -162,8 +168,14 @@ resource "digitalocean_droplet" "test_node" {
     }
 
     precondition {
-      condition     = !var.test_node_enabled || var.acme_staging
-      error_message = "Verification nodes must use the Let's Encrypt staging environment. Five certificates per identical name set per week means a create-verify-destroy loop would exhaust the domain's weekly budget."
+      # Staging stays the default, and leaving it takes a deliberate second
+      # flag. One switch could be flipped by a run that only meant to test
+      # something else; two cannot be flipped by accident. Five certificates
+      # per identical name set per week means an automated
+      # create-verify-destroy loop on production would exhaust a domain's
+      # weekly budget in one afternoon.
+      condition     = !var.test_node_enabled || var.acme_staging || var.acme_production_ack
+      error_message = "Spending a real certificate needs an explicit acknowledgement. Set acme_production_ack when the run is meant to produce a node a device will actually connect to."
     }
   }
 }
@@ -177,4 +189,57 @@ resource "digitalocean_project_resources" "test_node" {
 output "test_node_ip" {
   description = "Public address of the verification node, empty when it does not exist."
   value       = var.test_node_enabled ? digitalocean_droplet.test_node[0].ipv4_address : ""
+}
+
+# Credentials are published back as outputs so that a later run can reuse them.
+#
+# Every rebuild of the application used to generate fresh credentials, which
+# changed the node's user data, which replaced the droplet, which spent another
+# certificate. Five per name per week is a budget that ran out in an afternoon
+# of debugging a client that the node had nothing to do with.
+#
+# Reading these back and passing them in again produces identical user data, so
+# the droplet is left alone and its certificate keeps its full lifetime.
+#
+# They are marked sensitive: Terraform then refuses to print them in a plan or
+# an apply, and they only leave through an explicit request for one value.
+
+output "test_node_domain" {
+  description = "Domain the existing verification node serves, empty when there is none."
+  value       = var.test_node_domain
+}
+
+output "test_node_ws_uuid" {
+  description = "VLESS credential of the existing node."
+  value       = var.test_node_ws_uuid
+  sensitive   = true
+}
+
+output "test_node_ws_path" {
+  description = "Tunnel path of the existing node."
+  value       = var.test_node_ws_path
+  sensitive   = true
+}
+
+output "test_node_reality_uuid" {
+  description = "Standby transport credential of the existing node."
+  value       = var.test_node_reality_uuid
+  sensitive   = true
+}
+
+output "test_node_reality_private_key" {
+  description = "Standby transport private key of the existing node."
+  value       = var.test_node_reality_private_key
+  sensitive   = true
+}
+
+output "test_node_reality_short_id" {
+  description = "Standby transport short id of the existing node."
+  value       = var.test_node_reality_short_id
+  sensitive   = true
+}
+
+output "test_node_acme_staging" {
+  description = "Whether the existing node was built against the staging environment."
+  value       = var.acme_staging ? "true" : "false"
 }

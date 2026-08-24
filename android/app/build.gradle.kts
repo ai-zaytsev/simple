@@ -80,8 +80,11 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
 
-    // The Xray engine arrives as a locally built AAR, not from a third-party
-    // Maven republish. See ADR-020 in docs/architecture/decisions.md.
-    // The directory is empty until the libxray workflow produces the artifact.
+    // The engine and the packet bridge arrive as one locally built AAR, not
+    // from a third-party Maven republish. See ADR-020 in
+    // docs/architecture/decisions.md. They share one artifact because each
+    // gomobile binding carries its own Go runtime and two of them in one APK
+    // fail the build on duplicated runtime classes.
+    // The directory is empty until the Android Build workflow produces it.
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
 }

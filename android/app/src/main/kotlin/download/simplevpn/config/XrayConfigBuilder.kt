@@ -23,15 +23,37 @@ object XrayConfigBuilder {
     const val SOCKS_PORT = 10808
     const val DNS_PORT = 10853
 
+    /** Port QUIC travels on, refused so that browsers fall back to TCP. */
+    private const val QUIC_PORT = 443
+
+    /** Port DNS actually travels on, as seen by routing. */
+    private const val DNS_PORT_WIRE = 53
+
     /** Address the TUN advertises as DNS; captured and answered by the engine. */
     const val TUN_DNS_ADDRESS = "10.10.10.2"
 
     private const val REMOTE_DOH = "https://1.1.1.1/dns-query"
-    private const val LOCAL_DNS = "223.5.5.5"
 
-    fun build(profile: ConnectionProfile, policy: RoutingPolicy): String {
+    /** A second provider, so one stalling resolver is not every name on the device. */
+    private const val REMOTE_DOH_ALTERNATE = "https://8.8.8.8/dns-query"
+
+    /** Addresses of the remote resolvers, for the rule that keeps them in the tunnel. */
+    private val REMOTE_RESOLVER_IPS = listOf("1.1.1.1", "8.8.8.8")
+
+    /**
+     * Resolver for the direct list only. A Russian one on purpose: those names
+     * must resolve the way they resolve for a user in Russia, and a resolver
+     * abroad hands back addresses chosen for somebody else's location.
+     */
+    private const val LOCAL_DNS = "77.88.8.8"
+
+    fun build(
+        profile: ConnectionProfile,
+        policy: RoutingPolicy,
+        errorLogPath: String? = null,
+    ): String {
         return JSONObject().apply {
-            put("log", buildLog())
+            put("log", buildLog(errorLogPath))
             put("dns", buildDns(policy))
             put("inbounds", buildInbounds())
             put("outbounds", buildOutbounds(profile))
@@ -39,19 +61,48 @@ object XrayConfigBuilder {
         }.toString()
     }
 
-    private fun buildLog(): JSONObject = JSONObject().apply {
+    private fun buildLog(errorLogPath: String?): JSONObject = JSONObject().apply {
         // Not a default that can be overridden elsewhere: this is the only
         // generator, so an access log cannot appear at runtime.
         put("access", "none")
-        put("error", "")
-        put("loglevel", "warning")
+
+        if (errorLogPath == null) {
+            put("error", "")
+            put("loglevel", "warning")
+        } else {
+            // Diagnostic path, used while the slice is being brought up on a
+            // real device. The engine reports a refused or stalled outbound at
+            // info level, so warning hides exactly the line worth having.
+            //
+            // The cost is real and is why this is not the default: at info
+            // level the engine names the destinations it dials, which is the
+            // browsing history the privacy model forbids keeping. The file
+            // lives in the application's private storage, is truncated at every
+            // start, and this level goes away with the slice.
+            put("error", errorLogPath)
+            put("loglevel", "info")
+        }
     }
 
     private fun buildDns(policy: RoutingPolicy): JSONObject {
         val servers = JSONArray()
 
-        // Remote resolver first: it is the default for everything proxied.
+        // Both resolvers speak over TCP, and that is the point.
+        //
+        // A session log from a device settled it. Queries sent as plain UDP
+        // through the tunnel were answered for about a second after the session
+        // was created and never again: the session was established twice in two
+        // minutes, died both times, and was never rebuilt, so the engine went
+        // on writing into a channel nobody was reading. Twenty-three answers
+        // out of a hundred and sixty. Queries over the encrypted resolver, which
+        // is carried by TCP, came back in 54 ms on the same tunnel at the same
+        // time.
+        //
+        // So plain UDP is gone from the tunnel entirely. Two providers rather
+        // than one, because a single resolver that stalls is still every name
+        // on the device.
         servers.put(REMOTE_DOH)
+        servers.put(REMOTE_DOH_ALTERNATE)
 
         // Local resolver, scoped to the names that must resolve to Russian
         // endpoints. Scoping matters: made global it would leak every lookup.
@@ -204,7 +255,16 @@ object XrayConfigBuilder {
                     // Never true. Accepting an invalid certificate would turn a
                     // detectable interception into a silent one.
                     put("allowInsecure", false)
-                    put("alpn", JSONArray(listOf("h2", "http/1.1")))
+                    // http/1.1 only, and the omission of h2 is the point.
+                    //
+                    // The tunnel is carried by a WebSocket, and a WebSocket is
+                    // opened by an HTTP/1.1 upgrade. Offering h2 lets the
+                    // server choose it - ours does, since it serves an ordinary
+                    // site over HTTP/2 - and the upgrade request then arrives
+                    // on a connection where the server expects HTTP/2 frames.
+                    // Neither side errors: each waits for the other, and the
+                    // connection hangs after a handshake that looked perfect.
+                    put("alpn", JSONArray(listOf("http/1.1")))
                 },
             )
         }
@@ -238,6 +298,66 @@ object XrayConfigBuilder {
             },
         )
 
+        // And by port, which is the rule that actually carries the device.
+        //
+        // The interface advertises a DNS address inside the tunnel's own
+        // subnet. The packet bridge forwards those queries to the engine as
+        // ordinary traffic to that address, without knowing it is DNS, so they
+        // never reach the inbound above. The private-range rule below would
+        // then send them out as direct traffic to an address that exists
+        // nowhere, and every lookup would time out: a tunnel that connects,
+        // reports success and loads nothing.
+        //
+        // Matching on the port instead catches them wherever they arrive from,
+        // and this rule must stay ahead of the address rules for that reason.
+        // Scoped to traffic that arrives from the device. Unscoped, this rule
+        // also catches the engine's own queries to the resolvers above, sending
+        // them back to the resolver that issued them: a loop that answers
+        // nothing and is invisible in any counter.
+        rules.put(
+            JSONObject().apply {
+                put("type", "field")
+                put("inboundTag", JSONArray(listOf("socks-in")))
+                put("port", DNS_PORT_WIRE)
+                put("outboundTag", "dns-out")
+            },
+        )
+
+        // QUIC is refused, which sends browsers back to TCP.
+        //
+        // The tunnel is a TCP stream, and every UDP session crossing it opens
+        // its own connection to the node. A phone browsing normally opens
+        // hundreds: a device log showed 967 UDP packets in under two minutes,
+        // against a node with 512 MB of memory, and connections through the
+        // tunnel were being lost wholesale - "http2: client connection lost"
+        // on a resolver that had answered in 54 ms minutes earlier.
+        //
+        // Refusing it is better than dropping it silently: a refused QUIC
+        // attempt makes the browser fall back to TCP immediately, while a
+        // black hole makes it wait for a timeout first. Carrying QUIC over a
+        // TCP tunnel is a poor trade in any case, since a stall in the outer
+        // stream stalls every stream inside it.
+        rules.put(
+            JSONObject().apply {
+                put("type", "field")
+                put("network", "udp")
+                put("port", QUIC_PORT)
+                put("outboundTag", "block")
+            },
+        )
+
+        // The remote resolvers belong in the tunnel, said explicitly rather
+        // than left to the default. They are the destinations whose exposure
+        // would reveal every site visited, so it must not depend on a rule
+        // further down happening not to match them.
+        rules.put(
+            JSONObject().apply {
+                put("type", "field")
+                put("ip", JSONArray(REMOTE_RESOLVER_IPS))
+                put("outboundTag", "proxy")
+            },
+        )
+
         // Direct by geography and by private ranges.
         if (policy.directGeoRules.isNotEmpty()) {
             rules.put(
@@ -262,9 +382,16 @@ object XrayConfigBuilder {
         }
 
         return JSONObject().apply {
-            // Names are resolved before matching so that a direct-listed name
-            // behind a foreign address still goes direct.
-            put("domainStrategy", "IPIfNonMatch")
+            // Addresses are matched as they arrive.
+            //
+            // Resolving every destination before matching it made each
+            // connection wait on the resolver, so a resolver that answers
+            // slowly or not at all stopped all traffic rather than just the
+            // lookups. It is also unnecessary here: the device has already
+            // resolved the name through this same engine, so the address rules
+            // see a real address, while sniffing recovers the name for the
+            // rules that match on names.
+            put("domainStrategy", "AsIs")
             put("rules", rules)
         }
     }

@@ -31,6 +31,21 @@ on:
         required: true
         default: false
         type: boolean
+      production_certificate:
+        description: Spend a real certificate instead of a staging one. Five per identical name set per week.
+        required: true
+        default: false
+        type: boolean
+      build_apk:
+        description: Build an installable APK carrying this node as its endpoint.
+        required: true
+        default: false
+        type: boolean
+      reuse_node:
+        description: Keep the node that already exists and reuse its credentials, spending no certificate.
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -39,6 +54,9 @@ env:
   XRAY_VERSION: v25.8.3
   TF_IN_AUTOMATION: "1"
   REALITY_PORT: "8443"
+  # Kept identical to the Android Build workflow so both share one cache entry
+  # and one routing behaviour.
+  GEOIP_TAG: '202608050239'
 
 jobs:
   test-node:
@@ -48,6 +66,31 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Check the run makes sense
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          PRODUCTION: ${{ inputs.production_certificate }}
+          KEEP: ${{ inputs.keep_node }}
+          BUILD: ${{ inputs.build_apk }}
+        run: |
+          set -euo pipefail
+          # A real certificate is one of five the domain gets in a week. Spent
+          # on a node that is destroyed minutes later, it buys nothing.
+          if [ "${PRODUCTION}" = "true" ] && [ "${KEEP}" != "true" ]; then
+            echo "Refusing to spend a real certificate on a node this run will destroy."
+            echo "Either keep the node, or leave the staging environment on."
+            exit 1
+          fi
+          # An APK pointing at a node that no longer exists installs fine and
+          # never connects, which is the most confusing possible outcome.
+          if [ "${BUILD}" = "true" ] && [ "${KEEP}" != "true" ]; then
+            echo "Refusing to build an APK whose endpoint this run will destroy."
+            exit 1
+          fi
+          if [ "${PRODUCTION}" = "true" ]; then
+            echo "This run spends one real certificate for ${DOMAIN}."
+          fi
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -70,9 +113,18 @@ jobs:
 
           sudo unzip -o -q /tmp/xray.zip -d /usr/local/bin xray
           sudo chmod 0755 /usr/local/bin/xray
+
+          # The routing database comes out too. Without it a configuration that
+          # mentions geoip is refused outright, so a check that omits it cannot
+          # exercise the configuration the application actually builds.
+          sudo mkdir -p /usr/local/share/xray
+          sudo unzip -o -q /tmp/xray.zip -d /usr/local/share/xray geoip.dat
+          echo "XRAY_LOCATION_ASSET=/usr/local/share/xray" >> "${GITHUB_ENV}"
+
           xray version | head -1
 
       - name: Trust the Let's Encrypt staging root
+        if: ${{ !inputs.production_certificate }}
         run: |
           set -euo pipefail
           # Without this the client would have to skip certificate verification,
@@ -85,6 +137,7 @@ jobs:
 
       - name: Generate ephemeral credentials
         id: creds
+        if: ${{ !inputs.reuse_node }}
         run: |
           set -euo pipefail
           ws_uuid=$(xray uuid)
@@ -147,21 +200,53 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
         run: terraform init -input=false
 
+      - name: Read the node that already exists
+        id: existing
+        if: ${{ inputs.reuse_node }}
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          # Reusing means producing byte-identical user data, which is what
+          # leaves the droplet untouched and its certificate unspent. So every
+          # value comes from the recorded state, including the domain: taking
+          # the domain from the run input instead would change the user data
+          # and replace the node, which is the cost being avoided.
+          for name in test_node_domain test_node_ws_uuid test_node_ws_path \
+                      test_node_reality_uuid test_node_reality_private_key \
+                      test_node_reality_short_id test_node_acme_staging test_node_ip; do
+            value=$(terraform output -raw "${name}" 2>/dev/null || echo "")
+            if [ -z "${value}" ]; then
+              echo "No recorded node to reuse: ${name} is empty."
+              echo "Run once without reuse_node to create one."
+              exit 1
+            fi
+            if [ "${name}" != "test_node_domain" ]; then
+              echo "::add-mask::${value}"
+            fi
+            echo "${name#test_node_}=${value}" >> "${GITHUB_OUTPUT}"
+          done
+          echo "Reusing the recorded node, no certificate will be spent."
+
       - name: Create node
         id: create
+        if: ${{ !inputs.reuse_node }}
         working-directory: infra/terraform
         env:
           DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
           TF_VAR_test_node_enabled: "true"
-          TF_VAR_test_node_domain: ${{ inputs.domain }}
-          TF_VAR_test_node_ws_uuid: ${{ steps.creds.outputs.ws_uuid }}
-          TF_VAR_test_node_ws_path: ${{ steps.creds.outputs.ws_path }}
-          TF_VAR_test_node_reality_uuid: ${{ steps.creds.outputs.reality_uuid }}
-          TF_VAR_test_node_reality_private_key: ${{ steps.creds.outputs.private }}
-          TF_VAR_test_node_reality_short_id: ${{ steps.creds.outputs.short }}
-          TF_VAR_acme_staging: "true"
+          TF_VAR_test_node_domain: ${{ inputs.reuse_node && steps.existing.outputs.domain || inputs.domain }}
+          TF_VAR_test_node_ws_uuid: ${{ inputs.reuse_node && steps.existing.outputs.ws_uuid || steps.creds.outputs.ws_uuid }}
+          TF_VAR_test_node_ws_path: ${{ inputs.reuse_node && steps.existing.outputs.ws_path || steps.creds.outputs.ws_path }}
+          TF_VAR_test_node_reality_uuid: ${{ inputs.reuse_node && steps.existing.outputs.reality_uuid || steps.creds.outputs.reality_uuid }}
+          TF_VAR_test_node_reality_private_key: ${{ inputs.reuse_node && steps.existing.outputs.reality_private_key || steps.creds.outputs.private }}
+          TF_VAR_test_node_reality_short_id: ${{ inputs.reuse_node && steps.existing.outputs.reality_short_id || steps.creds.outputs.short }}
+          TF_VAR_acme_staging: ${{ inputs.reuse_node && steps.existing.outputs.acme_staging || (inputs.production_certificate && 'false' || 'true') }}
+          TF_VAR_acme_production_ack: ${{ inputs.production_certificate }}
           TF_VAR_debug_status: "true"
         run: |
           set -euo pipefail
@@ -174,12 +259,40 @@ jobs:
           echo "node_ip=${ip}" >> "${GITHUB_OUTPUT}"
           echo "Node created at ${ip}"
 
+      - name: Settle the endpoint
+        env:
+          NODE_IP: ${{ inputs.reuse_node && steps.existing.outputs.ip || steps.create.outputs.node_ip }}
+          DOMAIN: ${{ inputs.reuse_node && steps.existing.outputs.domain || inputs.domain }}
+          WS_UUID: ${{ inputs.reuse_node && steps.existing.outputs.ws_uuid || steps.creds.outputs.ws_uuid }}
+          WS_PATH: ${{ inputs.reuse_node && steps.existing.outputs.ws_path || steps.creds.outputs.ws_path }}
+          REALITY_UUID: ${{ inputs.reuse_node && steps.existing.outputs.reality_uuid || steps.creds.outputs.reality_uuid }}
+          REALITY_PUBLIC: ${{ env.NODE_REALITY_PUBLIC }}
+          REALITY_SHORT: ${{ inputs.reuse_node && steps.existing.outputs.reality_short_id || steps.creds.outputs.short }}
+        run: |
+          set -euo pipefail
+          # One place decides where the values came from. Every step below reads
+          # these, so a reused node and a fresh one are indistinguishable to the
+          # checks and to the build.
+          {
+            echo "NODE_IP=${NODE_IP}"
+            echo "NODE_DOMAIN=${DOMAIN}"
+            echo "NODE_WS_UUID=${WS_UUID}"
+            echo "NODE_WS_PATH=${WS_PATH}"
+            echo "NODE_REALITY_UUID=${REALITY_UUID}"
+            echo "NODE_REALITY_PUBLIC=${REALITY_PUBLIC}"
+            echo "NODE_REALITY_SHORT=${REALITY_SHORT}"
+          } >> "${GITHUB_ENV}"
+          echo "Endpoint settled on ${DOMAIN}."
+
       - name: Point DNS at the node
         id: dns
+        if: ${{ !inputs.reuse_node }}
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          DOMAIN: ${{ inputs.domain }}
-          NODE_IP: ${{ steps.create.outputs.node_ip }}
+          SS_KEY: ${{ secrets.SPACESHIP_API_KEY }}
+          SS_SECRET: ${{ secrets.SPACESHIP_API_SECRET }}
+          DOMAIN: ${{ env.NODE_DOMAIN }}
+          NODE_IP: ${{ env.NODE_IP }}
         run: |
           set -euo pipefail
           token=$(printf '%s' "${CF_TOKEN}" | tr -d '[:space:]')
@@ -189,9 +302,71 @@ jobs:
             https://api.cloudflare.com/client/v4/zones | jq -r '(.result // []) | .[0].id // empty')
 
           if [ -z "${zone_id}" ]; then
-            echo "Domain ${DOMAIN} is not a zone this token can see."
-            exit 1
+            # Not every entry domain is on Cloudflare, and which one is where is
+            # recorded in docs/integrations/dns.md rather than discoverable from
+            # the name. Falling back keeps the choice of domain a matter of
+            # certificate budget instead of a matter of which provider the
+            # workflow happens to speak to.
+            echo "Domain ${DOMAIN} is not a Cloudflare zone, trying the other provider."
+
+            ss_key=$(printf '%s' "${SS_KEY}" | tr -d '[:space:]')
+            ss_secret=$(printf '%s' "${SS_SECRET}" | tr -d '[:space:]')
+            if [ -z "${ss_key}" ] || [ -z "${ss_secret}" ]; then
+              echo "No credentials for the other provider either."
+              exit 1
+            fi
+
+            # force replaces whatever sits on the same name and type, which is
+            # the behaviour needed here: a kept node leaves its record behind,
+            # and a second record beside it makes the name resolve to both.
+            body=$(jq -n --arg ip "${NODE_IP}" \
+              '{force: true, items: [{type: "A", name: "@", address: $ip, ttl: 60}]}')
+
+            code=$(curl -sS -o /tmp/ss-put.json -w '%{http_code}' -X PUT \
+              -H "X-API-Key: ${ss_key}" \
+              -H "X-API-Secret: ${ss_secret}" \
+              -H "content-type: application/json" \
+              -d "${body}" \
+              "https://spaceship.dev/api/v1/dns/records/${DOMAIN}" || echo "000")
+
+            if [ "${code}" != "200" ] && [ "${code}" != "204" ]; then
+              echo "The other provider refused the record. HTTP ${code}."
+              # Its own words, because guessing at a schema costs a whole run.
+              sed 's/^/  /' /tmp/ss-put.json 2>/dev/null | head -20
+              exit 1
+            fi
+
+            echo "provider=spaceship" >> "${GITHUB_OUTPUT}"
+            echo "record_id=spaceship" >> "${GITHUB_OUTPUT}"
+            echo "A record written for ${DOMAIN} at the other provider."
+            exit 0
           fi
+
+          echo "provider=cloudflare" >> "${GITHUB_OUTPUT}"
+
+          # Every A record already on this exact name goes first.
+          #
+          # A kept node leaves its record behind on purpose, so the next run
+          # finds one. Adding a second beside it makes the name resolve to
+          # both, at random: certificate validation reached a machine that had
+          # just been destroyed and reported a firewall problem, which is not
+          # what was wrong.
+          #
+          # Compared field by field rather than filtered by the query alone.
+          # Trusting a search to mean an exact match is the mistake that put
+          # two values where one belonged before.
+          existing=$(curl -sS -H "Authorization: Bearer ${token}" \
+            -G --data-urlencode "type=A" --data-urlencode "name=${DOMAIN}" \
+            "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
+            | jq -r --arg n "${DOMAIN}" \
+              '(.result // [])[] | select(.name == $n and .type == "A") | .id')
+
+          for stale in ${existing}; do
+            curl -sS -X DELETE -H "Authorization: Bearer ${token}" \
+              "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${stale}" \
+              > /dev/null
+            echo "Removed an existing A record for ${DOMAIN}."
+          done
 
           # proxied must stay false. Cloudflare proxying terminates TLS, which
           # would break both the certificate we just issued and the tunnel.
@@ -212,10 +387,11 @@ jobs:
           echo "A record created for ${DOMAIN}"
 
       - name: Wait for bring-up
+        if: ${{ !inputs.reuse_node }}
         id: wait
         env:
-          NODE_IP: ${{ steps.create.outputs.node_ip }}
-          DOMAIN: ${{ inputs.domain }}
+          NODE_IP: ${{ env.NODE_IP }}
+          DOMAIN: ${{ env.NODE_DOMAIN }}
         run: |
           set -uo pipefail
           # The node publishes its progress at /status.txt while bringing up.
@@ -268,7 +444,7 @@ jobs:
 
       - name: Verify the site answers on our own certificate
         env:
-          DOMAIN: ${{ inputs.domain }}
+          DOMAIN: ${{ env.NODE_DOMAIN }}
         run: |
           set -euo pipefail
           code=$(curl -sS -o /tmp/site.html -w '%{http_code}' --max-time 20 "https://${DOMAIN}/")
@@ -302,8 +478,8 @@ jobs:
 
       - name: Verify the tunnel path is indistinguishable from a missing page
         env:
-          DOMAIN: ${{ inputs.domain }}
-          WS_PATH: ${{ steps.creds.outputs.ws_path }}
+          DOMAIN: ${{ env.NODE_DOMAIN }}
+          WS_PATH: ${{ env.NODE_WS_PATH }}
         run: |
           set -euo pipefail
           # The adversary in the threat model has an account, so the path is not
@@ -349,10 +525,10 @@ jobs:
       - name: Verify traffic over WebSocket
         id: verify_ws
         env:
-          DOMAIN: ${{ inputs.domain }}
-          NODE_IP: ${{ steps.create.outputs.node_ip }}
-          UUID: ${{ steps.creds.outputs.ws_uuid }}
-          WS_PATH: ${{ steps.creds.outputs.ws_path }}
+          DOMAIN: ${{ env.NODE_DOMAIN }}
+          NODE_IP: ${{ env.NODE_IP }}
+          UUID: ${{ env.NODE_WS_UUID }}
+          WS_PATH: ${{ env.NODE_WS_PATH }}
         run: |
           set -euo pipefail
           # Connects to the node by address while presenting the domain name:
@@ -394,13 +570,236 @@ jobs:
           fi
           echo "WebSocket transport verified."
 
+      - name: Verify the configuration the application builds
+        id: verify_app_config
+        continue-on-error: true
+        env:
+          DOMAIN: ${{ env.NODE_DOMAIN }}
+          NODE_IP: ${{ env.NODE_IP }}
+          UUID: ${{ env.NODE_WS_UUID }}
+          WS_PATH: ${{ env.NODE_WS_PATH }}
+        run: |
+          set -uo pipefail
+          # The step above proves the transport. This one proves the
+          # configuration the client builds on top of it, which is a different
+          # claim: a working transport under a configuration that cannot
+          # resolve a name gives a tunnel that reports success and carries
+          # nothing. That is what a device reported, and guessing at it costs
+          # an install each time.
+          #
+          # Three variants isolate where it breaks, in one run:
+          #   full     what the application builds today
+          #   by-ip    the same, with the node addressed numerically
+          #   no-dns   the same, without the resolver section
+          #
+          # This mirrors XrayConfigBuilder by hand. The duplication is real and
+          # temporary: it exists so that a configuration defect is caught here
+          # rather than on somebody's phone.
+          jq -n \
+            --arg host "${DOMAIN}" --arg uuid "${UUID}" --arg path "${WS_PATH}" \
+            '{
+              log: { access: "none", error: "", loglevel: "info" },
+              dns: {
+                servers: [
+                  "https://1.1.1.1/dns-query",
+                  { address: "77.88.8.8", port: 53, skipFallback: true,
+                    domains: ["domain:gosuslugi.ru","domain:nalog.ru","domain:sberbank.ru",
+                              "domain:vtb.ru","domain:alfabank.ru","domain:tinkoff.ru",
+                              "domain:mos.ru","domain:yandex.ru","domain:mail.ru",
+                              "domain:vk.com","domain:ozon.ru","domain:wildberries.ru",
+                              "domain:avito.ru","domain:rt.ru","domain:2gis.ru"] }
+                ],
+                queryStrategy: "UseIPv4",
+                disableCache: false
+              },
+              inbounds: [
+                { tag: "socks-in", protocol: "socks", listen: "127.0.0.1", port: 10808,
+                  settings: { auth: "noauth", udp: true },
+                  sniffing: { enabled: true, destOverride: ["http","tls","quic"], routeOnly: false } },
+                { tag: "dns-in", protocol: "dokodemo-door", listen: "127.0.0.1", port: 10853,
+                  settings: { address: "10.10.10.2", port: 53, network: "tcp,udp" } }
+              ],
+              outbounds: [
+                { tag: "proxy", protocol: "vless",
+                  settings: { vnext: [ { address: $host, port: 443,
+                    users: [ { id: $uuid, encryption: "none" } ] } ] },
+                  streamSettings: { network: "ws", security: "tls",
+                    wsSettings: { path: $path, headers: { Host: $host } },
+                    tlsSettings: { serverName: $host, fingerprint: "chrome",
+                                   allowInsecure: false, alpn: ["h2","http/1.1"] } } },
+                { tag: "direct", protocol: "freedom", settings: { domainStrategy: "UseIP" } },
+                { tag: "block", protocol: "blackhole" },
+                { tag: "dns-out", protocol: "dns" }
+              ],
+              routing: {
+                domainStrategy: "IPIfNonMatch",
+                rules: [
+                  { type: "field", inboundTag: ["dns-in"], outboundTag: "dns-out" },
+                  { type: "field", port: 53, outboundTag: "dns-out" },
+                  { type: "field", ip: ["geoip:private","geoip:ru"], outboundTag: "direct" },
+                  { type: "field", domain: ["domain:gosuslugi.ru","domain:nalog.ru","domain:sberbank.ru",
+                                            "domain:vtb.ru","domain:alfabank.ru","domain:tinkoff.ru",
+                                            "domain:mos.ru","domain:yandex.ru","domain:mail.ru",
+                                            "domain:vk.com","domain:ozon.ru","domain:wildberries.ru",
+                                            "domain:avito.ru","domain:rt.ru","domain:2gis.ru"],
+                    outboundTag: "direct" }
+                ]
+              }
+            }' > /tmp/app-full.json
+
+          jq --arg ip "${NODE_IP}" \
+            '.outbounds[0].settings.vnext[0].address = $ip' \
+            /tmp/app-full.json > /tmp/app-by-ip.json
+          jq 'del(.dns)' /tmp/app-full.json > /tmp/app-no-dns.json
+
+          failed=""
+          for variant in full by-ip no-dns; do
+            xray run -config "/tmp/app-${variant}.json" > "/tmp/xray-${variant}.log" 2>&1 &
+            pid=$!
+            sleep 6
+
+            out=$(curl -fsS --max-time 25 --socks5-hostname 127.0.0.1:10808 https://api.ipify.org || echo "")
+            kill "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
+            sleep 2
+
+            if [ -n "${out}" ]; then
+              echo "${variant}: traffic passed, exit address ${out}"
+            else
+              echo "${variant}: NO TRAFFIC"
+              sed 's/^/    /' "/tmp/xray-${variant}.log" | tail -25
+              failed="${failed} ${variant}"
+            fi
+            echo ""
+          done
+
+          if [ -n "${failed}" ]; then
+            echo "Variants that carried nothing:${failed}"
+            exit 1
+          fi
+          echo "Every variant of the application configuration carried traffic."
+
+      - name: Verify the tunnel sustains a download
+        id: verify_throughput
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          # Every check so far moved a few bytes. A device reported connections
+          # that open, send a request and receive almost nothing back: 1966
+          # packets out of the phone against 947 returning. A tunnel that
+          # completes a handshake and then stalls passes a small fetch and
+          # fails at everything real, so the size is the point of this check.
+          xray run -config /tmp/app-full.json > /tmp/xray-speed.log 2>&1 &
+          pid=$!
+          sleep 6
+
+          bytes=5000000
+          out=$(curl -sS -o /dev/null -w '%{size_download} %{speed_download} %{time_total}' \
+            --max-time 60 --socks5-hostname 127.0.0.1:10808 \
+            "https://speed.cloudflare.com/__down?bytes=${bytes}" || echo "0 0 0")
+
+          kill "${pid}" 2>/dev/null || true
+          wait "${pid}" 2>/dev/null || true
+
+          size=$(echo "${out}" | awk '{print $1}')
+          speed=$(echo "${out}" | awk '{printf "%.0f", $2}')
+          seconds=$(echo "${out}" | awk '{printf "%.1f", $3}')
+
+          echo "Downloaded ${size} of ${bytes} bytes in ${seconds}s, ${speed} bytes/s"
+          {
+            echo "| Download through the tunnel | ${size} bytes in ${seconds}s |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [ "${size}" -lt "${bytes}" ]; then
+            echo "The tunnel did not deliver the whole body. Engine log:"
+            sed 's/^/    /' /tmp/xray-speed.log | tail -25
+            exit 1
+          fi
+
+      - name: Verify a name resolves through the proxy over UDP
+        id: verify_udp_dns
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          # The checks above all speak TCP. The device does not start there: it
+          # sends a DNS query over UDP first, and nothing it wants to reach has
+          # a name resolved yet.
+          #
+          # This is the exact exchange the packet bridge performs - UDP
+          # ASSOCIATE against the engine's SOCKS inbound, then a query aimed at
+          # the address the interface advertises as its resolver. If it fails,
+          # every name fails, and the tunnel reports success while carrying
+          # nothing. That is what a device reported and what no TCP check here
+          # could have caught.
+          python3 -m pip install --quiet pysocks
+
+          xray run -config /tmp/app-full.json > /tmp/xray-udp.log 2>&1 &
+          pid=$!
+          sleep 6
+
+          python3 - <<'PY'
+          import socket
+          import struct
+          import sys
+
+          import socks
+
+          query = struct.pack(">HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0)
+          for label in (b"example", b"com"):
+              query += bytes([len(label)]) + label
+          query += b"\x00" + struct.pack(">HH", 1, 1)
+
+          sock = socks.socksocket(socket.AF_INET, socket.SOCK_DGRAM)
+          sock.set_proxy(socks.SOCKS5, "127.0.0.1", 10808)
+          sock.settimeout(20)
+
+          try:
+              # The address the tunnel advertises as its resolver. Nothing
+              # listens there: the engine is expected to answer by routing the
+              # port, which is the rule being tested.
+              sock.sendto(query, ("10.10.10.2", 53))
+              data, _ = sock.recvfrom(4096)
+          except Exception as exc:
+              print("UDP: no answer through the proxy: %s" % exc)
+              sys.exit(1)
+
+          if len(data) < 12 or data[:2] != b"\x12\x34":
+              print("UDP: answer did not match the query")
+              sys.exit(1)
+
+          answers = struct.unpack(">H", data[6:8])[0]
+          print("UDP: resolver answered through the proxy, %d record(s)" % answers)
+          sys.exit(0 if answers > 0 else 1)
+          PY
+          rc=$?
+
+          kill "${pid}" 2>/dev/null || true
+          wait "${pid}" 2>/dev/null || true
+
+          if [ "${rc}" -ne 0 ]; then
+            echo "Engine log:"
+            sed 's/^/    /' /tmp/xray-udp.log | tail -30
+            exit 1
+          fi
+
       - name: Verify traffic over the standby REALITY transport
         id: verify_reality
+        # Skipped when reusing: the standby needs the public half of a key pair
+        # that was never recorded, only its private half, and deriving one would
+        # mean regenerating the pair and replacing the node.
+        if: ${{ !inputs.reuse_node }}
+        # Not fatal, and the distinction is deliberate. REALITY is the standby
+        # on a separate port (ADR-024); the primary transport is the domain,
+        # Nginx and WebSocket. A standby that does not answer is a gap worth
+        # seeing in the summary, but stopping the run on it would mean no
+        # installable build exists because a fallback is broken. The outcome is
+        # still reported below, so this cannot quietly pass as success.
+        continue-on-error: true
         env:
-          NODE_IP: ${{ steps.create.outputs.node_ip }}
-          UUID: ${{ steps.creds.outputs.reality_uuid }}
-          PUBLIC: ${{ steps.creds.outputs.public }}
-          SHORT: ${{ steps.creds.outputs.short }}
+          NODE_IP: ${{ env.NODE_IP }}
+          UUID: ${{ env.NODE_REALITY_UUID }}
+          PUBLIC: ${{ env.NODE_REALITY_PUBLIC }}
+          SHORT: ${{ env.NODE_REALITY_SHORT }}
         run: |
           set -euo pipefail
           jq -n \
@@ -445,7 +844,7 @@ jobs:
       - name: Summary
         if: ${{ always() }}
         env:
-          DOMAIN: ${{ inputs.domain }}
+          DOMAIN: ${{ env.NODE_DOMAIN }}
           WS_RESULT: ${{ steps.verify_ws.outcome }}
           REALITY_RESULT: ${{ steps.verify_reality.outcome }}
         run: |
@@ -459,8 +858,159 @@ jobs:
             echo "| REALITY standby | ${REALITY_RESULT:-not reached} |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
+      # The APK is built here, in the same run that created the node, and not
+      # by the ordinary build workflow. The endpoint credential is generated
+      # inside this run and must never leave it in readable form: passing it to
+      # another workflow would mean putting it into an input, an output or a
+      # secret, and the first two are visible. Built here, it exists only
+      # inside the artifact.
+
+      - name: Setup JDK
+        if: ${{ inputs.build_apk }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        if: ${{ inputs.build_apk }}
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        if: ${{ inputs.build_apk }}
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Bundle this node as the endpoint
+        if: ${{ inputs.build_apk }}
+        env:
+          DOMAIN: ${{ env.NODE_DOMAIN }}
+          NODE_IP: ${{ env.NODE_IP }}
+          WS_UUID: ${{ env.NODE_WS_UUID }}
+          WS_PATH: ${{ env.NODE_WS_PATH }}
+        run: |
+          set -euo pipefail
+          mkdir -p android/app/src/main/assets
+          # The node is addressed numerically and named only for the
+          # certificate.
+          #
+          # A name here has to be resolved before the tunnel exists, and on a
+          # phone that cannot be done: the application excludes itself from its
+          # own tunnel, while the system resolver points at an address that
+          # only exists inside it. The engine then waits forever for a name it
+          # will never get, the device retries DNS, and the tunnel reports
+          # success while carrying nothing. A device showed exactly that:
+          # packets arriving, all of them UDP, not one TCP connection.
+          #
+          # Written with jq rather than by hand: the credential must not pass
+          # through an echo, and quoting it correctly by hand is how a value
+          # ends up in a log.
+          jq -n \
+            --arg ip "${NODE_IP}" \
+            --arg host "${DOMAIN}" \
+            --arg uuid "${WS_UUID}" \
+            --arg path "${WS_PATH}" \
+            '{
+               alias: "slice",
+               host: $ip,
+               port: 443,
+               transport_kind: "vless-ws-tls",
+               credential_uuid: $uuid,
+               path: $path,
+               server_name: $host,
+               host_header: $host,
+               fingerprint: "chrome"
+             }' > android/app/src/main/assets/slice-profile.json
+          echo "Endpoint bundled for ${DOMAIN}, addressed numerically."
+
+      - name: Restore the routing database
+        if: ${{ inputs.build_apk }}
+        id: geoip
+        uses: actions/cache@v4
+        with:
+          path: android/app/src/main/assets/geoip.dat
+          key: geoip-${{ env.GEOIP_TAG }}
+
+      - name: Download the routing database
+        if: ${{ inputs.build_apk && steps.geoip.outputs.cache-hit != 'true' }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/v2fly/geoip/releases/download/${GEOIP_TAG}"
+          curl -fsSL -o /tmp/geoip.dat "${base}/geoip.dat"
+          curl -fsSL -o /tmp/geoip.dat.sha256sum "${base}/geoip.dat.sha256sum"
+
+          expected=$(awk '{print $1}' /tmp/geoip.dat.sha256sum | head -1)
+          actual=$(sha256sum /tmp/geoip.dat | awk '{print $1}')
+          if [ "${expected}" != "${actual}" ]; then
+            echo "Routing database checksum mismatch."
+            exit 1
+          fi
+
+          mv /tmp/geoip.dat android/app/src/main/assets/geoip.dat
+          echo "Routing database verified: ${actual}"
+
+      - name: Restore the native library
+        if: ${{ inputs.build_apk }}
+        id: native
+        uses: actions/cache@v4
+        with:
+          path: android/app/libs/vpncore.aar
+          key: vpncore-${{ hashFiles('vpncore/**') }}
+
+      - name: Setup Go
+        if: ${{ inputs.build_apk && steps.native.outputs.cache-hit != 'true' }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build the native library
+        if: ${{ inputs.build_apk && steps.native.outputs.cache-hit != 'true' }}
+        run: |
+          set -euo pipefail
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          export PATH="$(go env GOPATH)/bin:${PATH}"
+          gomobile init
+
+          mkdir -p "${GITHUB_WORKSPACE}/android/app/libs"
+          cd vpncore
+          go mod tidy
+          gomobile bind -target=android/arm64 -androidapi 24 \
+            -ldflags="-checklinkname=0" \
+            -o "${GITHUB_WORKSPACE}/android/app/libs/vpncore.aar" .
+
+      - name: Assemble the APK
+        if: ${{ inputs.build_apk }}
+        working-directory: android
+        run: |
+          set -euo pipefail
+          gradle --no-daemon assembleDebug
+          apk=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
+          if [ -z "${apk}" ]; then
+            echo "No APK was produced."
+            exit 1
+          fi
+          {
+            echo "| APK SHA-256 | \`$(sha256sum "${apk}" | cut -d' ' -f1)\` |"
+            echo "| APK size | $(stat -c%s "${apk}") bytes |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload the APK
+        if: ${{ inputs.build_apk }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: simple-vpn-device-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      # Only for a node that is going away. A kept node whose name no longer
+      # resolves is worse than either outcome on its own: it keeps costing
+      # money, and nothing can reach it. That happened once, on a run that
+      # failed after the node was already up.
       - name: Remove the DNS record
-        if: ${{ always() && steps.dns.outputs.record_id != '' }}
+        if: ${{ always() && !inputs.keep_node && steps.dns.outputs.provider == 'cloudflare' && steps.dns.outputs.record_id != '' }}
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           ZONE_ID: ${{ steps.dns.outputs.zone_id }}

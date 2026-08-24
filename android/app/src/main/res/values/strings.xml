@@ -8,6 +8,8 @@
     <string name="status_disconnected">Отключено</string>
     <string name="status_preparing">Запрашиваем разрешение</string>
     <string name="status_connecting">Подключаемся</string>
+    <string name="action_share_log">Отправить лог</string>
+    <string name="share_log_title">Лог сессии</string>
     <string name="status_connected">Подключено</string>
     <string name="status_reconnecting">Сеть сменилась, переподключаемся</string>
     <string name="status_disconnecting">Отключаемся</string>

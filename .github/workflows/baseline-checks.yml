@@ -141,6 +141,12 @@ jobs:
             Write-Host "::group::go vet $moduleDir"
             Push-Location $moduleDir
             try {
+              # Dependencies first. A module whose checksums are generated at
+              # build time has no go.sum in the repository, and vet reports the
+              # missing entry as a vet failure, which reads like a code defect
+              # rather than a fetch. Downloading is not enough: only tidy writes
+              # the checksum entries that vet then verifies.
+              go mod tidy
               go vet ./...
               if ($LASTEXITCODE -ne 0) {
                 throw "go vet failed in $moduleDir"

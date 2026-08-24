@@ -372,7 +372,12 @@ write_files:
       # its own flag set. Placed before "run" they produce "flag provided but
       # not defined", which reads like a network failure until the client's own
       # output is captured.
-      lego run \
+      # Bounded on purpose. A client that hangs produces no marker at all, so
+      # bring-up looks stalled with nothing to read: the failure path below
+      # publishes the client's own output, and it only runs once the client
+      # has returned. A hang is turned into a failure so that it leaves the
+      # same evidence any other failure does.
+      timeout 240 lego run \
         --accept-tos \
         --server "$acme_server" \
         --email "$acme_mail" \

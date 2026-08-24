@@ -1,0 +1,123 @@
+name: Point DNS
+
+# Points one of our domains at an address, whoever serves its zone.
+#
+# Split out of the node workflow because the two are not the same job. That one
+# creates a node and happens to need a record; this one exists for the case
+# where a machine is not created by our automation at all - a rented server
+# being used to compare one network path against another, for instance - and
+# still needs a name and a certificate.
+#
+# Refuses to touch anything but the entry domains: a workflow that can point any
+# name anywhere is a larger tool than the job needs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      domain:
+        description: Entry domain to point.
+        required: true
+        type: choice
+        options:
+          - 6015874.xyz
+          - 6015875.xyz
+          - 6047864.xyz
+          - 6047865.xyz
+      address:
+        description: IPv4 address the domain should resolve to.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  point-dns:
+    name: Point DNS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check the address is an address
+        env:
+          ADDRESS: ${{ inputs.address }}
+        run: |
+          set -euo pipefail
+          # Four numbers, each in range. A malformed value would otherwise be
+          # written into the zone and only noticed when nothing resolved.
+          if ! printf '%s' "${ADDRESS}" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+            echo "Not an IPv4 address."
+            exit 1
+          fi
+          for part in $(printf '%s' "${ADDRESS}" | tr '.' ' '); do
+            if [ "${part}" -gt 255 ]; then
+              echo "Not an IPv4 address."
+              exit 1
+            fi
+          done
+          echo "Address accepted."
+
+      - name: Write the A record
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SS_KEY: ${{ secrets.SPACESHIP_API_KEY }}
+          SS_SECRET: ${{ secrets.SPACESHIP_API_SECRET }}
+          DOMAIN: ${{ inputs.domain }}
+          ADDRESS: ${{ inputs.address }}
+        run: |
+          set -euo pipefail
+          token=$(printf '%s' "${CF_TOKEN}" | tr -d '[:space:]')
+
+          zone_id=$(curl -sS -H "Authorization: Bearer ${token}" \
+            -G --data-urlencode "name=${DOMAIN}" \
+            https://api.cloudflare.com/client/v4/zones \
+            | jq -r '(.result // []) | .[0].id // empty')
+
+          if [ -n "${zone_id}" ]; then
+            # Existing records on the exact name go first: a second record
+            # beside the first makes the name resolve to both, at random.
+            existing=$(curl -sS -H "Authorization: Bearer ${token}" \
+              -G --data-urlencode "type=A" --data-urlencode "name=${DOMAIN}" \
+              "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
+              | jq -r --arg n "${DOMAIN}" \
+                '(.result // [])[] | select(.name == $n and .type == "A") | .id')
+
+            for stale in ${existing}; do
+              curl -sS -X DELETE -H "Authorization: Bearer ${token}" \
+                "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${stale}" > /dev/null
+            done
+
+            # proxied stays false: proxying terminates TLS, which breaks both
+            # the certificate and the tunnel behind it.
+            created=$(curl -sS -X POST \
+              -H "Authorization: Bearer ${token}" \
+              -H "content-type: application/json" \
+              -d "{\"type\":\"A\",\"name\":\"${DOMAIN}\",\"content\":\"${ADDRESS}\",\"ttl\":60,\"proxied\":false}" \
+              "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
+              | jq -r '.result.id // empty')
+
+            if [ -z "${created}" ]; then
+              echo "Could not write the record."
+              exit 1
+            fi
+            echo "${DOMAIN} now points at the given address."
+            exit 0
+          fi
+
+          ss_key=$(printf '%s' "${SS_KEY}" | tr -d '[:space:]')
+          ss_secret=$(printf '%s' "${SS_SECRET}" | tr -d '[:space:]')
+          body=$(jq -n --arg ip "${ADDRESS}" \
+            '{force: true, items: [{type: "A", name: "@", address: $ip, ttl: 60}]}')
+
+          code=$(curl -sS -o /tmp/ss.json -w '%{http_code}' -X PUT \
+            -H "X-API-Key: ${ss_key}" \
+            -H "X-API-Secret: ${ss_secret}" \
+            -H "content-type: application/json" \
+            -d "${body}" \
+            "https://spaceship.dev/api/v1/dns/records/${DOMAIN}" || echo "000")
+
+          if [ "${code}" != "200" ] && [ "${code}" != "204" ]; then
+            echo "The provider refused the record. HTTP ${code}."
+            sed 's/^/  /' /tmp/ss.json 2>/dev/null | head -20
+            exit 1
+          fi
+          echo "${DOMAIN} now points at the given address."
