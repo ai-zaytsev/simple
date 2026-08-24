@@ -160,13 +160,18 @@ func BridgeStats() string {
 	}
 
 	s := bridgeStack.Stats()
+
+	// Connections arriving from the device are accepted, not dialled, so they
+	// count as passive openings. Reading the active counter showed a hard zero
+	// while TCP was in fact being attempted, which pointed at the wrong layer.
 	return fmt.Sprintf(
-		"ip in=%d out=%d bad=%d | tcp new=%d live=%d | udp in=%d out=%d",
+		"ip in=%d out=%d bad=%d | tcp syn=%d live=%d fail=%d | udp in=%d out=%d",
 		s.IP.PacketsReceived.Value(),
 		s.IP.PacketsSent.Value(),
 		s.IP.MalformedPacketsReceived.Value(),
-		s.TCP.ActiveConnectionOpenings.Value(),
+		s.TCP.PassiveConnectionOpenings.Value(),
 		s.TCP.CurrentEstablished.Value(),
+		s.TCP.FailedConnectionAttempts.Value(),
 		s.UDP.PacketsReceived.Value(),
 		s.UDP.PacketsSent.Value(),
 	)
