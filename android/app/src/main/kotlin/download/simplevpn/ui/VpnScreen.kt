@@ -24,10 +24,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import download.simplevpn.R
+import download.simplevpn.config.XrayConfigBuilder
 import download.simplevpn.core.BridgeDiagnostics
+import download.simplevpn.core.EngineSelfTest
 import download.simplevpn.vpn.VpnConnectionState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
 
 /**
  * One button and one honest line of status.
@@ -105,6 +109,15 @@ fun VpnScreen(
 @Composable
 private fun BridgeCounters() {
     var counters by remember { mutableStateOf(BridgeDiagnostics.snapshot()) }
+    var engine by remember { mutableStateOf("engine: checking") }
+
+    LaunchedEffect(Unit) {
+        // Once, and off the main thread: it opens a socket and waits.
+        engine = when (val result = withContext(Dispatchers.IO) { EngineSelfTest.run(SOCKS_PORT) }) {
+            is EngineSelfTest.Result.Reached -> "engine: reaches node, exit ${result.exitAddress}"
+            is EngineSelfTest.Result.Failed -> "engine: cannot reach node, ${result.reason}"
+        }
+    }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -119,7 +132,17 @@ private fun BridgeCounters() {
         textAlign = TextAlign.Center,
         style = MaterialTheme.typography.bodySmall,
     )
+
+    Text(
+        text = engine,
+        modifier = Modifier.padding(top = 12.dp),
+        textAlign = TextAlign.Center,
+        style = MaterialTheme.typography.bodySmall,
+    )
 }
+
+/** Where the engine listens; kept beside the builder that puts it there. */
+private const val SOCKS_PORT = XrayConfigBuilder.SOCKS_PORT
 
 @Composable
 private fun statusText(state: VpnConnectionState): String = when (state) {
