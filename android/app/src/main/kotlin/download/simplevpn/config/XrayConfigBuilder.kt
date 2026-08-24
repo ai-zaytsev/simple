@@ -31,6 +31,12 @@ object XrayConfigBuilder {
 
     private const val REMOTE_DOH = "https://1.1.1.1/dns-query"
 
+    /** Same resolver, plain transport, used when the encrypted one answers nothing. */
+    private const val REMOTE_PLAIN = "1.1.1.1"
+
+    /** Address of the remote resolver, for the rule that keeps it in the tunnel. */
+    private const val REMOTE_RESOLVER_IP = "1.1.1.1"
+
     /**
      * Resolver for the direct list only. A Russian one on purpose: those names
      * must resolve the way they resolve for a user in Russia, and a resolver
@@ -80,6 +86,17 @@ object XrayConfigBuilder {
 
         // Remote resolver first: it is the default for everything proxied.
         servers.put(REMOTE_DOH)
+
+        // The same resolver in plain form, as a fallback.
+        //
+        // A device reported every lookup failing with "record not found" while
+        // the tunnel itself carried traffic. One resolver that answers nothing
+        // is a total outage: names never resolve, so nothing opens, even though
+        // the connection is fine. A second entry against the same address but
+        // a different transport means one broken transport costs latency
+        // instead of everything. Both travel inside the tunnel, forced there by
+        // a routing rule, so the local network sees neither.
+        servers.put(REMOTE_PLAIN)
 
         // Local resolver, scoped to the names that must resolve to Russian
         // endpoints. Scoping matters: made global it would leak every lookup.
@@ -287,11 +304,28 @@ object XrayConfigBuilder {
         //
         // Matching on the port instead catches them wherever they arrive from,
         // and this rule must stay ahead of the address rules for that reason.
+        // Scoped to traffic that arrives from the device. Unscoped, this rule
+        // also catches the engine's own queries to the resolvers above, sending
+        // them back to the resolver that issued them: a loop that answers
+        // nothing and is invisible in any counter.
         rules.put(
             JSONObject().apply {
                 put("type", "field")
+                put("inboundTag", JSONArray(listOf("socks-in")))
                 put("port", DNS_PORT_WIRE)
                 put("outboundTag", "dns-out")
+            },
+        )
+
+        // The remote resolver belongs in the tunnel, said explicitly rather
+        // than left to the default. It is the one destination whose exposure
+        // would reveal every site visited, so it must not depend on a rule
+        // further down happening not to match it.
+        rules.put(
+            JSONObject().apply {
+                put("type", "field")
+                put("ip", JSONArray(listOf(REMOTE_RESOLVER_IP)))
+                put("outboundTag", "proxy")
             },
         )
 
@@ -319,9 +353,16 @@ object XrayConfigBuilder {
         }
 
         return JSONObject().apply {
-            // Names are resolved before matching so that a direct-listed name
-            // behind a foreign address still goes direct.
-            put("domainStrategy", "IPIfNonMatch")
+            // Addresses are matched as they arrive.
+            //
+            // Resolving every destination before matching it made each
+            // connection wait on the resolver, so a resolver that answers
+            // slowly or not at all stopped all traffic rather than just the
+            // lookups. It is also unnecessary here: the device has already
+            // resolved the name through this same engine, so the address rules
+            // see a real address, while sniffing recovers the name for the
+            // rules that match on names.
+            put("domainStrategy", "AsIs")
             put("rules", rules)
         }
     }
