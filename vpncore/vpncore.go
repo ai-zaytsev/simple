@@ -37,6 +37,14 @@ import (
 	"github.com/xjasonlyu/tun2socks/v2/proxy"
 	"github.com/xjasonlyu/tun2socks/v2/tunnel"
 	"github.com/xtls/libxray/xray"
+
+	// Registers the socks5 scheme with the parser above. That parser is a
+	// registry filled by package init functions, so a protocol nobody imports
+	// simply does not exist and parsing fails with "proxy: unknown protocol".
+	// Assembling the stack by hand means these registrations are ours to make:
+	// the entry point we deliberately avoid is also what pulls them in
+	// upstream.
+	_ "github.com/xjasonlyu/tun2socks/v2/proxy/socks5"
 )
 
 // assetEnv is where the engine looks for its geographic database. The routing
