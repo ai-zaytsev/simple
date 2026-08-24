@@ -679,6 +679,43 @@ jobs:
           fi
           echo "Every variant of the application configuration carried traffic."
 
+      - name: Verify the tunnel sustains a download
+        id: verify_throughput
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          # Every check so far moved a few bytes. A device reported connections
+          # that open, send a request and receive almost nothing back: 1966
+          # packets out of the phone against 947 returning. A tunnel that
+          # completes a handshake and then stalls passes a small fetch and
+          # fails at everything real, so the size is the point of this check.
+          xray run -config /tmp/app-full.json > /tmp/xray-speed.log 2>&1 &
+          pid=$!
+          sleep 6
+
+          bytes=5000000
+          out=$(curl -sS -o /dev/null -w '%{size_download} %{speed_download} %{time_total}' \
+            --max-time 60 --socks5-hostname 127.0.0.1:10808 \
+            "https://speed.cloudflare.com/__down?bytes=${bytes}" || echo "0 0 0")
+
+          kill "${pid}" 2>/dev/null || true
+          wait "${pid}" 2>/dev/null || true
+
+          size=$(echo "${out}" | awk '{print $1}')
+          speed=$(echo "${out}" | awk '{printf "%.0f", $2}')
+          seconds=$(echo "${out}" | awk '{printf "%.1f", $3}')
+
+          echo "Downloaded ${size} of ${bytes} bytes in ${seconds}s, ${speed} bytes/s"
+          {
+            echo "| Download through the tunnel | ${size} bytes in ${seconds}s |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [ "${size}" -lt "${bytes}" ]; then
+            echo "The tunnel did not deliver the whole body. Engine log:"
+            sed 's/^/    /' /tmp/xray-speed.log | tail -25
+            exit 1
+          fi
+
       - name: Verify a name resolves through the proxy over UDP
         id: verify_udp_dns
         continue-on-error: true
