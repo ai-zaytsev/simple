@@ -141,6 +141,11 @@ jobs:
             Write-Host "::group::go vet $moduleDir"
             Push-Location $moduleDir
             try {
+              # Dependencies first. A module whose checksums are generated at
+              # build time has no go.sum in the repository, and vet reports the
+              # missing download as a vet failure, which reads like a code
+              # defect rather than a fetch.
+              go mod download
               go vet ./...
               if ($LASTEXITCODE -ne 0) {
                 throw "go vet failed in $moduleDir"
