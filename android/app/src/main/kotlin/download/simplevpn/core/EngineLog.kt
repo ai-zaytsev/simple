@@ -44,11 +44,15 @@ object EngineLog {
             }
 
             val lines = tail.lineSequence().filter { it.isNotBlank() }.toList()
-            val failure = lines.lastOrNull { line ->
-                MARKERS.any { line.contains(it, ignoreCase = true) }
-            }
 
-            val chosen = failure ?: lines.lastOrNull() ?: return "log: engine wrote nothing"
+            // Errors first, and only then anything merely mentioning a failure.
+            // Background telemetry names fail to resolve on any device, all day,
+            // at info level. Showing the newest of those buries the one line
+            // that would say something is actually wrong.
+            val chosen = lines.lastOrNull { it.contains(ERROR_LEVEL) }
+                ?: lines.lastOrNull { line -> MARKERS.any { line.contains(it, ignoreCase = true) } }
+                ?: lines.lastOrNull()
+                ?: return "log: engine wrote nothing"
             "log: " + chosen.takeLast(MAX_LENGTH).trim()
         } catch (t: Throwable) {
             Log.w(TAG, "could not read the engine log", t)
@@ -60,5 +64,6 @@ object EngineLog {
     private const val NAME = "engine.log"
     private const val TAIL_BYTES = 16_384L
     private const val MAX_LENGTH = 160
+    private const val ERROR_LEVEL = "[Error]"
     private val MARKERS = listOf("failed", "rejected", "refused", "timeout", "invalid")
 }

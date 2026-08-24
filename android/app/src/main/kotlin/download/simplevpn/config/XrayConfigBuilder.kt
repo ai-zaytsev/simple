@@ -84,19 +84,20 @@ object XrayConfigBuilder {
     private fun buildDns(policy: RoutingPolicy): JSONObject {
         val servers = JSONArray()
 
-        // Remote resolver first: it is the default for everything proxied.
-        servers.put(REMOTE_DOH)
-
-        // The same resolver in plain form, as a fallback.
+        // Plain first, encrypted second, and the order is the point.
         //
-        // A device reported every lookup failing with "record not found" while
-        // the tunnel itself carried traffic. One resolver that answers nothing
-        // is a total outage: names never resolve, so nothing opens, even though
-        // the connection is fine. A second entry against the same address but
-        // a different transport means one broken transport costs latency
-        // instead of everything. Both travel inside the tunnel, forced there by
-        // a routing rule, so the local network sees neither.
+        // Both travel inside the tunnel, forced there by a routing rule below,
+        // so the local network sees neither and the encryption buys nothing
+        // against the party it was meant to hide from. What it costs is a TLS
+        // handshake and extra round trips on a path that already has the
+        // tunnel's latency: a device reported those queries expiring with
+        // "context deadline" while the same tunnel carried ordinary traffic
+        // fine.
+        //
+        // The encrypted form stays as the second entry. One transport failing
+        // then costs latency rather than every name on the device.
         servers.put(REMOTE_PLAIN)
+        servers.put(REMOTE_DOH)
 
         // Local resolver, scoped to the names that must resolve to Russian
         // endpoints. Scoping matters: made global it would leak every lookup.
