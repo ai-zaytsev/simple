@@ -31,11 +31,11 @@ object XrayConfigBuilder {
 
     private const val REMOTE_DOH = "https://1.1.1.1/dns-query"
 
-    /** Same resolver, plain transport, used when the encrypted one answers nothing. */
-    private const val REMOTE_PLAIN = "1.1.1.1"
+    /** A second provider, so one stalling resolver is not every name on the device. */
+    private const val REMOTE_DOH_ALTERNATE = "https://8.8.8.8/dns-query"
 
-    /** Address of the remote resolver, for the rule that keeps it in the tunnel. */
-    private const val REMOTE_RESOLVER_IP = "1.1.1.1"
+    /** Addresses of the remote resolvers, for the rule that keeps them in the tunnel. */
+    private val REMOTE_RESOLVER_IPS = listOf("1.1.1.1", "8.8.8.8")
 
     /**
      * Resolver for the direct list only. A Russian one on purpose: those names
@@ -84,20 +84,22 @@ object XrayConfigBuilder {
     private fun buildDns(policy: RoutingPolicy): JSONObject {
         val servers = JSONArray()
 
-        // Plain first, encrypted second, and the order is the point.
+        // Both resolvers speak over TCP, and that is the point.
         //
-        // Both travel inside the tunnel, forced there by a routing rule below,
-        // so the local network sees neither and the encryption buys nothing
-        // against the party it was meant to hide from. What it costs is a TLS
-        // handshake and extra round trips on a path that already has the
-        // tunnel's latency: a device reported those queries expiring with
-        // "context deadline" while the same tunnel carried ordinary traffic
-        // fine.
+        // A session log from a device settled it. Queries sent as plain UDP
+        // through the tunnel were answered for about a second after the session
+        // was created and never again: the session was established twice in two
+        // minutes, died both times, and was never rebuilt, so the engine went
+        // on writing into a channel nobody was reading. Twenty-three answers
+        // out of a hundred and sixty. Queries over the encrypted resolver, which
+        // is carried by TCP, came back in 54 ms on the same tunnel at the same
+        // time.
         //
-        // The encrypted form stays as the second entry. One transport failing
-        // then costs latency rather than every name on the device.
-        servers.put(REMOTE_PLAIN)
+        // So plain UDP is gone from the tunnel entirely. Two providers rather
+        // than one, because a single resolver that stalls is still every name
+        // on the device.
         servers.put(REMOTE_DOH)
+        servers.put(REMOTE_DOH_ALTERNATE)
 
         // Local resolver, scoped to the names that must resolve to Russian
         // endpoints. Scoping matters: made global it would leak every lookup.
@@ -318,14 +320,14 @@ object XrayConfigBuilder {
             },
         )
 
-        // The remote resolver belongs in the tunnel, said explicitly rather
-        // than left to the default. It is the one destination whose exposure
+        // The remote resolvers belong in the tunnel, said explicitly rather
+        // than left to the default. They are the destinations whose exposure
         // would reveal every site visited, so it must not depend on a rule
-        // further down happening not to match it.
+        // further down happening not to match them.
         rules.put(
             JSONObject().apply {
                 put("type", "field")
-                put("ip", JSONArray(listOf(REMOTE_RESOLVER_IP)))
+                put("ip", JSONArray(REMOTE_RESOLVER_IPS))
                 put("outboundTag", "proxy")
             },
         )
