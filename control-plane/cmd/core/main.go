@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -63,6 +64,20 @@ func run(log *slog.Logger) error {
 		addr = "127.0.0.1:8080"
 	}
 
+	// How long a plan stays usable. Short while a replacement is being rolled
+	// out, long the rest of the time.
+	planTTL := 24 * time.Hour
+	if raw := os.Getenv("CP_PLAN_TTL"); raw != "" {
+		parsed, parseErr := time.ParseDuration(raw)
+		if parseErr != nil {
+			return fmt.Errorf("CP_PLAN_TTL is not a duration: %w", parseErr)
+		}
+		if parsed < time.Minute {
+			return errors.New("CP_PLAN_TTL below a minute would make every connection wait on this service")
+		}
+		planTTL = parsed
+	}
+
 	signer, err := signing.NewSigner(keyID, seed)
 	if err != nil {
 		return err
@@ -83,7 +98,7 @@ func run(log *slog.Logger) error {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           api.New(st, signer, cleaned, log).Routes(),
+		Handler:           api.New(st, signer, cleaned, planTTL, log).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -99,7 +114,7 @@ func run(log *slog.Logger) error {
 		_ = server.Shutdown(shutdown)
 	}()
 
-	log.Info("listening", "addr", addr, "bootstrap_hosts", strings.Join(cleaned, ","))
+	log.Info("listening", "addr", addr, "bootstrap_hosts", strings.Join(cleaned, ","), "plan_ttl", planTTL.String())
 
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err

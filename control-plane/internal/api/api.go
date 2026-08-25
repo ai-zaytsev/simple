@@ -24,10 +24,32 @@ type Server struct {
 	// configuration rather than a constant so that moving the Control Plane
 	// does not require rebuilding it.
 	bootstrapHosts []string
+
+	// planTTL is how long a plan stays usable before a client asks again.
+	//
+	// Configurable rather than fixed, because it is the lever deciding how
+	// quickly a change made here reaches a device already in the field. A long
+	// value spares the server and leaves people on a withdrawn node for longer;
+	// a short one shortens that wait and costs more requests. Which trade is
+	// right changes with circumstances, and changing it must not mean
+	// rebuilding and redeploying.
+	planTTL time.Duration
 }
 
-func New(st *store.Store, signer *signing.Signer, hosts []string, log *slog.Logger) *Server {
-	return &Server{store: st, signer: signer, bootstrapHosts: hosts, log: log}
+func New(
+	st *store.Store,
+	signer *signing.Signer,
+	hosts []string,
+	planTTL time.Duration,
+	log *slog.Logger,
+) *Server {
+	return &Server{
+		store:          st,
+		signer:         signer,
+		bootstrapHosts: hosts,
+		planTTL:        planTTL,
+		log:            log,
+	}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -103,7 +125,7 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 		PlanID:      uuid.NewString(),
 		Seq:         seq,
 		IssuedAt:    now.Format(time.RFC3339),
-		ExpiresAt:   now.Add(planLifetime).Format(time.RFC3339),
+		ExpiresAt:   now.Add(s.planTTL).Format(time.RFC3339),
 		AccountTier: "FREE",
 		Primary:     nodes[0],
 		Reserves:    reserves(nodes),
@@ -116,7 +138,7 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 			ConnectTimeoutMS:     8000,
 			FailoverAfterFailure: 2,
 			ReconnectBackoffMS:   []int{1000, 3000, 8000, 20000},
-			PlanRefreshAfterS:    43200,
+			PlanRefreshAfterS:    int(s.planTTL.Seconds()) / 2,
 			TelemetrySampling:    1.0,
 			ProbeIntervalS:       60,
 		},
@@ -230,6 +252,5 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 const (
 	maxRequestBytes   = 8 << 10
-	planLifetime      = 24 * time.Hour
 	bootstrapLifetime = 30 * 24 * time.Hour
 )

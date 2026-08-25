@@ -23,6 +23,11 @@ on:
         options:
           - a
           - b
+      plan_ttl:
+        description: How long a plan stays usable. Short while a node is being replaced, long the rest of the time.
+        required: true
+        default: 24h
+        type: string
 
 permissions:
   contents: read
@@ -73,6 +78,7 @@ jobs:
           SEED_A: ${{ secrets.CP_SIGNING_SEED_A }}
           SEED_B: ${{ secrets.CP_SIGNING_SEED_B }}
           SLOT: ${{ inputs.key_slot }}
+          PLAN_TTL: ${{ inputs.plan_ttl }}
         run: |
           set -euo pipefail
           if [ "${SLOT}" = "a" ]; then
@@ -92,6 +98,7 @@ jobs:
           CP_SIGNING_KEY_ID=${key_id}
           CP_SIGNING_SEED=${seed}
           CP_BOOTSTRAP_HOSTS=simple-syncbridge.download
+          CP_PLAN_TTL=${PLAN_TTL}
           CP_LISTEN=127.0.0.1:8080
           ENVFILE
 
