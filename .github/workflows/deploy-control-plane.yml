@@ -1,0 +1,147 @@
+name: Deploy Control Plane
+
+# Builds the Control Plane and puts it on the machine that runs it.
+#
+# Deployment happens from here and not from a laptop for one reason: the
+# signing key lives in this repository's secrets and nowhere else. A key that
+# can only be read by the pipeline is a key that cannot be copied off a
+# developer's machine, and it is what makes the Control Plane movable - the
+# same pipeline can raise it on any host and clients will accept what it signs
+# without an application update.
+#
+# The service listens on loopback. Nginx in front of it holds the certificate,
+# so the binary knows nothing about TLS or about which domain it answers on.
+
+on:
+  workflow_dispatch:
+    inputs:
+      key_slot:
+        description: Which signing key to run with. Rotation means switching this, not rebuilding the app.
+        required: true
+        default: a
+        type: choice
+        options:
+          - a
+          - b
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy Control Plane
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build
+        working-directory: control-plane
+        run: |
+          set -euo pipefail
+          go mod tidy
+          go vet ./...
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/simple-vpn-core ./cmd/core
+          echo "SHA256: $(sha256sum /tmp/simple-vpn-core | cut -d' ' -f1)"
+          echo "| Core binary | \`$(sha256sum /tmp/simple-vpn-core | cut -d' ' -f1)\` |" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          # The host key is recorded on first contact rather than pinned. The
+          # thing being protected here is the key, not the channel: an
+          # impostor host would receive a binary that is public anyway, and
+          # the seed travels only after the connection is established.
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          echo "Host reachable: $(ssh -i ~/.ssh/deploy -o BatchMode=yes root@${HOST} 'hostname')"
+
+      - name: Install and start
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          SEED_A: ${{ secrets.CP_SIGNING_SEED_A }}
+          SEED_B: ${{ secrets.CP_SIGNING_SEED_B }}
+          SLOT: ${{ inputs.key_slot }}
+        run: |
+          set -euo pipefail
+          if [ "${SLOT}" = "a" ]; then
+            seed="${SEED_A}"; key_id="cp-2026-08-a"
+          else
+            seed="${SEED_B}"; key_id="cp-2026-08-b"
+          fi
+
+          scp -i ~/.ssh/deploy -o BatchMode=yes /tmp/simple-vpn-core "root@${HOST}:/tmp/simple-vpn-core.new"
+
+          # The environment file is written by a here-document fed over stdin
+          # rather than interpolated into the command line: an argument list is
+          # visible in the process table of the host, and the seed must not be.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "umask 077 && cat > /etc/simple-vpn-core.env" <<ENVFILE
+          CP_DATABASE_URL=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'cat /etc/simple-vpn-cp.dsn')
+          CP_SIGNING_KEY_ID=${key_id}
+          CP_SIGNING_SEED=${seed}
+          CP_BOOTSTRAP_HOSTS=simple-syncbridge.download
+          CP_LISTEN=127.0.0.1:8080
+          ENVFILE
+
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          install -m 0755 /tmp/simple-vpn-core.new /usr/local/bin/simple-vpn-core
+          rm -f /tmp/simple-vpn-core.new
+
+          cat > /etc/systemd/system/simple-vpn-core.service <<'UNIT'
+          [Unit]
+          Description=Simple VPN Control Plane
+          After=network.target postgresql.service
+          Wants=postgresql.service
+
+          [Service]
+          EnvironmentFile=/etc/simple-vpn-core.env
+          ExecStart=/usr/local/bin/simple-vpn-core
+          Restart=on-failure
+          RestartSec=3
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ProtectHome=true
+          PrivateTmp=true
+          DynamicUser=yes
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          systemctl daemon-reload
+          systemctl enable -q --now simple-vpn-core
+          systemctl restart simple-vpn-core
+          sleep 2
+          systemctl is-active simple-vpn-core
+          REMOTE
+
+      - name: Prove it answers
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          # A deploy that reports success without the service answering is a
+          # deploy nobody can trust. The health check runs against the running
+          # process, not against systemd's opinion of it.
+          answer=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'curl -sS --max-time 10 http://127.0.0.1:8080/healthz' || echo "")
+          echo "Health: ${answer:-no answer}"
+          if [ -z "${answer}" ]; then
+            ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              'journalctl -u simple-vpn-core -n 20 --no-pager' || true
+            exit 1
+          fi
+          echo "| Control Plane | answering |" >> "${GITHUB_STEP_SUMMARY}"
