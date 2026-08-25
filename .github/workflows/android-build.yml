@@ -144,6 +144,13 @@ jobs:
             -o "${GITHUB_WORKSPACE}/android/app/libs/vpncore.aar" .
           sha256sum "${GITHUB_WORKSPACE}/android/app/libs/vpncore.aar"
 
+      - name: Check format strings
+        working-directory: android
+        # Before assembling, because a bad placeholder is not a compile
+        # error: it throws when the text is drawn, on a phone, in front
+        # of somebody. See the lint block in app/build.gradle.kts.
+        run: gradle --no-daemon lintDebug
+
       - name: Assemble debug APK
         working-directory: android
         run: gradle --no-daemon assembleDebug

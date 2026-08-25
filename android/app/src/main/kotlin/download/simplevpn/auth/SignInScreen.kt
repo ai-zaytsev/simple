@@ -45,6 +45,11 @@ import kotlinx.coroutines.withContext
  * specific way this goes wrong for real people: a message that never arrived or
  * was deleted, and an address typed with a mistake in it. Neither requires
  * restarting anything.
+ *
+ * The waiting state is kept on disk rather than in memory. Following the link
+ * usually means picking up another device, which means leaving this one - and
+ * an application in the background can be shut down at any moment. Losing the
+ * wait there would break the flow at exactly the point it was designed for.
  */
 @Composable
 fun SignInScreen(onSignedIn: (accountId: String) -> Unit) {
@@ -52,9 +57,10 @@ fun SignInScreen(onSignedIn: (accountId: String) -> Unit) {
     val scope = rememberCoroutineScope()
     val client = remember { AuthClient(context) }
     val accounts = remember { AccountStore(context) }
+    val resumed = remember { accounts.pending() }
 
-    var email by remember { mutableStateOf("") }
-    var attemptId by remember { mutableStateOf<String?>(null) }
+    var email by remember { mutableStateOf(resumed?.email ?: "") }
+    var attemptId by remember { mutableStateOf(resumed?.id) }
     var message by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var resendIn by remember { mutableStateOf(0) }
@@ -65,6 +71,7 @@ fun SignInScreen(onSignedIn: (accountId: String) -> Unit) {
             message = null
             when (val result = withContext(Dispatchers.IO) { client.start(email) }) {
                 is AuthClient.StartResult.Sent -> {
+                    accounts.rememberPending(result.attemptId, email)
                     attemptId = result.attemptId
                     resendIn = result.resendAfterS
                 }
@@ -97,12 +104,14 @@ fun SignInScreen(onSignedIn: (accountId: String) -> Unit) {
         while (true) {
             when (val result = withContext(Dispatchers.IO) { client.poll(id) }) {
                 is AuthClient.PollResult.Confirmed -> {
+                    accounts.clearPending()
                     accounts.remember(result.accountId)
                     onSignedIn(result.accountId)
                     return@LaunchedEffect
                 }
 
                 is AuthClient.PollResult.Expired -> {
+                    accounts.clearPending()
                     attemptId = null
                     message = context.getString(R.string.auth_link_expired)
                     return@LaunchedEffect
@@ -195,6 +204,7 @@ fun SignInScreen(onSignedIn: (accountId: String) -> Unit) {
 
                 TextButton(
                     onClick = {
+                        accounts.clearPending()
                         attemptId = null
                         message = null
                         resendIn = 0
