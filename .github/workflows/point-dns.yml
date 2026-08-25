@@ -19,6 +19,11 @@ on:
         required: true
         type: choice
         options:
+          # The Control Plane domain, and the only one here that is not
+          # disposable: it is compiled into every installation as a name, so
+          # replacing it costs an update to everyone. Its address changes
+          # freely; the name does not.
+          - simple-syncbridge.download
           - 6015874.xyz
           - 6015875.xyz
           - 6047864.xyz
