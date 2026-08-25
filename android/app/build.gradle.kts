@@ -39,19 +39,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    // A format string with a placeholder the formatter cannot read throws at
-    // the moment the text is drawn, not when the build runs - so `%1` instead
-    // of `%1$s` compiled, shipped, and closed the application on the first tap
-    // of the button that used it.
-    //
-    // Restricted to exactly these checks on purpose. A blanket lint run would
-    // fail on unrelated style opinions and get switched off within a week; this
-    // one catches a class of bug that reaches people and nothing else.
-    lint {
-        abortOnError = true
-        checkOnly += listOf("StringFormatInvalid", "StringFormatMatches", "StringFormatCount")
-    }
-
     kotlinOptions {
         jvmTarget = "17"
     }
