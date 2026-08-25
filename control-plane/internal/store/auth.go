@@ -193,3 +193,29 @@ func (s *Store) AccountOfDevice(ctx context.Context, deviceID uuid.UUID) (uuid.U
 	}
 	return *accountID, nil
 }
+
+// LiveAttempt finds this device's most recent unused link for an address.
+//
+// It exists for the moment someone presses "send again" once too often. The
+// rate limit answers exactly like success, so without this the application
+// would be handed an attempt that was never recorded, poll it, and tell the
+// person their link had expired - while up to five working links sat in their
+// mailbox. Returning the newest live one makes the screen tell the truth.
+func (s *Store) LiveAttempt(ctx context.Context, email string, deviceID uuid.UUID) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := s.pool.QueryRow(ctx, `
+		select id from login_attempts
+		where lower(email) = lower($1)
+		  and device_id = $2
+		  and consumed_at is null
+		  and expires_at > now()
+		order by created_at desc
+		limit 1`, email, deviceID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, ErrNoSuchAttempt
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("cannot find a live attempt: %w", err)
+	}
+	return id, nil
+}

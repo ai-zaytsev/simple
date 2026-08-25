@@ -17,9 +17,9 @@ type startRequest struct {
 }
 
 type startResponse struct {
-	AttemptID   string `json:"attempt_id"`
-	ResendAfterS int   `json:"resend_after_s"`
-	ExpiresInS   int   `json:"expires_in_s"`
+	AttemptID    string `json:"attempt_id"`
+	ResendAfterS int    `json:"resend_after_s"`
+	ExpiresInS   int    `json:"expires_in_s"`
 }
 
 // authStart takes an address and sends a link to it.
@@ -75,6 +75,13 @@ func (s *Server) authStart(w http.ResponseWriter, r *http.Request) {
 		// a stranger sees no difference and learns nothing, and the stranger
 		// stops receiving messages.
 		s.log.Info("attempt rate limit reached")
+		// The identifier is one this device already has a link for, so the
+		// screen goes on waiting for a message that really is in the mailbox.
+		// When the requests came from somewhere else there is none, the random
+		// identifier stands, and the wait ends in "expired" as before.
+		if live, err := s.store.LiveAttempt(ctx, email, deviceID); err == nil {
+			response.AttemptID = live.String()
+		}
 		writeJSON(w, http.StatusOK, response)
 		return
 	}
