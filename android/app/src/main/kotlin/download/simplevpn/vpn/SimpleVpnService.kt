@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -22,6 +24,9 @@ import download.simplevpn.core.SessionLog
 import download.simplevpn.core.TunBridge
 import download.simplevpn.core.XrayEngine
 import download.simplevpn.net.NetworkMonitor
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -45,6 +50,14 @@ class SimpleVpnService : VpnService() {
     private var tunnelHandedOver = false
     private var networkMonitor: NetworkMonitor? = null
     private val starting = AtomicBoolean(false)
+
+    /** Runs the delayed restart; see scheduleEngineRestart. */
+    private val restartHandler = Handler(Looper.getMainLooper())
+    private val restartEngine = Runnable { restartWhenNodeAnswers() }
+
+    /** Probing opens a socket and waits, which the main thread must not do. */
+    private val probes = Executors.newSingleThreadExecutor()
+    private var probeAttempts = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -163,6 +176,105 @@ class SimpleVpnService : VpnService() {
         }
     }
 
+    /**
+     * Waits for the network to settle before restarting anything.
+     *
+     * A restart costs every connection in flight. On Wi-Fi that is rare enough
+     * not to matter; a mobile network changes constantly - moving between
+     * cells, losing and regaining Wi-Fi - and a device reported two changes in
+     * three and a half minutes, each of which dropped ninety-five live
+     * connections. Some of those changes are not real: the system announces a
+     * new network while the one in use is still there.
+     *
+     * Each change pushes the restart further out, so a burst of them costs one
+     * restart instead of one each. What it cannot avoid is the restart itself
+     * when the change is real: sockets opened over a network that is gone stay
+     * open and deliver nothing.
+     */
+    private fun scheduleEngineRestart() {
+        restartHandler.removeCallbacks(restartEngine)
+        probeAttempts = 0
+        restartHandler.postDelayed(restartEngine, NETWORK_SETTLE_MS)
+    }
+
+    /**
+     * Restarts only once the node answers, and not merely once the system says
+     * the network changed.
+     *
+     * A phone announces a new network before that network can carry anything.
+     * Restarting into that window is worse than waiting: a device log showed
+     * 549 failed dials to the node, 501 of them inside a single minute
+     * following a switch to mobile, each one a retry against a network that was
+     * not ready. The tunnel recovered on its own afterwards, so nothing was
+     * broken - it was a minute of a phone talking to itself.
+     *
+     * A short connection to the node is cheap and answers the only question
+     * that matters. Until it succeeds the restart is postponed, and the state
+     * says reconnecting rather than claiming a connection that is not carrying
+     * anything.
+     *
+     * After enough failed attempts the restart happens regardless: a node that
+     * cannot be reached at all is a different failure, and the engine reporting
+     * it is more useful than this quietly waiting forever.
+     */
+    private fun restartWhenNodeAnswers() {
+        probes.execute {
+            val reachable = probeNode()
+
+            restartHandler.post {
+                when {
+                    reachable -> {
+                        SessionLog.record(this, "node answers after $probeAttempts probe(s), restarting")
+                        restartEngineForNewNetwork()
+                    }
+
+                    probeAttempts >= MAX_PROBE_ATTEMPTS -> {
+                        SessionLog.record(this, "node did not answer in $probeAttempts probes, restarting anyway")
+                        restartEngineForNewNetwork()
+                    }
+
+                    else -> {
+                        if (probeAttempts == 0) {
+                            VpnController.update(VpnConnectionState.Reconnecting)
+                            updateNotification(getString(R.string.status_reconnecting))
+                        }
+                        probeAttempts++
+                        val wait = minOf(PROBE_BACKOFF_MS * probeAttempts, PROBE_BACKOFF_CAP_MS)
+                        restartHandler.postDelayed(restartEngine, wait)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * One short connection to the node, outside the tunnel.
+     *
+     * Protected explicitly. The application already excludes itself from its
+     * own tunnel, so this would escape anyway, but a probe that measured the
+     * inside of the tunnel would answer the wrong question entirely.
+     */
+    private fun probeNode(): Boolean {
+        val profileResult = SliceProfileSource.load(this)
+        if (profileResult !is SliceProfileSource.Result.Available) {
+            // Nothing to probe against. Restarting is then the only option that
+            // can produce a message the user can act on.
+            return true
+        }
+
+        val profile = profileResult.profile
+        return try {
+            Socket().use { socket ->
+                protect(socket)
+                socket.connect(InetSocketAddress(profile.host, profile.port), PROBE_TIMEOUT_MS)
+                true
+            }
+        } catch (t: Throwable) {
+            Log.i(TAG, "node not reachable yet: ${t.message}")
+            false
+        }
+    }
+
     private fun restartEngineForNewNetwork() {
         if (!engine.isRunning) return
         SessionLog.record(this, "underlying network changed, restarting the engine")
@@ -225,7 +337,7 @@ class SimpleVpnService : VpnService() {
         networkMonitor?.stop()
         networkMonitor = NetworkMonitor(
             context = this,
-            onUnderlyingNetworkChanged = { restartEngineForNewNetwork() },
+            onUnderlyingNetworkChanged = { scheduleEngineRestart() },
             onNetworkLost = {
                 // Not a failure: the device may be between networks. The state
                 // says reconnecting, and the next available network triggers a
@@ -252,6 +364,10 @@ class SimpleVpnService : VpnService() {
     }
 
     private fun teardown() {
+        // A restart that fires after teardown would rebuild an engine nobody
+        // asked for, over an interface that is already gone.
+        restartHandler.removeCallbacks(restartEngine)
+        probeAttempts = 0
         SessionLog.record(this, "teardown, bridge counters: " + BridgeDiagnostics.snapshot())
         networkMonitor?.stop()
         networkMonitor = null
@@ -355,6 +471,29 @@ class SimpleVpnService : VpnService() {
          * than passing none.
          */
         private const val TUN_FD_OWNED_BY_BRIDGE = 0
+        /**
+         * How long the network is given to settle before a restart.
+         *
+         * Long enough to swallow a burst of announcements, which arrive within
+         * a second or two of each other, and short enough that traffic is not
+         * left going through dead sockets for noticeably longer than before.
+         */
+        private const val NETWORK_SETTLE_MS = 3_000L
+
+        /** How long one probe waits before calling the node unreachable. */
+        private const val PROBE_TIMEOUT_MS = 4_000
+
+        /** Grows with each attempt, so a long outage is not a tight loop. */
+        private const val PROBE_BACKOFF_MS = 2_000L
+        private const val PROBE_BACKOFF_CAP_MS = 8_000L
+
+        /**
+         * After this many, restart regardless. A node that cannot be reached
+         * at all is a different failure, and the engine reporting it beats
+         * waiting in silence.
+         */
+        private const val MAX_PROBE_ATTEMPTS = 10
+
         private const val CHANNEL_ID = "vpn_status"
         private const val NOTIFICATION_ID = 1
     }
