@@ -84,10 +84,18 @@ jobs:
 
           count=$(jq -r 'if type == "array" then length else 0 end' /tmp/servers.json)
           echo "Machines at this provider: ${count}"
-          # Addresses are printed because they are needed and are not secret;
-          # anything else the provider returns stays in the file.
-          jq -r 'if type == "array" then
-                   .[] | "  \(.name)  \(.id)  \(.power // "?")  \([.networks[]?.ips[]?] | join(" "))"
+          # The address is found by what it looks like, not by where it sits.
+          # The documented path returned nothing against the real response, and
+          # a machine whose address cannot be read can be neither configured nor
+          # measured. Private ranges are dropped, because a machine usually has
+          # one of each. Addresses are printed because they are needed and are
+          # not secret; everything else the provider returns stays in the file.
+          jq -r 'def public:
+                   [.. | strings | select(test("^([0-9]{1,3}[.]){3}[0-9]{1,3}$"))]
+                   | map(select(test("^(10[.]|172[.](1[6-9]|2[0-9]|3[01])[.]|192[.]168[.]|127[.])") | not))
+                   | unique | join(" ");
+                 if type == "array" then
+                   .[] | "  \(.name)  \(.id)  \(.power // "?")  \(public)"
                  else empty end' /tmp/servers.json
           echo "| Machines at the candidate provider | ${count} |" >> "${GITHUB_STEP_SUMMARY}"
 
