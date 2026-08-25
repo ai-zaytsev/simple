@@ -893,48 +893,6 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Bundle this node as the endpoint
-        if: ${{ inputs.build_apk }}
-        env:
-          DOMAIN: ${{ env.NODE_DOMAIN }}
-          NODE_IP: ${{ env.NODE_IP }}
-          WS_UUID: ${{ env.NODE_WS_UUID }}
-          WS_PATH: ${{ env.NODE_WS_PATH }}
-        run: |
-          set -euo pipefail
-          mkdir -p android/app/src/main/assets
-          # The node is addressed numerically and named only for the
-          # certificate.
-          #
-          # A name here has to be resolved before the tunnel exists, and on a
-          # phone that cannot be done: the application excludes itself from its
-          # own tunnel, while the system resolver points at an address that
-          # only exists inside it. The engine then waits forever for a name it
-          # will never get, the device retries DNS, and the tunnel reports
-          # success while carrying nothing. A device showed exactly that:
-          # packets arriving, all of them UDP, not one TCP connection.
-          #
-          # Written with jq rather than by hand: the credential must not pass
-          # through an echo, and quoting it correctly by hand is how a value
-          # ends up in a log.
-          jq -n \
-            --arg ip "${NODE_IP}" \
-            --arg host "${DOMAIN}" \
-            --arg uuid "${WS_UUID}" \
-            --arg path "${WS_PATH}" \
-            '{
-               alias: "slice",
-               host: $ip,
-               port: 443,
-               transport_kind: "vless-ws-tls",
-               credential_uuid: $uuid,
-               path: $path,
-               server_name: $host,
-               host_header: $host,
-               fingerprint: "chrome"
-             }' > android/app/src/main/assets/slice-profile.json
-          echo "Endpoint bundled for ${DOMAIN}, addressed numerically."
-
       - name: Restore the routing database
         if: ${{ inputs.build_apk }}
         id: geoip

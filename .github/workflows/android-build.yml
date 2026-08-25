@@ -70,31 +70,6 @@ jobs:
             echo "| Routing database | ${GEOIP_TAG} |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Bundle an endpoint if one is configured
-        env:
-          PROFILE: ${{ secrets.SLICE_PROFILE_JSON }}
-        run: |
-          set -euo pipefail
-          # Normally the endpoint comes from the run that created the node. A
-          # stand set up by hand has no such run, so it arrives as a secret
-          # instead: written straight to the file, never echoed, and absent
-          # from the build when the secret is not set.
-          if [ -z "${PROFILE}" ]; then
-            echo "No endpoint configured; this build will say it has none."
-            exit 0
-          fi
-
-          mkdir -p android/app/src/main/assets
-          printf '%s' "${PROFILE}" > android/app/src/main/assets/slice-profile.json
-
-          if ! jq -e '.host and .port and .credential_uuid and .path' \
-              android/app/src/main/assets/slice-profile.json > /dev/null; then
-            echo "The configured endpoint is missing required fields."
-            rm -f android/app/src/main/assets/slice-profile.json
-            exit 1
-          fi
-          echo "Endpoint bundled from the configured secret."
-
       - name: Restore the routing database
         id: geoip
         uses: actions/cache@v4

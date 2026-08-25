@@ -30,13 +30,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.FileProvider
 import download.simplevpn.R
-import download.simplevpn.config.SliceProfileSource
 import download.simplevpn.config.TransportParams
 import download.simplevpn.config.XrayConfigBuilder
 import download.simplevpn.core.BridgeDiagnostics
 import download.simplevpn.core.SessionLog
 import download.simplevpn.core.EngineSelfTest
 import download.simplevpn.core.NodeReachTest
+import download.simplevpn.plan.PlanSource
 import download.simplevpn.vpn.VpnConnectionState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -176,18 +176,17 @@ private fun BridgeCounters() {
         // with the tunnel switched off proves the network allows it, not that
         // this application's own traffic escapes the tunnel it is running.
         node = withContext(Dispatchers.IO) {
-            when (val profile = SliceProfileSource.load(context)) {
-                is SliceProfileSource.Result.Missing -> "node: no endpoint configured"
-                is SliceProfileSource.Result.Available -> {
-                    val transport = profile.profile.transport
-                    val serverName = when (transport) {
+            when (val known = PlanSource(context).currentProfile()) {
+                is PlanSource.Result.Missing -> "node: ${known.reason}"
+                is PlanSource.Result.Available -> {
+                    val serverName = when (val transport = known.profile.transport) {
                         is TransportParams.VlessWsTls -> transport.serverName
                         is TransportParams.VlessReality -> transport.serverName
                     }
                     when (
                         val reach = NodeReachTest.run(
-                            host = profile.profile.host,
-                            port = profile.profile.port,
+                            host = known.profile.host,
+                            port = known.profile.port,
                             serverName = serverName,
                         )
                     ) {

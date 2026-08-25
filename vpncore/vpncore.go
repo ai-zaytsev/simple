@@ -22,6 +22,8 @@
 package vpncore
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/url"
@@ -293,4 +295,58 @@ func closeBridgeLocked() {
 		bridgeStack.Wait()
 		bridgeStack = nil
 	}
+}
+
+// VerifyDocument checks that a payload really came from the holder of a key.
+//
+// This lives here rather than in the application because the platform only
+// grew an Ed25519 verifier at API level 33, and the minimum supported level is
+// 24. The Go runtime is already linked in for the tunnel, so the check costs
+// nothing extra and behaves identically on every device instead of existing on
+// some and being absent on others.
+//
+// Everything arrives base64 encoded, because that is the form the document
+// travels in and decoding it on this side means the bytes verified are the
+// bytes that were transmitted.
+//
+// Returns nil when the signature is genuine. Every other outcome is an error,
+// and callers must treat an error as "discard the document" rather than as
+// "proceed with care".
+func VerifyDocument(payloadB64, signatureB64, publicKeyB64 string) error {
+	payload, err := base64.StdEncoding.DecodeString(payloadB64)
+	if err != nil {
+		return fmt.Errorf("payload is not base64: %w", err)
+	}
+	signature, err := base64.StdEncoding.DecodeString(signatureB64)
+	if err != nil {
+		return fmt.Errorf("signature is not base64: %w", err)
+	}
+	publicKey, err := base64.StdEncoding.DecodeString(publicKeyB64)
+	if err != nil {
+		return fmt.Errorf("public key is not base64: %w", err)
+	}
+
+	if len(publicKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("public key is %d bytes, expected %d",
+			len(publicKey), ed25519.PublicKeySize)
+	}
+	if len(signature) != ed25519.SignatureSize {
+		return fmt.Errorf("signature is %d bytes, expected %d",
+			len(signature), ed25519.SignatureSize)
+	}
+
+	if !ed25519.Verify(ed25519.PublicKey(publicKey), payload, signature) {
+		return errors.New("signature does not match the document")
+	}
+	return nil
+}
+
+// DecodePayload returns the document bytes so the caller parses exactly what
+// was verified, rather than decoding a second time and risking a difference.
+func DecodePayload(payloadB64 string) (string, error) {
+	payload, err := base64.StdEncoding.DecodeString(payloadB64)
+	if err != nil {
+		return "", fmt.Errorf("payload is not base64: %w", err)
+	}
+	return string(payload), nil
 }
