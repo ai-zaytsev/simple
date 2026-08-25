@@ -84,8 +84,11 @@ jobs:
 
           count=$(jq -r 'if type == "array" then length else 0 end' /tmp/servers.json)
           echo "Machines at this provider: ${count}"
-          jq -r 'if type == "array" then .[] | "  \(.name)  \(.id)  \(.power // "?")" else empty end' \
-            /tmp/servers.json
+          # Addresses are printed because they are needed and are not secret;
+          # anything else the provider returns stays in the file.
+          jq -r 'if type == "array" then
+                   .[] | "  \(.name)  \(.id)  \(.power // "?")  \([.networks[]?.ips[]?] | join(" "))"
+                 else empty end' /tmp/servers.json
           echo "| Machines at the candidate provider | ${count} |" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Show what can be asked for
@@ -153,26 +156,49 @@ jobs:
                     billingcycle: "hourly", monthlypackage: "", poweronaftercreate: "yes"}')" \
             "${KAMATERA_API}/service/server")
 
-          echo "${created}" | head -c 2000
-          echo ""
+          # The response is never printed. This provider returns a generated
+          # root password inside it, and printing the body put that password
+          # into a public log. What a provider chooses to include in a response
+          # is not ours to publish, so the password is masked before anything
+          # else happens and only named fields leave this step.
+          password=$(printf '%s' "${created}" | jq -r '.password // empty' 2>/dev/null || echo "")
+          if [ -n "${password}" ]; then
+            echo "::add-mask::${password}"
+          fi
 
-          command_id=$(printf '%s' "${created}" | jq -r 'if type == "array" then .[0] else (.commandIds[0]? // .commandId? // empty) end' 2>/dev/null || echo "")
+          command_id=$(printf '%s' "${created}" \
+            | jq -r '(.commandIds[0]? // .commandId? // (if type == "array" then .[0] else empty end)) // empty' \
+            2>/dev/null || echo "")
           if [ -z "${command_id}" ] || [ "${command_id}" = "null" ]; then
             echo "The provider did not return a command to follow."
             exit 1
           fi
           echo "Following command ${command_id}."
 
-          for _ in $(seq 1 60); do
-            sleep 10
+          for _ in $(seq 1 40); do
+            sleep 15
             info=$(curl -sS -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
               -H "Accept: application/json" \
               "${KAMATERA_API}/service/queue/${command_id}")
-            status=$(printf '%s' "${info}" | jq -r 'if type == "array" then .[0].status else .status end // empty')
-            echo "  status: ${status:-unknown}"
+            status=$(printf '%s' "${info}" \
+              | jq -r '(if type == "array" then .[0] else . end) | (.status // .state // empty)' \
+              2>/dev/null || echo "")
+
+            if [ -z "${status}" ]; then
+              # The shape, never the contents. A response whose fields we cannot
+              # find still has to be diagnosable, and printing the body is how a
+              # password reached a public log once already.
+              shape=$(printf '%s' "${info}" \
+                | jq -r '(if type == "array" then .[0] else . end) | keys_unsorted | join(", ")' \
+                2>/dev/null || echo "unreadable")
+              echo "  status field not found; fields present: ${shape}"
+            else
+              echo "  status: ${status}"
+            fi
+
             case "${status}" in
-              complete) echo "${info}" > /tmp/done.json; break ;;
-              error|cancelled) echo "${info}" | head -c 1500; exit 1 ;;
+              complete|completed|done) break ;;
+              error|cancelled|failed) echo "  the provider reported ${status}"; exit 1 ;;
             esac
           done
 
