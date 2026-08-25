@@ -25,8 +25,43 @@ class AccountStore(context: Context) {
         prefs.edit().remove(KEY_ACCOUNT).apply()
     }
 
+    /** A sign-in that has been started and is waiting for somebody to follow a link. */
+    data class Pending(val id: String, val email: String)
+
+    /**
+     * The wait outlives the application being closed.
+     *
+     * Keeping this only in memory looked adequate and was not: the whole point
+     * of the link is that it can be opened somewhere else, and walking to a
+     * computer means leaving the application - which Android is then free to
+     * shut down. Coming back to an empty address field, with a perfectly good
+     * link already followed, is the flow failing at exactly the moment it was
+     * designed for.
+     *
+     * Nothing secret is stored. The token is in the mailbox; this is only the
+     * identifier of the attempt and the address already typed.
+     */
+    fun rememberPending(id: String, email: String) {
+        prefs.edit()
+            .putString(KEY_PENDING_ID, id)
+            .putString(KEY_PENDING_EMAIL, email)
+            .apply()
+    }
+
+    fun pending(): Pending? {
+        val id = prefs.getString(KEY_PENDING_ID, null) ?: return null
+        val email = prefs.getString(KEY_PENDING_EMAIL, null) ?: return null
+        return Pending(id, email)
+    }
+
+    fun clearPending() {
+        prefs.edit().remove(KEY_PENDING_ID).remove(KEY_PENDING_EMAIL).apply()
+    }
+
     private companion object {
         const val NAME = "account"
         const val KEY_ACCOUNT = "account_id"
+        const val KEY_PENDING_ID = "pending_attempt_id"
+        const val KEY_PENDING_EMAIL = "pending_email"
     }
 }
