@@ -1,0 +1,12 @@
+# Files that are run on a Linux machine keep Linux line endings, whatever the
+# machine they are edited on.
+#
+# Written after a carriage return reached a node inside a shebang: the agent
+# was copied straight from a Windows checkout, and the kernel looked for an
+# interpreter called "python3\r". Nothing in the file was wrong; the checkout
+# was. Without this, that is a mistake every Windows checkout makes again.
+*.sh   text eol=lf
+*.py   text eol=lf
+*.sql  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf

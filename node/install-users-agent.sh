@@ -4,27 +4,30 @@
 # Plane's, and gives Xray the loopback interface it needs to be told about
 # users while it runs.
 #
-# Run on the node. Expects CP_URL and NODE_TOKEN in the environment; the token
-# is written to a file readable only by root and never appears in an argument
-# list, because an argument list is visible to every process on the machine.
+# Run on the node, after /etc/simple-vpn-node.env has been written. The token
+# is deliberately not an argument to this script and not an environment
+# variable set on its command line: an argument list is readable by every
+# process on the machine, and this one is the node's whole authority to ask who
+# may connect.
+#
+# Expects /tmp/users-agent.py to have been copied over first.
 
 set -euo pipefail
 
-: "${CP_URL:?CP_URL is required}"
-: "${NODE_TOKEN:?NODE_TOKEN is required}"
+if [ ! -f /etc/simple-vpn-node.env ]; then
+  echo "/etc/simple-vpn-node.env is missing. Write it first, over stdin, so the"
+  echo "token never appears in a command line:"
+  echo
+  echo "  ssh node 'umask 077 && cat > /etc/simple-vpn-node.env' <<ENVFILE"
+  echo "  CP_URL=https://simple-syncbridge.download"
+  echo "  NODE_TOKEN=..."
+  echo "  ENVFILE"
+  exit 1
+fi
 
-INBOUND_TAG="${INBOUND_TAG:-ws-in}"
-INBOUND_PORT="${INBOUND_PORT:-10000}"
-
+chmod 600 /etc/simple-vpn-node.env
 install -m 0755 /tmp/users-agent.py /usr/local/bin/simple-vpn-users
-
-umask 077
-cat > /etc/simple-vpn-node.env <<ENVFILE
-CP_URL=${CP_URL}
-NODE_TOKEN=${NODE_TOKEN}
-INBOUND_TAG=${INBOUND_TAG}
-INBOUND_PORT=${INBOUND_PORT}
-ENVFILE
+rm -f /tmp/users-agent.py
 
 cat > /etc/systemd/system/simple-vpn-users.service <<'UNIT'
 [Unit]
