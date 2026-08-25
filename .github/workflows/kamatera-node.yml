@@ -97,6 +97,28 @@ jobs:
                  if type == "array" then
                    .[] | "  \(.name)  \(.id)  \(.power // "?")  \(public)"
                  else empty end' /tmp/servers.json
+
+          # The listing carries no address, so each machine is asked about
+          # itself. Field names are printed when nothing is found, so the next
+          # attempt is informed rather than another guess.
+          for id in $(jq -r 'if type == "array" then .[] | .id else empty end' /tmp/servers.json); do
+            curl -sS -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+              -H "Accept: application/json" \
+              "${KAMATERA_API}/service/server/${id}" > /tmp/one.json 2>/dev/null || true
+
+            address=$(jq -r '[.. | strings | select(test("^([0-9]{1,3}[.]){3}[0-9]{1,3}$"))]
+                             | map(select(test("^(10[.]|172[.](1[6-9]|2[0-9]|3[01])[.]|192[.]168[.]|127[.])") | not))
+                             | unique | join(" ")' /tmp/one.json 2>/dev/null || echo "")
+
+            if [ -n "${address}" ]; then
+              echo "  address of ${id}: ${address}"
+              echo "| Candidate machine | \`${address}\` |" >> "${GITHUB_STEP_SUMMARY}"
+            else
+              fields=$(jq -r '(if type == "array" then .[0] else . end) | keys_unsorted | join(", ")' \
+                /tmp/one.json 2>/dev/null || echo "unreadable")
+              echo "  no address for ${id}; fields present: ${fields}"
+            fi
+          done
           echo "| Machines at the candidate provider | ${count} |" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Show what can be asked for
