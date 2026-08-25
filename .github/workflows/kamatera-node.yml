@@ -1,0 +1,234 @@
+name: Kamatera Node
+
+# Creates, lists and removes a machine at a second provider.
+#
+# Every region of the first provider was measured from a Russian network and
+# every one of them delivered a few tens of kilobytes and then stopped, while a
+# small provider's server delivered a whole file two hundred times faster. See
+# docs/architecture/network-path.md. Entry nodes therefore have to live
+# somewhere else, and a candidate provider has to be measured before anything is
+# built on it.
+#
+# Deliberately not Terraform, for the same reason as the region sweep: this is a
+# candidate being tried, not infrastructure being run. If the provider works it
+# gets described properly; until then it must not appear in the state that real
+# nodes share.
+#
+# Billing is by the hour, so a machine left running costs money quietly. The
+# listing action exists so that it can be checked at any time, and destroy names
+# what it removed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do.
+        required: true
+        default: list
+        type: choice
+        options:
+          - list
+          - options
+          - create
+          - destroy
+      datacenter:
+        description: Datacenter id, from the options action.
+        required: false
+        default: EU
+        type: string
+      image:
+        description: Image id, from the options action.
+        required: false
+        default: ''
+        type: string
+      ssh_public_key:
+        description: Public key allowed to log in. Public by nature, so not a secret.
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  KAMATERA_API: https://cloudcli.cloudwm.com
+  SERVER_NAME: simple-vpn-candidate
+
+jobs:
+  kamatera:
+    name: Kamatera Node
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: List what exists
+        if: ${{ inputs.action == 'list' || inputs.action == 'create' || inputs.action == 'destroy' }}
+        env:
+          CLIENT: ${{ secrets.KAMATERA_ACCESS_KEY }}
+          SECRET: ${{ secrets.KAMATERA_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          client=$(printf '%s' "${CLIENT}" | tr -d '[:space:]')
+          secret=$(printf '%s' "${SECRET}" | tr -d '[:space:]')
+
+          code=$(curl -sS -o /tmp/servers.json -w '%{http_code}' \
+            -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+            -H "Accept: application/json" \
+            "${KAMATERA_API}/service/servers" || echo "000")
+
+          if [ "${code}" != "200" ]; then
+            echo "The provider did not answer with a listing. HTTP ${code}."
+            # Its own words: guessing at an API costs a whole run.
+            sed 's/^/  /' /tmp/servers.json 2>/dev/null | head -20
+            exit 1
+          fi
+
+          count=$(jq -r 'if type == "array" then length else 0 end' /tmp/servers.json)
+          echo "Machines at this provider: ${count}"
+          jq -r 'if type == "array" then .[] | "  \(.name)  \(.id)  \(.power // "?")" else empty end' \
+            /tmp/servers.json
+          echo "| Machines at the candidate provider | ${count} |" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Show what can be asked for
+        if: ${{ inputs.action == 'options' }}
+        env:
+          CLIENT: ${{ secrets.KAMATERA_ACCESS_KEY }}
+          SECRET: ${{ secrets.KAMATERA_SECRET_KEY }}
+          DATACENTER: ${{ inputs.datacenter }}
+        run: |
+          set -euo pipefail
+          client=$(printf '%s' "${CLIENT}" | tr -d '[:space:]')
+          secret=$(printf '%s' "${SECRET}" | tr -d '[:space:]')
+
+          echo "::group::Datacenters"
+          curl -sS -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+            -H "Accept: application/json" \
+            "${KAMATERA_API}/service/server?datacenter=1" | jq -r 'to_entries[] | "  \(.key)  \(.value)"' \
+            || echo "  could not read datacenters"
+          echo "::endgroup::"
+
+          echo "::group::Images in ${DATACENTER}"
+          curl -sS -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+            -H "Accept: application/json" \
+            "${KAMATERA_API}/service/server?images=1&datacenter=${DATACENTER}" \
+            | jq -r '.[]? | select((.os // "" | ascii_downcase) | contains("ubuntu")) | "  \(.id)  \(.os) \(.code)"' \
+            || echo "  could not read images"
+          echo "::endgroup::"
+
+      - name: Create the machine
+        if: ${{ inputs.action == 'create' }}
+        env:
+          CLIENT: ${{ secrets.KAMATERA_ACCESS_KEY }}
+          SECRET: ${{ secrets.KAMATERA_SECRET_KEY }}
+          DATACENTER: ${{ inputs.datacenter }}
+          IMAGE: ${{ inputs.image }}
+          SSH_KEY: ${{ inputs.ssh_public_key }}
+        run: |
+          set -euo pipefail
+          client=$(printf '%s' "${CLIENT}" | tr -d '[:space:]')
+          secret=$(printf '%s' "${SECRET}" | tr -d '[:space:]')
+
+          if [ -z "${IMAGE}" ]; then
+            echo "No image given. Run this workflow with action=options first."
+            exit 1
+          fi
+          if [ -z "${SSH_KEY}" ]; then
+            echo "No public key given; the machine would be unreachable."
+            exit 1
+          fi
+
+          # Smallest useful shape, billed hourly. A candidate is measured, not
+          # run, so nothing here is sized for load.
+          created=$(curl -sS -X POST \
+            -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+            -H "Content-Type: application/json" -H "Accept: application/json" \
+            -d "$(jq -n \
+                  --arg name "${SERVER_NAME}" \
+                  --arg dc "${DATACENTER}" \
+                  --arg image "${IMAGE}" \
+                  --arg key "${SSH_KEY}" \
+                  '{name: $name, password: "__generate__", passwordValidate: "__generate__",
+                    "ssh-key": $key, datacenter: $dc, image: $image,
+                    cpu: "1B", ram: 1024, disk: "size=20", dailybackup: "no",
+                    managed: "no", network: "name=wan,ip=auto", quantity: 1,
+                    billingcycle: "hourly", monthlypackage: "", poweronaftercreate: "yes"}')" \
+            "${KAMATERA_API}/service/server")
+
+          echo "${created}" | head -c 2000
+          echo ""
+
+          command_id=$(printf '%s' "${created}" | jq -r 'if type == "array" then .[0] else (.commandIds[0]? // .commandId? // empty) end' 2>/dev/null || echo "")
+          if [ -z "${command_id}" ] || [ "${command_id}" = "null" ]; then
+            echo "The provider did not return a command to follow."
+            exit 1
+          fi
+          echo "Following command ${command_id}."
+
+          for _ in $(seq 1 60); do
+            sleep 10
+            info=$(curl -sS -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+              -H "Accept: application/json" \
+              "${KAMATERA_API}/service/queue/${command_id}")
+            status=$(printf '%s' "${info}" | jq -r 'if type == "array" then .[0].status else .status end // empty')
+            echo "  status: ${status:-unknown}"
+            case "${status}" in
+              complete) echo "${info}" > /tmp/done.json; break ;;
+              error|cancelled) echo "${info}" | head -c 1500; exit 1 ;;
+            esac
+          done
+
+          # The address is read from the listing rather than from the command
+          # output, because the listing is what the provider considers true.
+          curl -sS -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+            -H "Accept: application/json" \
+            "${KAMATERA_API}/service/servers" > /tmp/servers.json
+
+          address=$(jq -r --arg n "${SERVER_NAME}" \
+            'if type == "array" then (.[] | select(.name == $n) | .networks[]?.ips[]? ) else empty end' \
+            /tmp/servers.json | grep -vE '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)' | head -1)
+
+          echo "Address: ${address:-unknown}"
+          echo "| Candidate machine | \`${address:-unknown}\` |" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Remove the machine
+        if: ${{ inputs.action == 'destroy' }}
+        env:
+          CLIENT: ${{ secrets.KAMATERA_ACCESS_KEY }}
+          SECRET: ${{ secrets.KAMATERA_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          client=$(printf '%s' "${CLIENT}" | tr -d '[:space:]')
+          secret=$(printf '%s' "${SECRET}" | tr -d '[:space:]')
+
+          ids=$(jq -r --arg n "${SERVER_NAME}" \
+            'if type == "array" then (.[] | select(.name == $n) | .id) else empty end' /tmp/servers.json)
+
+          if [ -z "${ids}" ]; then
+            echo "Nothing named ${SERVER_NAME} to remove."
+            exit 0
+          fi
+
+          for id in ${ids}; do
+            curl -sS -X POST \
+              -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+              -H "Content-Type: application/json" -H "Accept: application/json" \
+              -d '{"force": true}' \
+              "${KAMATERA_API}/service/server/${id}/terminate" | head -c 500
+            echo ""
+            echo "Asked the provider to remove ${id}."
+          done
+
+      - name: Confirm what is left
+        if: ${{ always() && inputs.action != 'options' }}
+        env:
+          CLIENT: ${{ secrets.KAMATERA_ACCESS_KEY }}
+          SECRET: ${{ secrets.KAMATERA_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          client=$(printf '%s' "${CLIENT}" | tr -d '[:space:]')
+          secret=$(printf '%s' "${SECRET}" | tr -d '[:space:]')
+          sleep 10
+          count=$(curl -sS -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+            -H "Accept: application/json" "${KAMATERA_API}/service/servers" \
+            | jq -r 'if type == "array" then length else 0 end')
+          echo "Machines still at the candidate provider: ${count}"
+          echo "| Still running | ${count} |" >> "${GITHUB_STEP_SUMMARY}"
