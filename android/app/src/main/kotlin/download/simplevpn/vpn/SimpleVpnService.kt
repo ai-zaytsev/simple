@@ -24,6 +24,9 @@ import download.simplevpn.core.SessionLog
 import download.simplevpn.core.TunBridge
 import download.simplevpn.core.XrayEngine
 import download.simplevpn.net.NetworkMonitor
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -50,7 +53,11 @@ class SimpleVpnService : VpnService() {
 
     /** Runs the delayed restart; see scheduleEngineRestart. */
     private val restartHandler = Handler(Looper.getMainLooper())
-    private val restartEngine = Runnable { restartEngineForNewNetwork() }
+    private val restartEngine = Runnable { restartWhenNodeAnswers() }
+
+    /** Probing opens a socket and waits, which the main thread must not do. */
+    private val probes = Executors.newSingleThreadExecutor()
+    private var probeAttempts = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -186,7 +193,86 @@ class SimpleVpnService : VpnService() {
      */
     private fun scheduleEngineRestart() {
         restartHandler.removeCallbacks(restartEngine)
+        probeAttempts = 0
         restartHandler.postDelayed(restartEngine, NETWORK_SETTLE_MS)
+    }
+
+    /**
+     * Restarts only once the node answers, and not merely once the system says
+     * the network changed.
+     *
+     * A phone announces a new network before that network can carry anything.
+     * Restarting into that window is worse than waiting: a device log showed
+     * 549 failed dials to the node, 501 of them inside a single minute
+     * following a switch to mobile, each one a retry against a network that was
+     * not ready. The tunnel recovered on its own afterwards, so nothing was
+     * broken - it was a minute of a phone talking to itself.
+     *
+     * A short connection to the node is cheap and answers the only question
+     * that matters. Until it succeeds the restart is postponed, and the state
+     * says reconnecting rather than claiming a connection that is not carrying
+     * anything.
+     *
+     * After enough failed attempts the restart happens regardless: a node that
+     * cannot be reached at all is a different failure, and the engine reporting
+     * it is more useful than this quietly waiting forever.
+     */
+    private fun restartWhenNodeAnswers() {
+        probes.execute {
+            val reachable = probeNode()
+
+            restartHandler.post {
+                when {
+                    reachable -> {
+                        SessionLog.record(this, "node answers after $probeAttempts probe(s), restarting")
+                        restartEngineForNewNetwork()
+                    }
+
+                    probeAttempts >= MAX_PROBE_ATTEMPTS -> {
+                        SessionLog.record(this, "node did not answer in $probeAttempts probes, restarting anyway")
+                        restartEngineForNewNetwork()
+                    }
+
+                    else -> {
+                        if (probeAttempts == 0) {
+                            VpnController.update(VpnConnectionState.Reconnecting)
+                            updateNotification(getString(R.string.status_reconnecting))
+                        }
+                        probeAttempts++
+                        val wait = minOf(PROBE_BACKOFF_MS * probeAttempts, PROBE_BACKOFF_CAP_MS)
+                        restartHandler.postDelayed(restartEngine, wait)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * One short connection to the node, outside the tunnel.
+     *
+     * Protected explicitly. The application already excludes itself from its
+     * own tunnel, so this would escape anyway, but a probe that measured the
+     * inside of the tunnel would answer the wrong question entirely.
+     */
+    private fun probeNode(): Boolean {
+        val profileResult = SliceProfileSource.load(this)
+        if (profileResult !is SliceProfileSource.Result.Available) {
+            // Nothing to probe against. Restarting is then the only option that
+            // can produce a message the user can act on.
+            return true
+        }
+
+        val profile = profileResult.profile
+        return try {
+            Socket().use { socket ->
+                protect(socket)
+                socket.connect(InetSocketAddress(profile.host, profile.port), PROBE_TIMEOUT_MS)
+                true
+            }
+        } catch (t: Throwable) {
+            Log.i(TAG, "node not reachable yet: ${t.message}")
+            false
+        }
     }
 
     private fun restartEngineForNewNetwork() {
@@ -281,6 +367,7 @@ class SimpleVpnService : VpnService() {
         // A restart that fires after teardown would rebuild an engine nobody
         // asked for, over an interface that is already gone.
         restartHandler.removeCallbacks(restartEngine)
+        probeAttempts = 0
         SessionLog.record(this, "teardown, bridge counters: " + BridgeDiagnostics.snapshot())
         networkMonitor?.stop()
         networkMonitor = null
@@ -392,6 +479,20 @@ class SimpleVpnService : VpnService() {
          * left going through dead sockets for noticeably longer than before.
          */
         private const val NETWORK_SETTLE_MS = 3_000L
+
+        /** How long one probe waits before calling the node unreachable. */
+        private const val PROBE_TIMEOUT_MS = 4_000
+
+        /** Grows with each attempt, so a long outage is not a tight loop. */
+        private const val PROBE_BACKOFF_MS = 2_000L
+        private const val PROBE_BACKOFF_CAP_MS = 8_000L
+
+        /**
+         * After this many, restart regardless. A node that cannot be reached
+         * at all is a different failure, and the engine reporting it beats
+         * waiting in silence.
+         */
+        private const val MAX_PROBE_ATTEMPTS = 10
 
         private const val CHANNEL_ID = "vpn_status"
         private const val NOTIFICATION_ID = 1
