@@ -41,6 +41,11 @@ on:
         required: false
         default: ''
         type: string
+      server_name:
+        description: Name of the machine. Several can exist; destroy matches this exact name.
+        required: false
+        default: simple-vpn-node-1
+        type: string
       ssh_public_key:
         description: Public key allowed to log in. Public by nature, so not a secret.
         required: false
@@ -52,7 +57,11 @@ permissions:
 
 env:
   KAMATERA_API: https://cloudcli.cloudwm.com
-  SERVER_NAME: simple-vpn-candidate
+
+  # Named per run, so a fleet can exist rather than a single specimen. Every
+  # action matches this exact name, which means a typo removes nothing rather
+  # than removing the wrong machine.
+  SERVER_NAME: ${{ inputs.server_name }}
 
 jobs:
   kamatera:
