@@ -233,14 +233,50 @@ jobs:
             exit 0
           fi
 
+          # Two shapes are tried because the first one asked was accepted and
+          # did nothing: the request returned an empty body, the machine kept
+          # running, and the step reported success. A destroy that cannot fail
+          # out loud is worse than no destroy at all, so the outcome is now
+          # judged by the status code and the machine count, not by the call
+          # returning.
           for id in ${ids}; do
-            curl -sS -X POST \
-              -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
-              -H "Content-Type: application/json" -H "Accept: application/json" \
-              -d '{"force": true}' \
-              "${KAMATERA_API}/service/server/${id}/terminate" | head -c 500
-            echo ""
-            echo "Asked the provider to remove ${id}."
+            removed=false
+
+            for shape in body path; do
+              case "${shape}" in
+                body)
+                  url="${KAMATERA_API}/service/server/terminate"
+                  payload=$(jq -n --arg id "${id}" '{id: $id, force: true}')
+                  ;;
+                path)
+                  url="${KAMATERA_API}/service/server/${id}/terminate"
+                  payload='{"force": true}'
+                  ;;
+              esac
+
+              code=$(curl -sS -o /tmp/terminate.json -w '%{http_code}' -X POST \
+                -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+                -H "Content-Type: application/json" -H "Accept: application/json" \
+                -d "${payload}" "${url}" || echo "000")
+
+              echo "  ${shape}: HTTP ${code}"
+              if [ "${code}" = "200" ] || [ "${code}" = "201" ] || [ "${code}" = "204" ]; then
+                removed=true
+                break
+              fi
+
+              # Field names only, never values.
+              fields=$(jq -r '(if type == "array" then .[0] else . end) | keys_unsorted | join(", ")' \
+                /tmp/terminate.json 2>/dev/null || echo "no readable fields")
+              echo "    fields in the refusal: ${fields}"
+            done
+
+            if [ "${removed}" = "true" ]; then
+              echo "Asked the provider to remove ${id}."
+            else
+              echo "Could not remove ${id}. It is still costing money."
+              exit 1
+            fi
           done
 
       - name: Confirm what is left
