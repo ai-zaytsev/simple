@@ -112,6 +112,16 @@ func run(log *slog.Logger) error {
 	}
 	defer st.Close()
 
+	// Before anything is served, and not by hand beforehand. A binary that is
+	// running is a binary whose schema is already what it expects.
+	applied, err := st.Migrate(ctx)
+	if err != nil {
+		return err
+	}
+	if len(applied) > 0 {
+		log.Info("schema updated", "applied", strings.Join(applied, ","))
+	}
+
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           api.New(st, signer, cleaned, planTTL, sender, baseURL, log).Routes(),

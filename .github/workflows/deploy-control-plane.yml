@@ -79,6 +79,8 @@ jobs:
           SEED_B: ${{ secrets.CP_SIGNING_SEED_B }}
           SLOT: ${{ inputs.key_slot }}
           PLAN_TTL: ${{ inputs.plan_ttl }}
+          BREVO_KEY: ${{ secrets.BREVO_API_KEY }}
+          MAIL_FROM: ${{ secrets.BREVO_SENDER_EMAIL }}
         run: |
           set -euo pipefail
           if [ "${SLOT}" = "a" ]; then
@@ -100,6 +102,9 @@ jobs:
           CP_BOOTSTRAP_HOSTS=simple-syncbridge.download
           CP_PLAN_TTL=${PLAN_TTL}
           CP_LISTEN=127.0.0.1:8080
+          CP_BREVO_API_KEY=${BREVO_KEY}
+          CP_MAIL_FROM=${MAIL_FROM}
+          CP_BASE_URL=https://simple-syncbridge.download
           ENVFILE
 
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'bash -s' <<'REMOTE'
@@ -152,3 +157,23 @@ jobs:
             exit 1
           fi
           echo "| Control Plane | answering |" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Prove the public name answers
+        run: |
+          set -euo pipefail
+          # From outside, over the real name, through nginx. The step above
+          # proves the process is alive; this proves a phone can reach it.
+          #
+          # /a is checked because it is the address in a sign-in message, and
+          # it is the one route nginx has to be told about separately: if it is
+          # missing, every link in every message leads to a 404 and nobody can
+          # sign in, while everything else looks healthy.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+            https://simple-syncbridge.download/a || echo 000)
+          echo "GET /a -> ${code}"
+          if [ "${code}" != "400" ]; then
+            echo "Expected 400 (a link with no token). Got ${code}."
+            echo "404 means nginx is not routing /a to the Control Plane."
+            exit 1
+          fi
+          echo "| Sign-in link route | reachable |" >> "${GITHUB_STEP_SUMMARY}"
