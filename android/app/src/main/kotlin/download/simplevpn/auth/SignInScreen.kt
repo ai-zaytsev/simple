@@ -105,7 +105,7 @@ fun SignInScreen(onSignedIn: (accountId: String) -> Unit) {
             when (val result = withContext(Dispatchers.IO) { client.poll(id) }) {
                 is AuthClient.PollResult.Confirmed -> {
                     accounts.clearPending()
-                    accounts.remember(result.accountId)
+                    accounts.remember(result.accountId, result.deviceToken)
                     onSignedIn(result.accountId)
                     return@LaunchedEffect
                 }

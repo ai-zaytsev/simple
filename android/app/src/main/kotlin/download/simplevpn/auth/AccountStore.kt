@@ -15,14 +15,29 @@ class AccountStore(context: Context) {
 
     val accountId: String? get() = prefs.getString(KEY_ACCOUNT, null)
 
-    val isSignedIn: Boolean get() = accountId != null
+    // Signed in means holding the secret, not remembering an account. An
+    // installation that kept only the account would have nothing to prove.
+    val isSignedIn: Boolean get() = accountId != null && deviceToken != null
 
-    fun remember(accountId: String) {
-        prefs.edit().putString(KEY_ACCOUNT, accountId).apply()
+    /**
+     * The secret this installation proves itself with.
+     *
+     * Kept beside the account rather than derived from it, because it is the
+     * whole difference between being this device and merely naming it. An
+     * identifier can be read off a phone and replayed by anyone; this cannot
+     * be guessed, so swapping an identifier without it buys nothing.
+     */
+    val deviceToken: String? get() = prefs.getString(KEY_TOKEN, null)
+
+    fun remember(accountId: String, deviceToken: String) {
+        prefs.edit()
+            .putString(KEY_ACCOUNT, accountId)
+            .putString(KEY_TOKEN, deviceToken)
+            .apply()
     }
 
     fun forget() {
-        prefs.edit().remove(KEY_ACCOUNT).apply()
+        prefs.edit().remove(KEY_ACCOUNT).remove(KEY_TOKEN).apply()
     }
 
     /** A sign-in that has been started and is waiting for somebody to follow a link. */
@@ -61,6 +76,7 @@ class AccountStore(context: Context) {
     private companion object {
         const val NAME = "account"
         const val KEY_ACCOUNT = "account_id"
+        const val KEY_TOKEN = "device_token"
         const val KEY_PENDING_ID = "pending_attempt_id"
         const val KEY_PENDING_EMAIL = "pending_email"
     }

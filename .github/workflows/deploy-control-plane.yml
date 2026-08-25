@@ -81,6 +81,7 @@ jobs:
           PLAN_TTL: ${{ inputs.plan_ttl }}
           BREVO_KEY: ${{ secrets.BREVO_API_KEY }}
           MAIL_FROM: ${{ secrets.BREVO_SENDER_EMAIL }}
+          ANALYTICS_KEY: ${{ secrets.CP_ANALYTICS_KEY }}
         run: |
           set -euo pipefail
           if [ "${SLOT}" = "a" ]; then
@@ -105,6 +106,7 @@ jobs:
           CP_BREVO_API_KEY=${BREVO_KEY}
           CP_MAIL_FROM=${MAIL_FROM}
           CP_BASE_URL=https://simple-syncbridge.download
+          CP_ANALYTICS_KEY=${ANALYTICS_KEY}
           ENVFILE
 
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'bash -s' <<'REMOTE'

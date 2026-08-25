@@ -2,7 +2,7 @@ package download.simplevpn.plan
 
 import android.content.Context
 import android.util.Log
-import download.simplevpn.auth.DeviceIdentity
+import download.simplevpn.auth.AccountStore
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -28,19 +28,22 @@ class ControlPlaneClient(private val context: Context) {
     }
 
     fun requestPlan(): Result {
-        // No account identifier is sent. The server takes it from what this
-        // device has already proved by following a link in a mailbox; a value
-        // in the request would be a claim, and a claim anybody could make.
+        // No identifier of any kind is sent. Who this is comes from the secret
+        // in the header, which was handed over once when a mailbox was proved.
+        // An identifier in the body would be a claim, and a claim is exactly
+        // what somebody impersonating this device would supply.
+        val token = accounts.deviceToken
+            ?: return Result.Failed("this installation is not signed in")
+
         val body = """
-            {"device_id":"${identity.deviceId}",
-             "supported_transports":["vless-ws-tls"],
+            {"supported_transports":["vless-ws-tls"],
              "app_version":$APP_VERSION}
         """.trimIndent()
 
-        return post(ControlPlane.BASE_URL + "/v1/plan", body)
+        return post(ControlPlane.BASE_URL + "/v1/plan", body, token)
     }
 
-    private fun post(url: String, body: String): Result {
+    private fun post(url: String, body: String, token: String): Result {
         var connection: HttpURLConnection? = null
         return try {
             connection = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -49,9 +52,10 @@ class ControlPlaneClient(private val context: Context) {
                 readTimeout = TIMEOUT_MS
                 doOutput = true
                 setRequestProperty("content-type", "application/json")
-                // Nothing identifying beyond what the body already carries. A
-                // header naming the application would mark every request as
-                // ours to anyone watching the connection metadata.
+                setRequestProperty("authorization", "Bearer $token")
+                // Nothing identifying beyond that. A header naming the
+                // application would mark every request as ours to anyone
+                // watching the connection metadata.
                 setRequestProperty("accept", "application/json")
             }
 
@@ -75,7 +79,7 @@ class ControlPlaneClient(private val context: Context) {
         }
     }
 
-    private val identity by lazy { DeviceIdentity.of(context) }
+    private val accounts by lazy { AccountStore(context) }
 
     private companion object {
         const val TAG = "ControlPlaneClient"

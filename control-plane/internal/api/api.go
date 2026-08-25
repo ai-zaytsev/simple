@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"download.simplevpn/control-plane/internal/analytics"
 	"download.simplevpn/control-plane/internal/document"
 	"download.simplevpn/control-plane/internal/mail"
 	"download.simplevpn/control-plane/internal/signing"
@@ -41,6 +42,10 @@ type Server struct {
 	// inside a link has to be able to change without rebuilding anything.
 	mail    *mail.Sender
 	baseURL string
+
+	// analytics turns an account into the only user key measurement may hold.
+	// Kept here so that no handler is ever tempted to log an account instead.
+	analytics *analytics.Deriver
 }
 
 func New(
@@ -50,6 +55,7 @@ func New(
 	planTTL time.Duration,
 	sender *mail.Sender,
 	baseURL string,
+	deriver *analytics.Deriver,
 	log *slog.Logger,
 ) *Server {
 	return &Server{
@@ -59,6 +65,7 @@ func New(
 		planTTL:        planTTL,
 		mail:           sender,
 		baseURL:        baseURL,
+		analytics:      deriver,
 		log:            log,
 	}
 }
@@ -72,6 +79,9 @@ func (s *Server) Routes() http.Handler {
 	// Short, because it goes in a message people read and sometimes retype.
 	mux.HandleFunc("GET /a", s.authConfirm)
 	mux.HandleFunc("POST /v1/plan", s.plan)
+	mux.HandleFunc("POST /v1/devices", s.listDevices)
+	mux.HandleFunc("POST /v1/devices/revoke", s.revokeDevice)
+	mux.HandleFunc("GET /v1/node/users", s.nodeUsers)
 	mux.HandleFunc("GET /v1/config", s.config)
 	mux.HandleFunc("GET /v1/bootstrap", s.bootstrap)
 	return mux
@@ -82,7 +92,6 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 type planRequest struct {
-	DeviceID            string   `json:"device_id"`
 	SupportedTransports []string `json:"supported_transports"`
 	AppVersion          int      `json:"app_version"`
 }
@@ -101,21 +110,14 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deviceID, err := uuid.Parse(req.DeviceID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "device is not identified")
-		return
-	}
-
 	ctx := r.Context()
 
-	// The account comes from what this device has proved, never from what it
-	// claims. Taking an account identifier from the request would mean anyone
-	// who learned one could ask for its plan, and would make confirming an
-	// address pointless.
-	accountID, err := s.store.AccountOfDevice(ctx, deviceID)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "device is not signed in")
+	// Who this is comes from a secret, never from a name in the request. The
+	// identifier used to be enough, which made it a claim anyone could make;
+	// swapping one for somebody else's is now worth nothing without the token
+	// that was handed over when a mailbox was proved.
+	device, ok := s.device(w, r)
+	if !ok {
 		return
 	}
 
@@ -132,7 +134,23 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scope := "plan:" + accountID.String()
+	// This device's own way in, on every node it might be sent to. One device
+	// cut off leaves the rest untouched, and a credential taken off one phone
+	// is that phone's alone.
+	credential, err := s.store.EnsureCredential(ctx, device.ID)
+	if err != nil {
+		s.log.Error("cannot issue a credential", "error", err)
+		writeError(w, http.StatusInternalServerError, "cannot issue a plan")
+		return
+	}
+	for i := range nodes {
+		nodes[i].Transport.Params["credential_uuid"] = credential.String()
+	}
+
+	// Numbered per device rather than per account, because two phones on one
+	// account refresh independently and a shared counter would make each of
+	// them see the other's plan as a rollback.
+	scope := "plan:" + device.ID.String()
 	seq, err := s.store.NextSeq(ctx, scope)
 	if err != nil {
 		s.log.Error("cannot advance the sequence", "error", err)
@@ -164,6 +182,15 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 			ProbeIntervalS:       60,
 		},
 	}
+
+	// The only user key that leaves this handler for a log or a measurement.
+	// Not the account, not the device, not the credential: those three are how
+	// a person, a phone and a way in are tied together, and a log archive is
+	// the wrong place to keep that knot.
+	s.log.Info("plan issued",
+		"user", s.analytics.ID(device.AccountID, now),
+		"node", nodes[0].Alias,
+		"reserves", len(plan.Reserves))
 
 	s.issue(w, r.Context(), "plan", scope, seq, plan)
 }

@@ -32,7 +32,7 @@ class AuthClient(context: Context) {
     }
 
     sealed interface PollResult {
-        data class Confirmed(val accountId: String) : PollResult
+        data class Confirmed(val accountId: String, val deviceToken: String) : PollResult
         data object Pending : PollResult
         data object Expired : PollResult
         data class Unreachable(val reason: String) : PollResult
@@ -81,7 +81,14 @@ class AuthClient(context: Context) {
             is Answer.Ok -> try {
                 val json = JSONObject(answer.body)
                 when (json.optString("status")) {
-                    "confirmed" -> PollResult.Confirmed(json.getString("account_id"))
+                    "confirmed" -> PollResult.Confirmed(
+                        accountId = json.getString("account_id"),
+                        // The secret this installation authenticates with from
+                        // now on. Handed over once, here, because this is the
+                        // only exchange the server can be sure reaches the
+                        // device that started the sign-in.
+                        deviceToken = json.getString("device_token"),
+                    )
                     "expired" -> PollResult.Expired
                     else -> PollResult.Pending
                 }
