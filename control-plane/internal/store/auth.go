@@ -125,6 +125,18 @@ func (s *Store) ConfirmAttempt(ctx context.Context, tokenHash []byte) (uuid.UUID
 		return uuid.Nil, fmt.Errorf("cannot bind the device: %w", err)
 	}
 
+	// The credential is minted here rather than when a plan is first asked
+	// for, because a node learns about it by asking and that takes a moment.
+	// Creating it while the person is still reading the confirmation page
+	// spends that moment on something they are doing anyway.
+	if _, err := tx.Exec(ctx, `
+		insert into device_credentials (id, device_id, credential_uuid, updated_seq)
+		values ($1, $2, $3, next_seq('credentials'))
+		on conflict (device_id) where state = 'ACTIVE' do nothing`,
+		uuid.New(), deviceID, uuid.New()); err != nil {
+		return uuid.Nil, fmt.Errorf("cannot create a credential: %w", err)
+	}
+
 	if _, err := tx.Exec(ctx, `
 		update login_attempts
 		set consumed_at = now(), confirmed_at = now(), account_id = $2
@@ -175,23 +187,6 @@ func (s *Store) PollAttempt(ctx context.Context, attemptID, deviceID uuid.UUID) 
 		outcome.AccountID = *accountID
 	}
 	return outcome, nil
-}
-
-// AccountOfDevice returns the account a device already belongs to.
-//
-// Used so that an application which has signed in once does not ask again on
-// every start.
-func (s *Store) AccountOfDevice(ctx context.Context, deviceID uuid.UUID) (uuid.UUID, error) {
-	var accountID *uuid.UUID
-	err := s.pool.QueryRow(ctx, `
-		select account_id from devices where id = $1`, deviceID).Scan(&accountID)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && accountID == nil) {
-		return uuid.Nil, ErrNoSuchAttempt
-	}
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("cannot read the device: %w", err)
-	}
-	return *accountID, nil
 }
 
 // LiveAttempt finds this device's most recent unused link for an address.

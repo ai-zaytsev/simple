@@ -148,9 +148,30 @@ func (s *Server) authPoll(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case outcome.Confirmed:
+		// The secret this device will authenticate with from now on, handed
+		// over exactly once, in the answer to a question only the client that
+		// started this attempt can ask: the attempt identifier is random and
+		// was never sent anywhere else.
+		//
+		// A fresh one each time this is reached, so an answer lost on the way
+		// to the phone costs nothing - the next poll issues another and the
+		// unheard one stops working.
+		token, hash, err := auth.NewToken()
+		if err != nil {
+			s.log.Error("cannot make a device token", "error", err)
+			writeError(w, http.StatusInternalServerError, "cannot finish sign-in")
+			return
+		}
+		if err := s.store.IssueDeviceToken(r.Context(), deviceID, hash); err != nil {
+			s.log.Error("cannot issue a device token", "error", err)
+			writeError(w, http.StatusInternalServerError, "cannot finish sign-in")
+			return
+		}
+
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status":     "confirmed",
-			"account_id": outcome.AccountID.String(),
+			"status":       "confirmed",
+			"account_id":   outcome.AccountID.String(),
+			"device_token": token,
 		})
 	case outcome.Expired:
 		writeJSON(w, http.StatusOK, map[string]any{"status": "expired"})

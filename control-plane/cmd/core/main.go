@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"download.simplevpn/control-plane/internal/analytics"
 	"download.simplevpn/control-plane/internal/api"
 	"download.simplevpn/control-plane/internal/mail"
 	"download.simplevpn/control-plane/internal/signing"
@@ -94,6 +95,23 @@ func run(log *slog.Logger) error {
 		return errors.New("CP_BASE_URL is not set; sign-in links would point nowhere")
 	}
 
+	// Measurement gets a key derived from the account, never the account. The
+	// key is required rather than optional because a missing one would leave
+	// the obvious thing - logging the account itself - as the path of least
+	// resistance, and that is exactly what must not happen.
+	analyticsEpoch := 30 * 24 * time.Hour
+	if raw := os.Getenv("CP_ANALYTICS_EPOCH"); raw != "" {
+		parsed, parseErr := time.ParseDuration(raw)
+		if parseErr != nil {
+			return fmt.Errorf("CP_ANALYTICS_EPOCH is not a duration: %w", parseErr)
+		}
+		analyticsEpoch = parsed
+	}
+	deriver, err := analytics.NewDeriver(os.Getenv("CP_ANALYTICS_KEY"), analyticsEpoch)
+	if err != nil {
+		return fmt.Errorf("CP_ANALYTICS_KEY: %w", err)
+	}
+
 	signer, err := signing.NewSigner(keyID, seed)
 	if err != nil {
 		return err
@@ -124,7 +142,7 @@ func run(log *slog.Logger) error {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           api.New(st, signer, cleaned, planTTL, sender, baseURL, log).Routes(),
+		Handler:           api.New(st, signer, cleaned, planTTL, sender, baseURL, deriver, log).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

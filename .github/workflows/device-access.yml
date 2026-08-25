@@ -1,0 +1,135 @@
+name: Device Access
+
+# Lists devices and cuts one off.
+#
+# Runs from here rather than from a laptop because the database is reachable
+# only through the Control Plane host, and the key to that host lives in this
+# repository's secrets. It also means every revocation leaves a record of who
+# ran it and when, which a psql session on somebody's machine does not.
+#
+# No address is ever an input and none is ever printed. The repository is
+# public and Actions logs are public with it; an address in a log is the one
+# thing this system must never write down. Devices are named by their own
+# identifiers, and the listing shows which account each belongs to without
+# saying whose account that is.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do.
+        required: true
+        default: list
+        type: choice
+        options:
+          - list
+          - revoke
+      device_id:
+        description: Device to cut off. Required for revoke, ignored for list.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  access:
+    name: Device Access
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: List devices
+        if: inputs.action == 'list'
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          # The statement goes over stdin rather than in an argument, so that
+          # nothing has to survive two layers of shell quoting on its way to
+          # psql. Grouped by account, because "this person's other devices" is
+          # the question being asked when one is lost.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -P pager=off -f -' > /tmp/devices.txt <<'SQL'
+          select d.account_id,
+                 d.id as device_id,
+                 coalesce(c.state, 'NONE') as access,
+                 date_trunc('second', d.created_at) as signed_in,
+                 date_trunc('second', d.last_seen_at) as last_seen
+          from devices d
+          left join device_credentials c
+                 on c.device_id = d.id and c.state = 'ACTIVE'
+          order by d.account_id, d.created_at;
+          SQL
+          cat /tmp/devices.txt
+          {
+            echo '### Devices'
+            echo '```'
+            cat /tmp/devices.txt
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Cut one device off
+        if: inputs.action == 'revoke'
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          TARGET: ${{ inputs.device_id }}
+        run: |
+          set -euo pipefail
+
+          # Checked before it reaches a statement. A value that is going to be
+          # interpolated has to be proved to be what it claims first, whoever
+          # typed it.
+          if ! printf '%s' "${TARGET}" | grep -qiE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+            echo "device_id must be a UUID."
+            exit 1
+          fi
+
+          # Both halves in one statement. Revoking the credential alone would
+          # leave a device that can still ask for a plan and be handed a fresh
+          # one; clearing the token alone would leave a credential the nodes
+          # still accept. Either half by itself is not a revocation.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -At -f -' \
+            > /tmp/revoked.txt <<SQL
+          with cut as (
+            update device_credentials
+            set state = 'REVOKED', revoked_at = now(), updated_seq = next_seq('credentials')
+            where device_id = '${TARGET}' and state = 'ACTIVE'
+            returning device_id
+          ), forgotten as (
+            update devices set token_hash = null where id = '${TARGET}' returning id
+          )
+          select (select count(*) from cut) || ' ' || (select count(*) from forgotten);
+          SQL
+
+          read -r revoked found < /tmp/revoked.txt
+          echo "credentials revoked: ${revoked}, device rows found: ${found}"
+          if [ "${found}" = "0" ]; then
+            echo "No such device. Nothing was changed."
+            exit 1
+          fi
+
+          # The nodes find out by asking. Proving they have is the difference
+          # between a revocation and a database row saying one happened.
+          echo "Waiting for the nodes to drop it."
+          sleep 20
+
+          live=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -Atc "select count(*) from device_credentials where state = '"'"'ACTIVE'"'"'"')
+          echo "credentials still live: ${live}"
+
+          {
+            echo '### Revoked'
+            echo "Credentials revoked: ${revoked}. Still live across all devices: ${live}."
+          } >> "${GITHUB_STEP_SUMMARY}"
