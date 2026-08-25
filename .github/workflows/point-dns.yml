@@ -105,6 +105,41 @@ jobs:
 
           ss_key=$(printf '%s' "${SS_KEY}" | tr -d '[:space:]')
           ss_secret=$(printf '%s' "${SS_SECRET}" | tr -d '[:space:]')
+
+          # Existing records on the apex go first, explicitly.
+          #
+          # The force flag on the write turned out to mean "overwrite a matching
+          # record", not "be the only record": a domain ended up resolving to
+          # one live address and two machines that had been destroyed, which
+          # sends both certificate validation and clients to a dead host two
+          # times in three. The same mistake was fixed on the other provider
+          # earlier; this branch of the code never had the fix.
+          existing=$(curl -sS \
+            -H "X-API-Key: ${ss_key}" -H "X-API-Secret: ${ss_secret}" \
+            -H "Accept: application/json" \
+            -G --data-urlencode "take=100" --data-urlencode "skip=0" \
+            "https://spaceship.dev/api/v1/dns/records/${DOMAIN}" \
+            | jq -c '[(.items // [])[] | select(.type == "A")]' 2>/dev/null || echo '[]')
+
+          count=$(printf '%s' "${existing}" | jq -r 'length')
+          if [ "${count}" != "0" ]; then
+            code=$(curl -sS -o /tmp/ss-del.json -w '%{http_code}' -X DELETE \
+              -H "X-API-Key: ${ss_key}" -H "X-API-Secret: ${ss_secret}" \
+              -H "content-type: application/json" \
+              -d "${existing}" \
+              "https://spaceship.dev/api/v1/dns/records/${DOMAIN}" || echo "000")
+            echo "Removing ${count} existing A record(s): HTTP ${code}"
+            if [ "${code}" != "200" ] && [ "${code}" != "204" ]; then
+              # Field names only, never the body.
+              fields=$(jq -r 'keys_unsorted | join(", ")' /tmp/ss-del.json 2>/dev/null || echo "unreadable")
+              said=$(jq -r '.detail // .message // empty' /tmp/ss-del.json 2>/dev/null || echo "")
+              echo "  fields in the refusal: ${fields}"
+              [ -n "${said}" ] && echo "  provider says: ${said}"
+              echo "Refusing to add a record beside ones that could not be removed."
+              exit 1
+            fi
+          fi
+
           body=$(jq -n --arg ip "${ADDRESS}" \
             '{force: true, items: [{type: "A", name: "@", address: $ip, ttl: 60}]}')
 

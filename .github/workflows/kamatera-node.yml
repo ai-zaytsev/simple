@@ -84,11 +84,46 @@ jobs:
 
           count=$(jq -r 'if type == "array" then length else 0 end' /tmp/servers.json)
           echo "Machines at this provider: ${count}"
-          # Addresses are printed because they are needed and are not secret;
-          # anything else the provider returns stays in the file.
-          jq -r 'if type == "array" then
-                   .[] | "  \(.name)  \(.id)  \(.power // "?")  \([.networks[]?.ips[]?] | join(" "))"
+          # The address is found by what it looks like, not by where it sits.
+          # The documented path returned nothing against the real response, and
+          # a machine whose address cannot be read can be neither configured nor
+          # measured. Private ranges are dropped, because a machine usually has
+          # one of each. Addresses are printed because they are needed and are
+          # not secret; everything else the provider returns stays in the file.
+          jq -r 'def public:
+                   [.. | strings | select(test("^([0-9]{1,3}[.]){3}[0-9]{1,3}$"))]
+                   | map(select(test("^(10[.]|172[.](1[6-9]|2[0-9]|3[01])[.]|192[.]168[.]|127[.])") | not))
+                   | unique | join(" ");
+                 if type == "array" then
+                   .[] | "  \(.name)  \(.id)  \(.power // "?")  \(public)"
                  else empty end' /tmp/servers.json
+
+          # The listing carries no address, so each machine is asked about
+          # itself. Field names are printed when nothing is found, so the next
+          # attempt is informed rather than another guess.
+          for id in $(jq -r 'if type == "array" then .[] | .id else empty end' /tmp/servers.json); do
+            # The id travels in the body, not in the path. That is how removal
+            # turned out to work after the path form was silently ignored, and
+            # it is the shape this provider uses throughout.
+            curl -sS -X POST \
+              -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+              -H "Content-Type: application/json" -H "Accept: application/json" \
+              -d "$(jq -n --arg id "${id}" '{id: $id}')" \
+              "${KAMATERA_API}/service/server/info" > /tmp/one.json 2>/dev/null || true
+
+            address=$(jq -r '[.. | strings | select(test("^([0-9]{1,3}[.]){3}[0-9]{1,3}$"))]
+                             | map(select(test("^(10[.]|172[.](1[6-9]|2[0-9]|3[01])[.]|192[.]168[.]|127[.])") | not))
+                             | unique | join(" ")' /tmp/one.json 2>/dev/null || echo "")
+
+            if [ -n "${address}" ]; then
+              echo "  address of ${id}: ${address}"
+              echo "| Candidate machine | \`${address}\` |" >> "${GITHUB_STEP_SUMMARY}"
+            else
+              fields=$(jq -r '(if type == "array" then .[0] else . end) | keys_unsorted | join(", ")' \
+                /tmp/one.json 2>/dev/null || echo "unreadable")
+              echo "  no address for ${id}; fields present: ${fields}"
+            fi
+          done
           echo "| Machines at the candidate provider | ${count} |" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Show what can be asked for
