@@ -102,9 +102,14 @@ jobs:
           # itself. Field names are printed when nothing is found, so the next
           # attempt is informed rather than another guess.
           for id in $(jq -r 'if type == "array" then .[] | .id else empty end' /tmp/servers.json); do
-            curl -sS -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
-              -H "Accept: application/json" \
-              "${KAMATERA_API}/service/server/${id}" > /tmp/one.json 2>/dev/null || true
+            # The id travels in the body, not in the path. That is how removal
+            # turned out to work after the path form was silently ignored, and
+            # it is the shape this provider uses throughout.
+            curl -sS -X POST \
+              -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+              -H "Content-Type: application/json" -H "Accept: application/json" \
+              -d "$(jq -n --arg id "${id}" '{id: $id}')" \
+              "${KAMATERA_API}/service/server/info" > /tmp/one.json 2>/dev/null || true
 
             address=$(jq -r '[.. | strings | select(test("^([0-9]{1,3}[.]){3}[0-9]{1,3}$"))]
                              | map(select(test("^(10[.]|172[.](1[6-9]|2[0-9]|3[01])[.]|192[.]168[.]|127[.])") | not))
