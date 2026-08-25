@@ -23,7 +23,11 @@ import download.simplevpn.core.SessionLog
 import download.simplevpn.core.TunBridge
 import download.simplevpn.core.XrayEngine
 import download.simplevpn.net.NetworkMonitor
+import download.simplevpn.config.ConnectionProfile
+import download.simplevpn.plan.ConfigSource
+import download.simplevpn.plan.EndpointChoice
 import download.simplevpn.plan.PlanSource
+import download.simplevpn.plan.ServiceConfig
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.Executors
@@ -63,7 +67,29 @@ class SimpleVpnService : VpnService() {
 
     /** Where the endpoint comes from now that the build does not carry one. */
     private val planSource by lazy { PlanSource(this) }
+
+    /** Whether this installation is allowed to run at all. */
+    private val configSource by lazy { ConfigSource(this) }
     private var probeAttempts = 0
+
+    /**
+     * The endpoints of the plan in use and which one is live.
+     *
+     * Held rather than looked up each time, because failover means moving
+     * along this list, and a list re-read from a stored plan would keep
+     * starting again at a node just found to be dead.
+     */
+    private var endpoints: List<ConnectionProfile> = emptyList()
+    private var currentIndex = 0
+    private var currentEndpoint: ConnectionProfile? = null
+    private var failures = EndpointChoice.Failures(DEFAULT_FAILOVER_AFTER)
+
+    /** Watches the node in use and the switch that can stop everything. */
+    private val watchHandler = Handler(Looper.getMainLooper())
+    private val watchEndpoint = Runnable { checkEndpoint() }
+    private val watchConfig = Runnable { checkConfig() }
+    private var probeIntervalMs = DEFAULT_PROBE_INTERVAL_MS
+    private var connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS
 
     override fun onCreate() {
         super.onCreate()
@@ -111,6 +137,13 @@ class SimpleVpnService : VpnService() {
         SessionLog.reset(this)
 
         try {
+            // Asked before anything is established. This is the one answer that
+            // can stop the whole product, and asking after the tunnel is up
+            // would mean the switch takes effect only for the next person to
+            // press the button.
+            val config = configSource.current()
+            if (config != null && !allowedToRun(config)) return
+
             // Where to connect is asked for, not compiled in. This is the
             // whole point of the stage: the endpoint can change on the server
             // without anybody installing anything.
@@ -121,8 +154,28 @@ class SimpleVpnService : VpnService() {
                 return
             }
             val available = planResult as PlanSource.Result.Available
-            val profile = available.profile
+            adoptPlan(available)
+
+            // The first endpoint that answers, in the order the server chose.
+            // A reserve nobody ever tries is a reserve that does not exist.
+            val choice = EndpointChoice.choose(endpoints) { reachable(it) }
+            if (choice == null) {
+                failAndStop(getString(R.string.error_unexpected))
+                return
+            }
+            currentIndex = choice.index
+            currentEndpoint = choice.endpoint
+            val profile = choice.endpoint
+
             SessionLog.record(this, "endpoint from ${available.source}")
+            if (!choice.probed) {
+                // Worth saying plainly. Every endpoint failed a plain TCP
+                // connect and the primary is being used anyway, which is a
+                // guess rather than a choice.
+                SessionLog.record(this, "no endpoint answered a probe, using the primary")
+            } else if (choice.index > 0) {
+                SessionLog.record(this, "primary did not answer, using reserve ${choice.index}")
+            }
             SessionLog.record(
                 this,
                 "endpoint ${profile.host}:${profile.port} " +
@@ -169,6 +222,7 @@ class SimpleVpnService : VpnService() {
                 is TunBridge.Result.Started -> {
                     SessionLog.record(this, "bridge started, socks ${XrayConfigBuilder.SOCKS_PORT}")
                     startNetworkMonitor()
+                    startWatching()
                     VpnController.update(VpnConnectionState.Connected(System.currentTimeMillis()))
                     updateNotification(getString(R.string.status_connected))
                     SessionLog.record(this, "connected")
@@ -193,6 +247,114 @@ class SimpleVpnService : VpnService() {
             failAndStop(getString(R.string.error_unexpected))
         } finally {
             starting.set(false)
+        }
+    }
+
+    /**
+     * Takes the numbers from the plan instead of inventing them.
+     *
+     * The server decides how long to wait for a node, how many failures mean
+     * it is gone, and how often to look. A client with its own opinions about
+     * those is a client whose behaviour cannot be changed without an update.
+     */
+    private fun adoptPlan(available: PlanSource.Result.Available) {
+        endpoints = available.plan.endpoints
+        connectTimeoutMs = available.plan.connectTimeoutMs
+        probeIntervalMs = available.plan.probeIntervalSeconds * 1000L
+        failures = EndpointChoice.Failures(available.plan.failoverAfterFailures)
+    }
+
+    /**
+     * Stops this installation when the server says the service is stopped.
+     *
+     * @return false when it may not run, having already stopped the service
+     */
+    private fun allowedToRun(config: ServiceConfig): Boolean {
+        return when (val verdict = config.verdict(APP_VERSION)) {
+            is ServiceConfig.Verdict.Allowed -> true
+
+            is ServiceConfig.Verdict.Stopped -> {
+                val message = when (verdict.reason) {
+                    ServiceConfig.Stop.KILL_SWITCH -> getString(R.string.error_service_stopped)
+                    ServiceConfig.Stop.TOO_OLD -> getString(R.string.error_app_too_old)
+                }
+                SessionLog.record(this, "refused by configuration: ${verdict.reason}")
+                failAndStop(message)
+                false
+            }
+        }
+    }
+
+    /**
+     * Watches the node in use, and the switch that can stop everything.
+     *
+     * Two separate rhythms because they answer different questions at
+     * different costs. Probing the node is a TCP connect over the network the
+     * phone is already using; asking the server is a request that must not
+     * happen every minute for every device.
+     */
+    private fun startWatching() {
+        watchHandler.removeCallbacks(watchEndpoint)
+        watchHandler.removeCallbacks(watchConfig)
+        failures.succeeded()
+        watchHandler.postDelayed(watchEndpoint, probeIntervalMs)
+        watchHandler.postDelayed(watchConfig, CONFIG_CHECK_MS)
+    }
+
+    /**
+     * Moves to the next endpoint when the one in use stops answering.
+     *
+     * This is the failure the reserves exist for and the one nothing detected
+     * before: a node that dies while somebody is connected. A network change
+     * announces itself; a node going away does not, and without this the
+     * connection sat there carrying nothing until the person noticed.
+     */
+    private fun checkEndpoint() {
+        if (!engine.isRunning) return
+
+        probes.execute {
+            val alive = currentEndpoint?.let { reachable(it) } ?: true
+
+            watchHandler.post {
+                if (!engine.isRunning) return@post
+
+                if (alive) {
+                    failures.succeeded()
+                } else if (failures.failed()) {
+                    val next = EndpointChoice.next(endpoints, currentIndex)
+                    if (next != null && endpoints.size > 1) {
+                        SessionLog.record(
+                            this,
+                            "endpoint stopped answering ${failures.count} times, moving to ${next.host}:${next.port}",
+                        )
+                        currentIndex = (currentIndex + 1) % endpoints.size
+                        currentEndpoint = next
+                        failures.succeeded()
+                        restartEngineOnCurrentEndpoint("failover")
+                    } else {
+                        // Nowhere to go. Saying so is better than moving from a
+                        // node to itself and calling it a recovery.
+                        SessionLog.record(this, "endpoint not answering and there is no reserve")
+                    }
+                }
+
+                watchHandler.postDelayed(watchEndpoint, probeIntervalMs)
+            }
+        }
+    }
+
+    /** Asks whether the service has been stopped since this connection began. */
+    private fun checkConfig() {
+        if (!engine.isRunning) return
+
+        starts.execute {
+            val config = configSource.current()
+
+            watchHandler.post {
+                if (!engine.isRunning) return@post
+                if (config != null && !allowedToRun(config)) return@post
+                watchHandler.postDelayed(watchConfig, CONFIG_CHECK_MS)
+            }
         }
     }
 
@@ -275,29 +437,39 @@ class SimpleVpnService : VpnService() {
      * inside of the tunnel would answer the wrong question entirely.
      */
     private fun probeNode(): Boolean {
-        val known = planSource.currentProfile()
-        if (known !is PlanSource.Result.Available) {
+        val profile = currentEndpoint
             // Nothing to probe against. Restarting is then the only option that
             // can produce a message the user can act on.
-            return true
-        }
-
-        val profile = known.profile
-        return try {
-            Socket().use { socket ->
-                protect(socket)
-                socket.connect(InetSocketAddress(profile.host, profile.port), PROBE_TIMEOUT_MS)
-                true
-            }
-        } catch (t: Throwable) {
-            Log.i(TAG, "node not reachable yet: ${t.message}")
-            false
-        }
+            ?: return true
+        return reachable(profile)
     }
 
-    private fun restartEngineForNewNetwork() {
+    /** @return whether this endpoint accepts a connection right now. */
+    private fun reachable(profile: ConnectionProfile): Boolean = try {
+        Socket().use { socket ->
+            protect(socket)
+            socket.connect(InetSocketAddress(profile.host, profile.port), connectTimeoutMs)
+            true
+        }
+    } catch (t: Throwable) {
+        Log.i(TAG, "endpoint not reachable: ${t.message}")
+        false
+    }
+
+    private fun restartEngineForNewNetwork() =
+        restartEngineOnCurrentEndpoint("underlying network changed")
+
+    /**
+     * Rebuilds the engine against whichever endpoint is current.
+     *
+     * Used by both reasons to restart, because they need exactly the same
+     * thing done: a network change keeps the endpoint and replaces the sockets;
+     * a failover replaces the endpoint. Two copies of this would be two places
+     * for the retry rule below to be got wrong.
+     */
+    private fun restartEngineOnCurrentEndpoint(reason: String) {
         if (!engine.isRunning) return
-        SessionLog.record(this, "underlying network changed, restarting the engine")
+        SessionLog.record(this, "$reason, restarting the engine")
         VpnController.update(VpnConnectionState.Reconnecting)
         updateNotification(getString(R.string.status_reconnecting))
 
@@ -308,17 +480,16 @@ class SimpleVpnService : VpnService() {
             // here would drop the tunnel the user is currently using.
             engine.stop()
 
-            // The stored plan, not a fresh request. A network that has just
-            // changed is the worst moment to depend on reaching a server, and
-            // the endpoint has not moved just because the phone did.
-            val known = planSource.currentProfile()
-            if (known !is PlanSource.Result.Available) {
+            // The endpoint in hand, not a fresh request. A network that has
+            // just changed is the worst moment to depend on reaching a server,
+            // and after a failover the answer is already decided.
+            val profile = currentEndpoint ?: run {
                 failAndStop(getString(R.string.error_unexpected))
                 return
             }
 
             val configJson = XrayConfigBuilder.build(
-                known.profile,
+                profile,
                 RoutingPolicy.DEFAULT,
                 SessionLog.engineFile(this).absolutePath,
             )
@@ -390,7 +561,10 @@ class SimpleVpnService : VpnService() {
         // A restart that fires after teardown would rebuild an engine nobody
         // asked for, over an interface that is already gone.
         restartHandler.removeCallbacks(restartEngine)
+        watchHandler.removeCallbacks(watchEndpoint)
+        watchHandler.removeCallbacks(watchConfig)
         probeAttempts = 0
+        currentEndpoint = null
         SessionLog.record(this, "teardown, bridge counters: " + BridgeDiagnostics.snapshot())
         networkMonitor?.stop()
         networkMonitor = null
@@ -517,6 +691,28 @@ class SimpleVpnService : VpnService() {
          */
         private const val MAX_PROBE_ATTEMPTS = 10
 
+
+        /**
+         * What this build calls itself when the server asks how old it is.
+         *
+         * A plain integer rather than a version name: the server compares it,
+         * and a comparison of names is a comparison that eventually gets an
+         * unexpected name and does the wrong thing quietly.
+         */
+        private const val APP_VERSION = 1
+
+        /** Used until a plan says otherwise. */
+        private const val DEFAULT_PROBE_INTERVAL_MS = 60_000L
+        private const val DEFAULT_CONNECT_TIMEOUT_MS = 8_000
+        private const val DEFAULT_FAILOVER_AFTER = 2
+
+        /**
+         * How often a running connection asks whether the service has been
+         * stopped. Five minutes: often enough that a switch thrown now reaches
+         * a connected phone soon, rarely enough that it is not a request a
+         * minute from every device.
+         */
+        private const val CONFIG_CHECK_MS = 5 * 60 * 1000L
         private const val CHANNEL_ID = "vpn_status"
         private const val NOTIFICATION_ID = 1
     }

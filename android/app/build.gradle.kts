@@ -52,6 +52,19 @@ android {
         getByName("main") {
             kotlin.srcDirs("src/main/kotlin")
         }
+        getByName("test") {
+            kotlin.srcDirs("src/test/kotlin")
+        }
+    }
+
+    testOptions {
+        unitTests {
+            // The rules under test are plain Kotlin, but they are compiled
+            // against android.jar, whose methods throw by default off a
+            // device. Returning defaults instead lets a rule be tested for
+            // what it decides rather than for which stub it happened to touch.
+            isReturnDefaultValues = true
+        }
     }
 
     packaging {
@@ -87,4 +100,7 @@ dependencies {
     // fail the build on duplicated runtime classes.
     // The directory is empty until the Android Build workflow produces it.
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
+
+    testImplementation(libs.junit)
+    testImplementation(libs.json)
 }

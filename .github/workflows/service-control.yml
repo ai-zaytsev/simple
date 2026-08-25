@@ -1,0 +1,112 @@
+name: Service Control
+
+# The switch that stops the product, and the floor under which a build is no
+# longer allowed to run.
+#
+# Deliberately not part of a deploy. Stopping the service must be possible when
+# nothing else is: no build, no release, no working pipeline for anything else.
+# It is one statement against one table, and the running service reads that
+# table every time it answers.
+#
+# What it cannot do is reach a phone that cannot reach us. Somebody who can
+# block this service can stop the switch being delivered; nothing in a client
+# fixes that, and a client that refused to run whenever the server was
+# unreachable would hand that same adversary the power to disconnect everybody.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do.
+        required: true
+        default: status
+        type: choice
+        options:
+          - status
+          - stop
+          - resume
+          - set-min-version
+      min_version:
+        description: Lowest app version allowed to run. Only for set-min-version.
+        required: false
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  control:
+    name: Service Control
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Change the switch
+        if: inputs.action != 'status'
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ACTION: ${{ inputs.action }}
+          MIN_VERSION: ${{ inputs.min_version }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+
+          case "${ACTION}" in
+            stop)   statement="update service_state set value = '{\"enabled\": true, \"message_key\": \"stopped\"}'::jsonb, updated_at = now(), changed_by = '${ACTOR}' where key = 'kill_switch';" ;;
+            resume) statement="update service_state set value = '{\"enabled\": false, \"message_key\": \"\"}'::jsonb, updated_at = now(), changed_by = '${ACTOR}' where key = 'kill_switch';" ;;
+            set-min-version)
+              if ! printf '%s' "${MIN_VERSION}" | grep -qE '^[0-9]{1,6}$'; then
+                echo "min_version must be a number."
+                exit 1
+              fi
+              statement="update service_state set value = '${MIN_VERSION}'::jsonb, updated_at = now(), changed_by = '${ACTOR}' where key = 'min_supported_app_version';" ;;
+            *) echo "unknown action"; exit 1 ;;
+          esac
+
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -' <<SQL
+          ${statement}
+          SQL
+
+      - name: Say what the service now answers
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+
+          # Read from the running service, not from the table. What matters is
+          # what a phone is told, and the only way to know that is to be told
+          # it. A row that says "stopped" while the service answers otherwise
+          # is exactly the failure this step exists to catch.
+          document=$(curl -sS --max-time 15 https://simple-syncbridge.download/v1/config)
+          payload=$(printf '%s' "${document}" | sed -n 's/.*"payload_b64":"\([^"]*\)".*/\1/p')
+          decoded=$(printf '%s' "${payload}" | tr '_-' '/+' | base64 -d 2>/dev/null || true)
+
+          echo "Service now answers:"
+          echo "${decoded}"
+
+          {
+            echo '### Service configuration'
+            echo '```json'
+            echo "${decoded}"
+            echo '```'
+            echo
+            echo 'Signed, so a client accepts it; numbered, so an older one cannot be replayed over it.'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if printf '%s' "${decoded}" | grep -q '"enabled":true'; then
+            echo
+            echo "THE SERVICE IS STOPPED. Connected devices stop within five minutes;"
+            echo "new connections are refused immediately."
+          fi

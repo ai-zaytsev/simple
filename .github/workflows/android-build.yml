@@ -150,6 +150,14 @@ jobs:
         # the text is drawn, on a phone, in front of somebody.
         run: bash android/tools/check-format-strings.sh
 
+      - name: Test the rules
+        working-directory: android
+        # Failover and the kill switch are only exercised when
+        # something is already broken. That is the worst moment to
+        # find out they were written wrong, so the rules are plain
+        # Kotlin and are checked here, on the build machine.
+        run: gradle --no-daemon testDebugUnitTest
+
       - name: Assemble debug APK
         working-directory: android
         run: gradle --no-daemon assembleDebug
