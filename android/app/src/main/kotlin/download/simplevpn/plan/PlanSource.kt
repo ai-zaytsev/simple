@@ -30,7 +30,11 @@ import download.simplevpn.config.ConnectionProfile
 class PlanSource(private val context: Context) {
 
     sealed interface Result {
-        data class Available(val profile: ConnectionProfile, val source: String) : Result
+        data class Available(
+            val plan: ConnectionPlan,
+            val profile: ConnectionProfile,
+            val source: String,
+        ) : Result
         data class Missing(val reason: String) : Result
     }
 
@@ -42,7 +46,7 @@ class PlanSource(private val context: Context) {
         val stored = store.stored()
 
         if (stored != null && now < stored.expiresAt) {
-            return Result.Available(stored.primary, "stored plan")
+            return Result.Available(stored, stored.primary, "stored plan")
         }
 
         when (val fetched = fetch(now)) {
@@ -55,7 +59,7 @@ class PlanSource(private val context: Context) {
             // failure: the nodes it names are probably still there, and the
             // alternative is disconnecting somebody over a server outage that
             // has nothing to do with them.
-            return Result.Available(stored.primary, "expired plan, control plane unreachable")
+            return Result.Available(stored, stored.primary, "expired plan, control plane unreachable")
         }
 
         return Result.Missing("no endpoint and the control plane cannot be reached")
@@ -79,7 +83,7 @@ class PlanSource(private val context: Context) {
 
         return when (val outcome = store.accept(payload, now)) {
             is PlanStore.Outcome.Accepted ->
-                store.stored()?.let { Result.Available(it.primary, "fresh plan") }
+                store.stored()?.let { Result.Available(it, it.primary, "fresh plan") }
                     ?: Result.Missing("plan stored but unreadable")
 
             is PlanStore.Outcome.Refused -> Result.Missing(outcome.reason)

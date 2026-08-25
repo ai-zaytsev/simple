@@ -43,6 +43,40 @@ class ControlPlaneClient(private val context: Context) {
         return post(ControlPlane.BASE_URL + "/v1/plan", body, token)
     }
 
+    /**
+     * Asks what the server says about the service as a whole.
+     *
+     * Unauthenticated on purpose. This document says whether anybody may
+     * connect at all, and a version of it that only signed-in devices could
+     * read would leave the one population that most needs to be told to stop -
+     * builds whose sign-in is broken - unable to hear it.
+     */
+    fun requestConfig(): Result = get(ControlPlane.BASE_URL + "/v1/config")
+
+    private fun get(url: String): Result {
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = TIMEOUT_MS
+                readTimeout = TIMEOUT_MS
+                setRequestProperty("accept", "application/json")
+            }
+
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                Log.w(TAG, "control plane answered $code")
+                return Result.Failed("server refused the request")
+            }
+            Result.Received(connection.inputStream.bufferedReader().readText())
+        } catch (t: Throwable) {
+            Log.w(TAG, "control plane unreachable", t)
+            Result.Failed(t.message ?: "control plane unreachable")
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
     private fun post(url: String, body: String, token: String): Result {
         var connection: HttpURLConnection? = null
         return try {

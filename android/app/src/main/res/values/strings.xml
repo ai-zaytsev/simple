@@ -30,6 +30,8 @@
     <string name="error_tun_not_established">Не удалось создать сетевой интерфейс</string>
     <string name="error_tun_lost">Сетевой интерфейс потерян</string>
     <string name="error_unexpected">Не удалось подключиться</string>
+    <string name="error_service_stopped">Сервис временно остановлен. Попробуйте позже.</string>
+    <string name="error_app_too_old">Эта версия приложения больше не поддерживается. Установите новую.</string>
 
     <string name="notification_channel_name">Состояние VPN</string>
 </resources>

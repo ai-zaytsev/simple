@@ -197,6 +197,18 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// Read before a number is taken. A failure here must not consume a
+	// sequence number, because a client that saw a higher number will refuse
+	// everything below it afterwards - including the document we failed to
+	// build.
+	state, err := s.store.LoadServiceState(ctx)
+	if err != nil {
+		s.log.Error("cannot read service state", "error", err)
+		writeError(w, http.StatusInternalServerError, "cannot issue configuration")
+		return
+	}
+
 	seq, err := s.store.NextSeq(ctx, "config")
 	if err != nil {
 		s.log.Error("cannot advance the sequence", "error", err)
@@ -208,9 +220,17 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 		V:                      1,
 		Seq:                    seq,
 		IssuedAt:               time.Now().UTC().Format(time.RFC3339),
-		MinSupportedAppVersion: 1,
-		KillSwitch:             document.KillSwitch{Enabled: false},
-		Features:               map[string]bool{"config_export_enabled": false},
+		MinSupportedAppVersion: state.MinSupportedAppVersion,
+		KillSwitch: document.KillSwitch{
+			Enabled:    state.KillSwitch.Enabled,
+			MessageKey: state.KillSwitch.MessageKey,
+		},
+		Features:      map[string]bool{"config_export_enabled": false},
+		RefreshAfterS: configRefreshSeconds,
+	}
+
+	if cfg.KillSwitch.Enabled {
+		s.log.Warn("kill switch is on", "seq", seq)
 	}
 
 	s.issue(w, ctx, "config", "config", seq, cfg)
@@ -306,5 +326,10 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 const (
 	maxRequestBytes   = 8 << 10
+
+	// How long a client may use a configuration document before asking again.
+	// Fifteen minutes because this is the only path by which anybody can be
+	// told to stop, and the worst case has to be a quarter of an hour.
+	configRefreshSeconds = 900
 	bootstrapLifetime = 30 * 24 * time.Hour
 )

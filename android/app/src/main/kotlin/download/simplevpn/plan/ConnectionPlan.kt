@@ -22,6 +22,13 @@ data class ConnectionPlan(
     val primary: ConnectionProfile,
     val reserves: List<ConnectionProfile>,
     val refreshAfterSeconds: Int,
+
+    // Numbers the server chose so the client does not invent them. A client
+    // that picks its own timeouts and its own idea of when a node is dead is a
+    // client making policy, and policy has to be changeable without an update.
+    val connectTimeoutMs: Int,
+    val failoverAfterFailures: Int,
+    val probeIntervalSeconds: Int,
 ) {
     /** Everything to try, in the order the server chose. */
     val endpoints: List<ConnectionProfile> get() = listOf(primary) + reserves
@@ -56,6 +63,12 @@ data class ConnectionPlan(
                     reserves = reserves,
                     refreshAfterSeconds = policy?.optInt("plan_refresh_after_s", DEFAULT_REFRESH)
                         ?: DEFAULT_REFRESH,
+                    connectTimeoutMs = policy?.optInt("connect_timeout_ms", DEFAULT_CONNECT_TIMEOUT)
+                        ?: DEFAULT_CONNECT_TIMEOUT,
+                    failoverAfterFailures = policy?.optInt("failover_after_failures", DEFAULT_FAILOVER)
+                        ?: DEFAULT_FAILOVER,
+                    probeIntervalSeconds = policy?.optInt("probe_interval_s", DEFAULT_PROBE_INTERVAL)
+                        ?: DEFAULT_PROBE_INTERVAL,
                 )
             } catch (t: Throwable) {
                 null
@@ -103,5 +116,8 @@ data class ConnectionPlan(
 
         private const val SUPPORTED_VERSION = 1
         private const val DEFAULT_REFRESH = 43_200
+        private const val DEFAULT_CONNECT_TIMEOUT = 8_000
+        private const val DEFAULT_FAILOVER = 2
+        private const val DEFAULT_PROBE_INTERVAL = 60
     }
 }

@@ -9,8 +9,19 @@ coreKtx = "1.15.0"
 lifecycle = "2.8.7"
 activityCompose = "1.9.3"
 composeBom = "2024.11.00"
+junit = "4.13.2"
+json = "20240303"
 
 [libraries]
+# Tests run on the build machine, not on a device. What they cover is the
+# rules - which endpoint to use, whether this build may run at all - and those
+# are written as plain Kotlin on purpose so they can be checked without
+# hardware.
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+# The real org.json, because the one Android ships is a stub when running on
+# the JVM: every method throws, so a test against it would prove nothing about
+# parsing.
+json = { group = "org.json", name = "json", version.ref = "json" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
 androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycle" }

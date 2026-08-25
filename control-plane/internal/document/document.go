@@ -85,6 +85,12 @@ type Config struct {
 	MinSupportedAppVersion int           `json:"min_supported_app_version"`
 	KillSwitch            KillSwitch     `json:"kill_switch"`
 	Features              map[string]bool `json:"features"`
+
+	// RefreshAfterS is how long a client may go on using this document before
+	// asking again. Shorter than a plan's life on purpose: this is the only
+	// path by which a client can be told to stop, and a switch that takes half
+	// a day to reach anybody is not much of a switch.
+	RefreshAfterS int `json:"refresh_after_s"`
 }
 
 // KillSwitch exists so that an incident can stop clients connecting without
