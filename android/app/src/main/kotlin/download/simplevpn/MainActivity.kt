@@ -8,6 +8,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import download.simplevpn.auth.AccountStore
+import download.simplevpn.auth.SignInScreen
 import download.simplevpn.ui.VpnScreen
 import download.simplevpn.vpn.VpnConnectionState
 import download.simplevpn.vpn.VpnController
@@ -37,10 +43,21 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme {
-                VpnScreen(
-                    stateFlow = VpnController.state,
-                    onToggle = { isActive -> if (isActive) requestStop() else requestStart() },
-                )
+                // Which screen to show is decided by whether this installation
+                // has proved access to a mailbox, and by nothing else. There is
+                // no password to remember, so there is nothing to be logged out
+                // of: an installation is either confirmed or it is new.
+                val accounts = remember { AccountStore(this) }
+                var signedIn by remember { mutableStateOf(accounts.isSignedIn) }
+
+                if (signedIn) {
+                    VpnScreen(
+                        stateFlow = VpnController.state,
+                        onToggle = { isActive -> if (isActive) requestStop() else requestStart() },
+                    )
+                } else {
+                    SignInScreen(onSignedIn = { signedIn = true })
+                }
             }
         }
     }
