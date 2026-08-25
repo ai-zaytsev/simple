@@ -15,7 +15,6 @@ import androidx.core.app.NotificationCompat
 import download.simplevpn.MainActivity
 import download.simplevpn.R
 import download.simplevpn.config.RoutingPolicy
-import download.simplevpn.config.SliceProfileSource
 import download.simplevpn.config.XrayConfigBuilder
 import download.simplevpn.core.BridgeDiagnostics
 import download.simplevpn.core.EngineStartResult
@@ -24,6 +23,7 @@ import download.simplevpn.core.SessionLog
 import download.simplevpn.core.TunBridge
 import download.simplevpn.core.XrayEngine
 import download.simplevpn.net.NetworkMonitor
+import download.simplevpn.plan.PlanSource
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.Executors
@@ -57,6 +57,12 @@ class SimpleVpnService : VpnService() {
 
     /** Probing opens a socket and waits, which the main thread must not do. */
     private val probes = Executors.newSingleThreadExecutor()
+
+    /** Establishing now includes a network call, which the main thread forbids. */
+    private val starts = Executors.newSingleThreadExecutor()
+
+    /** Where the endpoint comes from now that the build does not carry one. */
+    private val planSource by lazy { PlanSource(this) }
     private var probeAttempts = 0
 
     override fun onCreate() {
@@ -66,7 +72,19 @@ class SimpleVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> handleStart()
+            ACTION_START -> {
+                // The notification goes up here, on the calling thread, because
+                // the system requires it promptly and killing the service for
+                // being slow would look like a crash.
+                startForeground(NOTIFICATION_ID, buildNotification(getString(R.string.status_connecting)))
+                VpnController.update(VpnConnectionState.Connecting)
+
+                // Everything after it moves off this thread: establishing now
+                // includes asking the Control Plane where to connect, and a
+                // network call on the main thread is an immediate crash.
+                starts.execute { handleStart() }
+            }
+
             ACTION_STOP -> handleStop(VpnConnectionState.Disconnected)
             else -> {
                 // Restarted by the system with a null intent. Nothing is known
@@ -93,16 +111,18 @@ class SimpleVpnService : VpnService() {
         SessionLog.reset(this)
 
         try {
-            startForeground(NOTIFICATION_ID, buildNotification(getString(R.string.status_connecting)))
-            VpnController.update(VpnConnectionState.Connecting)
-
-            val profileResult = SliceProfileSource.load(this)
-            if (profileResult is SliceProfileSource.Result.Missing) {
-                SessionLog.record(this, "no endpoint: ${profileResult.reason}")
-                failAndStop(profileResult.reason)
+            // Where to connect is asked for, not compiled in. This is the
+            // whole point of the stage: the endpoint can change on the server
+            // without anybody installing anything.
+            val planResult = planSource.currentProfile()
+            if (planResult is PlanSource.Result.Missing) {
+                SessionLog.record(this, "no endpoint: ${planResult.reason}")
+                failAndStop(planResult.reason)
                 return
             }
-            val profile = (profileResult as SliceProfileSource.Result.Available).profile
+            val available = planResult as PlanSource.Result.Available
+            val profile = available.profile
+            SessionLog.record(this, "endpoint from ${available.source}")
             SessionLog.record(
                 this,
                 "endpoint ${profile.host}:${profile.port} " +
@@ -255,14 +275,14 @@ class SimpleVpnService : VpnService() {
      * inside of the tunnel would answer the wrong question entirely.
      */
     private fun probeNode(): Boolean {
-        val profileResult = SliceProfileSource.load(this)
-        if (profileResult !is SliceProfileSource.Result.Available) {
+        val known = planSource.currentProfile()
+        if (known !is PlanSource.Result.Available) {
             // Nothing to probe against. Restarting is then the only option that
             // can produce a message the user can act on.
             return true
         }
 
-        val profile = profileResult.profile
+        val profile = known.profile
         return try {
             Socket().use { socket ->
                 protect(socket)
@@ -288,14 +308,17 @@ class SimpleVpnService : VpnService() {
             // here would drop the tunnel the user is currently using.
             engine.stop()
 
-            val profileResult = SliceProfileSource.load(this)
-            if (profileResult !is SliceProfileSource.Result.Available) {
+            // The stored plan, not a fresh request. A network that has just
+            // changed is the worst moment to depend on reaching a server, and
+            // the endpoint has not moved just because the phone did.
+            val known = planSource.currentProfile()
+            if (known !is PlanSource.Result.Available) {
                 failAndStop(getString(R.string.error_unexpected))
                 return
             }
 
             val configJson = XrayConfigBuilder.build(
-                profileResult.profile,
+                known.profile,
                 RoutingPolicy.DEFAULT,
                 SessionLog.engineFile(this).absolutePath,
             )
