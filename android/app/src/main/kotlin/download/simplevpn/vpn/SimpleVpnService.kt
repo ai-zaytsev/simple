@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -45,6 +47,10 @@ class SimpleVpnService : VpnService() {
     private var tunnelHandedOver = false
     private var networkMonitor: NetworkMonitor? = null
     private val starting = AtomicBoolean(false)
+
+    /** Runs the delayed restart; see scheduleEngineRestart. */
+    private val restartHandler = Handler(Looper.getMainLooper())
+    private val restartEngine = Runnable { restartEngineForNewNetwork() }
 
     override fun onCreate() {
         super.onCreate()
@@ -163,6 +169,26 @@ class SimpleVpnService : VpnService() {
         }
     }
 
+    /**
+     * Waits for the network to settle before restarting anything.
+     *
+     * A restart costs every connection in flight. On Wi-Fi that is rare enough
+     * not to matter; a mobile network changes constantly - moving between
+     * cells, losing and regaining Wi-Fi - and a device reported two changes in
+     * three and a half minutes, each of which dropped ninety-five live
+     * connections. Some of those changes are not real: the system announces a
+     * new network while the one in use is still there.
+     *
+     * Each change pushes the restart further out, so a burst of them costs one
+     * restart instead of one each. What it cannot avoid is the restart itself
+     * when the change is real: sockets opened over a network that is gone stay
+     * open and deliver nothing.
+     */
+    private fun scheduleEngineRestart() {
+        restartHandler.removeCallbacks(restartEngine)
+        restartHandler.postDelayed(restartEngine, NETWORK_SETTLE_MS)
+    }
+
     private fun restartEngineForNewNetwork() {
         if (!engine.isRunning) return
         SessionLog.record(this, "underlying network changed, restarting the engine")
@@ -225,7 +251,7 @@ class SimpleVpnService : VpnService() {
         networkMonitor?.stop()
         networkMonitor = NetworkMonitor(
             context = this,
-            onUnderlyingNetworkChanged = { restartEngineForNewNetwork() },
+            onUnderlyingNetworkChanged = { scheduleEngineRestart() },
             onNetworkLost = {
                 // Not a failure: the device may be between networks. The state
                 // says reconnecting, and the next available network triggers a
@@ -252,6 +278,9 @@ class SimpleVpnService : VpnService() {
     }
 
     private fun teardown() {
+        // A restart that fires after teardown would rebuild an engine nobody
+        // asked for, over an interface that is already gone.
+        restartHandler.removeCallbacks(restartEngine)
         SessionLog.record(this, "teardown, bridge counters: " + BridgeDiagnostics.snapshot())
         networkMonitor?.stop()
         networkMonitor = null
@@ -355,6 +384,15 @@ class SimpleVpnService : VpnService() {
          * than passing none.
          */
         private const val TUN_FD_OWNED_BY_BRIDGE = 0
+        /**
+         * How long the network is given to settle before a restart.
+         *
+         * Long enough to swallow a burst of announcements, which arrive within
+         * a second or two of each other, and short enough that traffic is not
+         * left going through dead sockets for noticeably longer than before.
+         */
+        private const val NETWORK_SETTLE_MS = 3_000L
+
         private const val CHANNEL_ID = "vpn_status"
         private const val NOTIFICATION_ID = 1
     }
