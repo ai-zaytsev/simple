@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"download.simplevpn/control-plane/internal/document"
+	"download.simplevpn/control-plane/internal/mail"
 	"download.simplevpn/control-plane/internal/signing"
 	"download.simplevpn/control-plane/internal/store"
 )
@@ -34,6 +35,12 @@ type Server struct {
 	// right changes with circumstances, and changing it must not mean
 	// rebuilding and redeploying.
 	planTTL time.Duration
+
+	// mail sends the sign-in link, and baseURL is what that link points at.
+	// Both are configuration for the same reason the endpoint is: the address
+	// inside a link has to be able to change without rebuilding anything.
+	mail    *mail.Sender
+	baseURL string
 }
 
 func New(
@@ -41,6 +48,8 @@ func New(
 	signer *signing.Signer,
 	hosts []string,
 	planTTL time.Duration,
+	sender *mail.Sender,
+	baseURL string,
 	log *slog.Logger,
 ) *Server {
 	return &Server{
@@ -48,6 +57,8 @@ func New(
 		signer:         signer,
 		bootstrapHosts: hosts,
 		planTTL:        planTTL,
+		mail:           sender,
+		baseURL:        baseURL,
 		log:            log,
 	}
 }
@@ -55,6 +66,11 @@ func New(
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("POST /v1/auth/start", s.authStart)
+	mux.HandleFunc("POST /v1/auth/poll", s.authPoll)
+
+	// Short, because it goes in a message people read and sometimes retype.
+	mux.HandleFunc("GET /a", s.authConfirm)
 	mux.HandleFunc("POST /v1/plan", s.plan)
 	mux.HandleFunc("GET /v1/config", s.config)
 	mux.HandleFunc("GET /v1/bootstrap", s.bootstrap)
@@ -67,7 +83,6 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 
 type planRequest struct {
 	DeviceID            string   `json:"device_id"`
-	AccountID           string   `json:"account_id"`
 	SupportedTransports []string `json:"supported_transports"`
 	AppVersion          int      `json:"app_version"`
 }
@@ -81,16 +96,29 @@ type planRequest struct {
 // installation to update at the same moment.
 func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 	var req planRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes)).Decode(&req); err != nil {
+	if err := decode(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "request could not be read")
 		return
 	}
-	if req.DeviceID == "" || req.AccountID == "" {
-		writeError(w, http.StatusBadRequest, "device and account are required")
+
+	deviceID, err := uuid.Parse(req.DeviceID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "device is not identified")
 		return
 	}
 
 	ctx := r.Context()
+
+	// The account comes from what this device has proved, never from what it
+	// claims. Taking an account identifier from the request would mean anyone
+	// who learned one could ask for its plan, and would make confirming an
+	// address pointless.
+	accountID, err := s.store.AccountOfDevice(ctx, deviceID)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "device is not signed in")
+		return
+	}
+
 	kind := s.chooseTransport(req.SupportedTransports)
 	if kind == "" {
 		writeError(w, http.StatusConflict, "no transport in common")
@@ -104,14 +132,7 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.TouchDevice(ctx, req.DeviceID, req.AccountID); err != nil {
-		// Not fatal. A plan that works matters more than a row recording that
-		// it was handed out, and refusing here would turn a bookkeeping
-		// failure into an outage.
-		s.log.Warn("could not record the device", "error", err)
-	}
-
-	scope := "plan:" + req.AccountID
+	scope := "plan:" + accountID.String()
 	seq, err := s.store.NextSeq(ctx, scope)
 	if err != nil {
 		s.log.Error("cannot advance the sequence", "error", err)
@@ -238,6 +259,12 @@ func reserves(nodes []document.Node) []document.Node {
 		return nodes[1:3]
 	}
 	return nodes[1:]
+}
+
+// decode reads a request body with a size limit, so that a client cannot make
+// the server allocate by sending something enormous.
+func decode(w http.ResponseWriter, r *http.Request, into any) error {
+	return json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes)).Decode(into)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

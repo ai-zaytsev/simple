@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"download.simplevpn/control-plane/internal/api"
+	"download.simplevpn/control-plane/internal/mail"
 	"download.simplevpn/control-plane/internal/signing"
 	"download.simplevpn/control-plane/internal/store"
 )
@@ -78,6 +79,21 @@ func run(log *slog.Logger) error {
 		planTTL = parsed
 	}
 
+	// Sending mail is not optional: without it nobody can sign in, and a
+	// service that starts anyway would fail one person at a time instead of
+	// once, loudly, at deploy.
+	brevoKey := os.Getenv("CP_BREVO_API_KEY")
+	senderAddress := os.Getenv("CP_MAIL_FROM")
+	if brevoKey == "" || senderAddress == "" {
+		return errors.New("CP_BREVO_API_KEY and CP_MAIL_FROM are required")
+	}
+	sender := mail.NewSender(brevoKey, senderAddress, "Simple VPN")
+
+	baseURL := os.Getenv("CP_BASE_URL")
+	if baseURL == "" {
+		return errors.New("CP_BASE_URL is not set; sign-in links would point nowhere")
+	}
+
 	signer, err := signing.NewSigner(keyID, seed)
 	if err != nil {
 		return err
@@ -98,7 +114,7 @@ func run(log *slog.Logger) error {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           api.New(st, signer, cleaned, planTTL, log).Routes(),
+		Handler:           api.New(st, signer, cleaned, planTTL, sender, baseURL, log).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

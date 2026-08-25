@@ -2,9 +2,9 @@ package download.simplevpn.plan
 
 import android.content.Context
 import android.util.Log
+import download.simplevpn.auth.DeviceIdentity
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.UUID
 
 /**
  * Asks the Control Plane where to connect.
@@ -28,14 +28,16 @@ class ControlPlaneClient(private val context: Context) {
     }
 
     fun requestPlan(): Result {
+        // No account identifier is sent. The server takes it from what this
+        // device has already proved by following a link in a mailbox; a value
+        // in the request would be a claim, and a claim anybody could make.
         val body = """
             {"device_id":"${identity.deviceId}",
-             "account_id":"${identity.accountId}",
              "supported_transports":["vless-ws-tls"],
              "app_version":$APP_VERSION}
         """.trimIndent()
 
-        return post("$BASE_URL/v1/plan", body)
+        return post(ControlPlane.BASE_URL + "/v1/plan", body)
     }
 
     private fun post(url: String, body: String): Result {
@@ -77,44 +79,7 @@ class ControlPlaneClient(private val context: Context) {
 
     private companion object {
         const val TAG = "ControlPlaneClient"
-
-        /**
-         * The one address compiled into the build. See the class comment for
-         * why it is a name and why that is safe here and nowhere else.
-         */
-        const val BASE_URL = "https://simple-syncbridge.download"
         const val TIMEOUT_MS = 15_000
         const val APP_VERSION = 1
-    }
-}
-
-/**
- * Who this installation is, as far as the Control Plane is concerned.
- *
- * Generated once and kept. Not derived from anything about the hardware: an
- * identifier tied to the device would follow the person across reinstalls and
- * survive their deleting the application, which is exactly what the privacy
- * model forbids.
- */
-internal class DeviceIdentity private constructor(
-    val deviceId: String,
-    val accountId: String,
-) {
-    companion object {
-        fun of(context: Context): DeviceIdentity {
-            val prefs = context.getSharedPreferences("identity", Context.MODE_PRIVATE)
-
-            val device = prefs.getString(KEY_DEVICE, null) ?: UUID.randomUUID().toString()
-            // Until accounts exist, a device is its own account. The two are
-            // separate fields from the start because merging them would be
-            // impossible to undo once installations exist in the wild.
-            val account = prefs.getString(KEY_ACCOUNT, null) ?: UUID.randomUUID().toString()
-
-            prefs.edit().putString(KEY_DEVICE, device).putString(KEY_ACCOUNT, account).apply()
-            return DeviceIdentity(device, account)
-        }
-
-        private const val KEY_DEVICE = "device_id"
-        private const val KEY_ACCOUNT = "account_id"
     }
 }
