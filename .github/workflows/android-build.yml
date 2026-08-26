@@ -46,6 +46,25 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Take the debug signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE }}
+        # Pinned rather than generated per run. A fresh key on every
+        # build means Android refuses to install the new APK over the
+        # old one, so a tester uninstalls - which wipes the app data,
+        # which is where the device identity lives. Six devices
+        # accumulated on one account that way, and it looked like the
+        # identity model was wrong when it was the build.
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64}" ]; then
+            echo "ANDROID_DEBUG_KEYSTORE is not set; builds would not install as updates."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/signing"
+          printf %s "${KEYSTORE_B64}" | base64 -d > "${RUNNER_TEMP}/signing/debug.p12"
+          echo "DEBUG_KEYSTORE=${RUNNER_TEMP}/signing/debug.p12" >> "${GITHUB_ENV}"
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 

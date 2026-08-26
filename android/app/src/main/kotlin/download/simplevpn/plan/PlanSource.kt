@@ -7,21 +7,25 @@ import download.simplevpn.config.ConnectionProfile
 /**
  * Where the client gets its endpoint, now that the build does not carry one.
  *
- * The order below is the whole behaviour of the stage, and each step exists
- * because of a specific way the previous one fails.
+ * The order below is the whole behaviour, and each step exists because of a
+ * specific way the previous one fails.
  *
- * A stored plan that is still fresh is used without asking anyone. Asking on
- * every connection would make the Control Plane part of the critical path for
- * people who are already provisioned.
+ * The server is asked on every connection. It used to be asked only when the
+ * stored plan had gone stale, which looked like a saving and was a hole: a
+ * device cut off while holding a plan that still looked good would connect on
+ * a credential no node accepts, report success, and carry nothing.
  *
- * A stale plan triggers a request. If it succeeds and the answer is signed,
- * newer and unexpired, it replaces what was stored.
+ * If the answer is signed, newer and unexpired, it replaces what was stored.
  *
- * If the request fails, the stale plan is used anyway. This is the grace period
- * from remote-config.md, and it is what keeps a briefly unreachable Control
- * Plane from disconnecting everyone who is already working. Without it the
- * Control Plane would be a single point of failure for the entire installed
- * base rather than for new devices only.
+ * If the request fails, the stored plan is used, fresh or stale. This is the
+ * grace period from remote-config.md, and it is what keeps a briefly
+ * unreachable Control Plane from disconnecting everyone who is already
+ * working. Asking first does not put the Control Plane on the critical path,
+ * because failing to reach it changes nothing about the outcome.
+ *
+ * If the server answers that it does not know this device, that is final and
+ * the stored plan is not reached for. Somebody has signed in elsewhere, or this
+ * device was cut off; retrying cannot change it.
  *
  * Only when there is nothing stored and nothing can be fetched does the client
  * say it has no endpoint, which is true and is better than failing obscurely
@@ -36,6 +40,17 @@ class PlanSource(private val context: Context) {
             val source: String,
         ) : Result
         data class Missing(val reason: String) : Result
+
+        /**
+         * The server no longer knows this installation.
+         *
+         * Separate from [Missing] because the stored plan must not be used to
+         * paper over it. A revoked device still holds a plan that looks
+         * perfectly good and a credential no node will accept: connecting on it
+         * would produce a tunnel that carries nothing and an explanation
+         * nobody can find.
+         */
+        data object Revoked : Result
     }
 
     private val store = PlanStore(context)
@@ -45,29 +60,62 @@ class PlanSource(private val context: Context) {
     fun currentProfile(now: Long = System.currentTimeMillis()): Result {
         val stored = store.stored()
 
-        if (stored != null && now < stored.expiresAt) {
-            return Result.Available(stored, stored.primary, "stored plan")
-        }
-
+        // Asked every time, and the stored plan is what happens when asking
+        // fails - not what happens instead of asking.
+        //
+        // The difference matters because a device can be cut off while holding
+        // a plan that still looks perfectly good. Not asking would let it
+        // connect on a credential no node accepts: a tunnel that reports
+        // success and carries nothing, with the explanation sitting unread on
+        // the server. The grace period below is untouched; the Control Plane
+        // is still not on the critical path when it cannot be reached.
         when (val fetched = fetch(now)) {
             is Result.Available -> return fetched
+
+            // Final, so the stored plan is not reached for. See Revoked.
+            is Result.Revoked -> return Result.Revoked
+
             is Result.Missing -> Log.i(TAG, "could not refresh: ${fetched.reason}")
         }
 
         if (stored != null) {
-            // Expired, and the server cannot be reached. Using it is the lesser
+            // The server cannot be reached. Using what is stored is the lesser
             // failure: the nodes it names are probably still there, and the
             // alternative is disconnecting somebody over a server outage that
             // has nothing to do with them.
-            return Result.Available(stored, stored.primary, "expired plan, control plane unreachable")
+            val age = if (now < stored.expiresAt) "stored plan" else "expired plan"
+            return Result.Available(stored, stored.primary, "$age, control plane unreachable")
         }
 
         return Result.Missing("no endpoint and the control plane cannot be reached")
     }
 
+    /** What the server says about this installation still being known. */
+    enum class Standing { KNOWN, REVOKED, UNREACHABLE }
+
+    /**
+     * Asks whether this installation is still recognised, and nothing else.
+     *
+     * A connected device would otherwise not learn it had been cut off until
+     * its plan expired - up to a day of a tunnel that reports success and
+     * carries nothing.
+     *
+     * Unreachable is not revoked. A server that cannot be reached says nothing
+     * about whether this device is welcome, and treating silence as a refusal
+     * would let anyone disconnect everybody by blocking one address.
+     *
+     * Must not be called on the main thread: it opens a connection.
+     */
+    fun standing(): Standing = when (client.checkStanding()) {
+        is ControlPlaneClient.Result.Received -> Standing.KNOWN
+        is ControlPlaneClient.Result.Revoked -> Standing.REVOKED
+        is ControlPlaneClient.Result.Failed -> Standing.UNREACHABLE
+    }
+
     private fun fetch(now: Long): Result {
         val response = when (val answer = client.requestPlan()) {
             is ControlPlaneClient.Result.Received -> answer.envelopeJson
+            is ControlPlaneClient.Result.Revoked -> return Result.Revoked
             is ControlPlaneClient.Result.Failed -> return Result.Missing(answer.reason)
         }
 

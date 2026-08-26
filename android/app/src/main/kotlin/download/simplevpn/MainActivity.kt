@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +52,18 @@ class MainActivity : ComponentActivity() {
                 var signedIn by remember { mutableStateOf(accounts.isSignedIn) }
 
                 if (signedIn) {
+                    // The service can sign this installation out on its own,
+                    // when the server stops recognising it - somebody signed in
+                    // elsewhere, or this device was cut off. It happens in the
+                    // background, so this screen has to notice rather than be
+                    // told, and every change of connection state is a moment
+                    // when it might have happened.
+                    LaunchedEffect(Unit) {
+                        VpnController.state.collect {
+                            if (!accounts.isSignedIn) signedIn = false
+                        }
+                    }
+
                     VpnScreen(
                         stateFlow = VpnController.state,
                         onToggle = { isActive -> if (isActive) requestStop() else requestStart() },

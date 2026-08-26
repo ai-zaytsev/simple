@@ -137,6 +137,17 @@ func (s *Store) ConfirmAttempt(ctx context.Context, tokenHash []byte) (uuid.UUID
 		return uuid.Nil, fmt.Errorf("cannot create a credential: %w", err)
 	}
 
+	// Signing in on a new device pushes the oldest one out, when the tier says
+	// there is only room for so many.
+	//
+	// Here rather than at the next plan request, because this is the moment a
+	// person decides which device they are using. Waiting would leave two
+	// devices working until one of them happened to ask for something, and
+	// which one lost would depend on timing nobody can see.
+	if _, err := evictBeyondLimit(ctx, tx, accountID, deviceID); err != nil {
+		return uuid.Nil, err
+	}
+
 	if _, err := tx.Exec(ctx, `
 		update login_attempts
 		set consumed_at = now(), confirmed_at = now(), account_id = $2

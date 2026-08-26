@@ -56,6 +56,14 @@ class ConfigSource(private val context: Context) {
                 Log.i(TAG, "could not refresh configuration: ${answer.reason}")
                 return null
             }
+
+            // Nothing authenticates this request, so a refusal to recognise
+            // the caller cannot be about this caller. Treated as any other
+            // failure: keep what is stored and ask again later.
+            is ControlPlaneClient.Result.Revoked -> {
+                Log.w(TAG, "configuration endpoint refused an unauthenticated request")
+                return null
+            }
         }
 
         // Signature first, always. A document that decides whether this

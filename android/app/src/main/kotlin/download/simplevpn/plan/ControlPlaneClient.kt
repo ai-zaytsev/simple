@@ -25,6 +25,17 @@ class ControlPlaneClient(private val context: Context) {
     sealed interface Result {
         data class Received(val envelopeJson: String) : Result
         data class Failed(val reason: String) : Result
+
+        /**
+         * This installation is no longer recognised.
+         *
+         * Told apart from every other failure because it means something the
+         * person can act on and nothing will fix by itself: somebody signed in
+         * on another device, or this one was cut off. Treating it as an outage
+         * would leave the application retrying forever against a server that
+         * has already given its final answer.
+         */
+        data object Revoked : Result
     }
 
     fun requestPlan(): Result {
@@ -52,6 +63,22 @@ class ControlPlaneClient(private val context: Context) {
      * builds whose sign-in is broken - unable to hear it.
      */
     fun requestConfig(): Result = get(ControlPlane.BASE_URL + "/v1/config")
+
+    /**
+     * Asks whether this installation is still one the server knows.
+     *
+     * Exists because a connected device would otherwise not find out it had
+     * been cut off until its plan expired - up to a day of a tunnel that looks
+     * established and carries nothing.
+     *
+     * Deliberately not a plan request. Asking for a plan every few minutes
+     * would have the server issue, number and record a document each time, for
+     * an answer that is one bit long.
+     */
+    fun checkStanding(): Result {
+        val token = accounts.deviceToken ?: return Result.Revoked
+        return post(ControlPlane.BASE_URL + "/v1/devices", "{}", token)
+    }
 
     private fun get(url: String): Result {
         var connection: HttpURLConnection? = null
@@ -96,6 +123,14 @@ class ControlPlaneClient(private val context: Context) {
             connection.outputStream.use { it.write(body.toByteArray()) }
 
             val code = connection.responseCode
+
+            // The one answer that is final. The secret this device holds is no
+            // longer one the server knows, which happens when somebody signs in
+            // elsewhere or this device is cut off. Retrying cannot help, and
+            // treating it as an outage would leave the person staring at a
+            // reconnection that never comes.
+            if (code == HttpURLConnection.HTTP_UNAUTHORIZED) return Result.Revoked
+
             if (code != HttpURLConnection.HTTP_OK) {
                 // The error body is deliberately not surfaced to the user: it
                 // is written by whoever answered, and this runs before the
