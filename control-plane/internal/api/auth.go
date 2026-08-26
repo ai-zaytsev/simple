@@ -163,6 +163,13 @@ func (s *Server) authPoll(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.IssueDeviceToken(r.Context(), deviceID, hash); err != nil {
+			if errors.Is(err, store.ErrNoSuchDevice) {
+				// Confirmed, then cut off before this answer was asked for:
+				// somebody signed in elsewhere in between. Answered as a link
+				// that no longer works, which is what it is.
+				writeJSON(w, http.StatusOK, map[string]any{"status": "expired"})
+				return
+			}
 			s.log.Error("cannot issue a device token", "error", err)
 			writeError(w, http.StatusInternalServerError, "cannot finish sign-in")
 			return

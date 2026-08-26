@@ -26,8 +26,20 @@ type Device struct {
 // costs nothing: the next attempt issues another and the unheard one stops
 // working. Only the hash is kept, so a copy of this table lets nobody connect.
 func (s *Store) IssueDeviceToken(ctx context.Context, deviceID uuid.UUID, hash []byte) error {
-	tag, err := s.pool.Exec(ctx,
-		`update devices set token_hash = $2, last_seen_at = now() where id = $1`,
+	// Only to a device that still has access.
+	//
+	// Without this condition a spent link stayed useful for as long as the
+	// attempt row lived: a device cut off a moment ago could be polled again,
+	// be handed a fresh secret, ask for a plan, and be issued a new credential
+	// because it no longer had one. Being cut off would have lasted until
+	// somebody stopped asking.
+	tag, err := s.pool.Exec(ctx, `
+		update devices set token_hash = $2, last_seen_at = now()
+		where id = $1
+		  and exists (
+		    select 1 from device_credentials c
+		    where c.device_id = $1 and c.state = 'ACTIVE'
+		  )`,
 		deviceID, hash)
 	if err != nil {
 		return fmt.Errorf("cannot issue a device token: %w", err)
