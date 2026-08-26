@@ -28,8 +28,6 @@ import download.simplevpn.plan.ConfigSource
 import download.simplevpn.plan.EndpointChoice
 import download.simplevpn.plan.PlanSource
 import download.simplevpn.plan.ServiceConfig
-import java.net.InetSocketAddress
-import java.net.Socket
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -70,6 +68,9 @@ class SimpleVpnService : VpnService() {
 
     /** Whether this installation is allowed to run at all. */
     private val configSource by lazy { ConfigSource(this) }
+
+    /** Whether an endpoint can carry a tunnel, asked outside the tunnel. */
+    private val health by lazy { EndpointHealth { socket -> protect(socket) } }
     private var probeAttempts = 0
 
     /**
@@ -444,17 +445,16 @@ class SimpleVpnService : VpnService() {
         return reachable(profile)
     }
 
-    /** @return whether this endpoint accepts a connection right now. */
-    private fun reachable(profile: ConnectionProfile): Boolean = try {
-        Socket().use { socket ->
-            protect(socket)
-            socket.connect(InetSocketAddress(profile.host, profile.port), connectTimeoutMs)
-            true
-        }
-    } catch (t: Throwable) {
-        Log.i(TAG, "endpoint not reachable: ${t.message}")
-        false
-    }
+    /**
+     * @return whether this endpoint can carry a tunnel right now.
+     *
+     * Not merely whether the port answers. Port 443 belongs to Nginx, which
+     * serves an ordinary website and answers whether or not the engine behind
+     * it is alive; a node whose Xray had died would have passed that check
+     * while carrying nothing, and failover would never have fired.
+     */
+    private fun reachable(profile: ConnectionProfile): Boolean =
+        health.check(profile, connectTimeoutMs)
 
     private fun restartEngineForNewNetwork() =
         restartEngineOnCurrentEndpoint("underlying network changed")
