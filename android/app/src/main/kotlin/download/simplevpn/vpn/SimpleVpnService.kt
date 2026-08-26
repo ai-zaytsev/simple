@@ -24,6 +24,7 @@ import download.simplevpn.core.TunBridge
 import download.simplevpn.core.XrayEngine
 import download.simplevpn.net.NetworkMonitor
 import download.simplevpn.config.ConnectionProfile
+import download.simplevpn.plan.AlreadyTunnelled
 import download.simplevpn.plan.ConfigSource
 import download.simplevpn.plan.EndpointChoice
 import download.simplevpn.auth.AccountStore
