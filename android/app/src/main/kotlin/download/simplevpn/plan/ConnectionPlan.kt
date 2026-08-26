@@ -39,6 +39,32 @@ data class ConnectionPlan(
     /** Everything to try, in the order the server chose. */
     val endpoints: List<ConnectionProfile> get() = listOf(primary) + reserves
 
+    /**
+     * What this plan actually says, ignoring which copy of it this is.
+     *
+     * The sequence number is not it. The server issues a new number on every
+     * request, so two plans a second apart are different numbers and identical
+     * instructions - and treating "new number" as "new plan" made the rollback
+     * inert: every retry fetched a fresh number, the failure count reset, and
+     * the same broken plan was tried for ever. Found by walking through the
+     * test before running it.
+     *
+     * Endpoints and routing, because those are what can be wrong. A plan whose
+     * timeouts changed is not a plan that deserves a fresh chance after two
+     * failures; a plan naming a different node is.
+     */
+    val fingerprint: String
+        get() = buildString {
+            endpoints.forEach { append(it.host).append(':').append(it.port).append(' ') }
+            append('|')
+            append(routing.directApps.joinToString(","))
+            append('|').append(routing.directDomains.joinToString(","))
+            append('|').append(routing.directIPs.joinToString(","))
+            append('|').append(routing.proxyDomains.joinToString(","))
+            append('|').append(routing.proxyIPs.joinToString(","))
+            append('|').append(routing.russiaDirect)
+        }
+
     companion object {
 
         fun parse(payload: JSONObject): ConnectionPlan? {
