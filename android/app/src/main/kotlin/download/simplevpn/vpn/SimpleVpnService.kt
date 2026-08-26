@@ -76,6 +76,11 @@ class SimpleVpnService : VpnService() {
     private val health by lazy { EndpointHealth { socket -> protect(socket) } }
     private var probeAttempts = 0
 
+    // How many times this session has rebuilt the tunnel on a different plan.
+    // Bounded, because the plan rolled back to can fail as well, and a device
+    // rebuilding for ever is worse than one that says plainly nothing works.
+    private var rollbacks = 0
+
     /**
      * The endpoints of the plan in use and which one is live.
      *
@@ -155,7 +160,12 @@ class SimpleVpnService : VpnService() {
 
         // Cleared here and not later: everything below belongs to this attempt,
         // and a log holding two of them is worse than none.
-        SessionLog.reset(this)
+        //
+        // Except when this attempt is a rollback. Then the reason the previous
+        // plan was abandoned is the most useful thing in the file, and wiping
+        // it would leave a log that shows a connection working and no trace of
+        // what it replaced.
+        if (rollbacks == 0) SessionLog.reset(this)
 
         try {
             // Asked before anything is established. This is the one answer that
@@ -276,6 +286,13 @@ class SimpleVpnService : VpnService() {
                     VpnController.update(VpnConnectionState.Connected(System.currentTimeMillis()))
                     updateNotification(getString(R.string.status_connected))
                     SessionLog.record(this, "connected")
+
+                    // "Connected" has never meant "working". Everything above
+                    // succeeds when the node refuses the credential, when a
+                    // routing rule sends everything nowhere, and when the plan
+                    // names an endpoint that has been withdrawn - all three
+                    // have happened here, and each looked like success.
+                    probes.execute { proveOrRollBack(planSource.sourceInUse()) }
                 }
 
                 is TunBridge.Result.Unavailable -> {
@@ -298,6 +315,56 @@ class SimpleVpnService : VpnService() {
         } finally {
             starting.set(false)
         }
+    }
+
+    /**
+     * Confirms the tunnel carries traffic, and rolls back when it does not.
+     *
+     * This is the whole of the stage. A mistake in settings must not break the
+     * product for everybody at once: a plan is a proposal until it has carried
+     * something, and one that cannot is abandoned for the last plan that could.
+     * The person does nothing; they see a reconnection.
+     *
+     * Bounded, because the fallback can fail too. Without a limit a device with
+     * two bad plans would rebuild the tunnel for ever, which is worse than
+     * saying plainly that nothing works.
+     */
+    private fun proveOrRollBack(source: PlanStore.Source) {
+        if (!engine.isRunning) return
+
+        if (TunnelProof.carriesTraffic(connectTimeoutMs)) {
+            SessionLog.record(this, "tunnel carries traffic")
+            planSource.proved(source)
+            rollbacks = 0
+            return
+        }
+
+        val seq = planSource.candidateSeq()
+        SessionLog.record(this, "nothing came back through the tunnel, plan $seq")
+        planSource.failed(source)
+
+        // Told to the server as well as acted on. Rolling back here is half of
+        // not breaking the product for everybody; the other half is somebody
+        // finding out that a plan is failing in the field, or the next person
+        // to install gets the same one.
+        starts.execute { planSource.reportFailure(seq, "no traffic through the tunnel") }
+
+        if (rollbacks >= MAX_ROLLBACKS) {
+            SessionLog.record(this, "no usable plan after $rollbacks attempts")
+            failAndStop(getString(R.string.error_no_working_plan))
+            return
+        }
+        rollbacks++
+
+        SessionLog.record(this, "trying another plan, attempt $rollbacks")
+        VpnController.update(VpnConnectionState.Reconnecting)
+        updateNotification(getString(R.string.status_reconnecting))
+
+        // A full rebuild rather than an engine restart: a different plan can
+        // name different applications to keep out of the tunnel, and that is
+        // decided when the interface is built.
+        teardown()
+        starts.execute { handleStart() }
     }
 
     /**
@@ -787,6 +854,9 @@ class SimpleVpnService : VpnService() {
          * waiting in silence.
          */
         private const val MAX_PROBE_ATTEMPTS = 10
+
+        /** Two: the newest plan, then the one remembered as working. */
+        private const val MAX_ROLLBACKS = 2
 
 
         /**
