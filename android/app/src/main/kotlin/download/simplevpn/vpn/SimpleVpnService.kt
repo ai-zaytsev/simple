@@ -92,6 +92,11 @@ class SimpleVpnService : VpnService() {
     private var probeIntervalMs = DEFAULT_PROBE_INTERVAL_MS
     private var connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS
 
+    // How long until the next question about the service. Set from the answer
+    // to the last one, so the server owns the cadence and the client has no
+    // number of its own to disagree with it.
+    private var configRefreshMs = DEFAULT_CONFIG_REFRESH_MS
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -143,7 +148,13 @@ class SimpleVpnService : VpnService() {
             // would mean the switch takes effect only for the next person to
             // press the button.
             val config = configSource.current()
-            if (config != null && !allowedToRun(config)) return
+            if (config != null) {
+                configRefreshMs = config.refreshAfterSeconds * 1000L
+                SessionLog.record(this, "configuration: service running")
+                if (!allowedToRun(config)) return
+            } else {
+                SessionLog.record(this, "configuration unavailable, using what is stored")
+            }
 
             // Where to connect is asked for, not compiled in. This is the
             // whole point of the stage: the endpoint can change on the server
@@ -299,7 +310,7 @@ class SimpleVpnService : VpnService() {
         watchHandler.removeCallbacks(watchConfig)
         failures.succeeded()
         watchHandler.postDelayed(watchEndpoint, probeIntervalMs)
-        watchHandler.postDelayed(watchConfig, CONFIG_CHECK_MS)
+        watchHandler.postDelayed(watchConfig, configRefreshMs)
     }
 
     /**
@@ -344,7 +355,16 @@ class SimpleVpnService : VpnService() {
         }
     }
 
-    /** Asks whether the service has been stopped since this connection began. */
+    /**
+     * Asks whether the service has been stopped since this connection began.
+     *
+     * The next question is scheduled by the answer to this one, and by nothing
+     * else. There used to be a second interval here: the service woke every
+     * five minutes, found a stored document it considered fresh for fifteen,
+     * and asked nobody. The switch worked and took three times as long as
+     * anybody had been told, which is the kind of wrong that is only ever
+     * discovered by somebody waiting.
+     */
     private fun checkConfig() {
         if (!engine.isRunning) return
 
@@ -353,8 +373,17 @@ class SimpleVpnService : VpnService() {
 
             watchHandler.post {
                 if (!engine.isRunning) return@post
-                if (config != null && !allowedToRun(config)) return@post
-                watchHandler.postDelayed(watchConfig, CONFIG_CHECK_MS)
+                if (config != null) {
+                    configRefreshMs = config.refreshAfterSeconds * 1000L
+                    SessionLog.record(
+                        this,
+                        "configuration checked: running, asking again in ${config.refreshAfterSeconds}s",
+                    )
+                    if (!allowedToRun(config)) return@post
+                } else {
+                    SessionLog.record(this, "configuration could not be read, continuing on what is stored")
+                }
+                watchHandler.postDelayed(watchConfig, configRefreshMs)
             }
         }
     }
@@ -712,7 +741,8 @@ class SimpleVpnService : VpnService() {
          * a connected phone soon, rarely enough that it is not a request a
          * minute from every device.
          */
-        private const val CONFIG_CHECK_MS = 5 * 60 * 1000L
+        /** Used only until the first document arrives and says otherwise. */
+        private const val DEFAULT_CONFIG_REFRESH_MS = 5 * 60 * 1000L
         private const val CHANNEL_ID = "vpn_status"
         private const val NOTIFICATION_ID = 1
     }

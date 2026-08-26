@@ -326,10 +326,14 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 const (
 	maxRequestBytes   = 8 << 10
-
-	// How long a client may use a configuration document before asking again.
-	// Fifteen minutes because this is the only path by which anybody can be
-	// told to stop, and the worst case has to be a quarter of an hour.
-	configRefreshSeconds = 900
 	bootstrapLifetime = 30 * 24 * time.Hour
+
+	// How often a client asks whether the service has been stopped.
+	//
+	// The one number that decides it. A client schedules its next question by
+	// this value and has no interval of its own, because it had two once: it
+	// woke every five minutes, found a document it considered fresh for
+	// fifteen, and asked nobody. The switch worked and took three times as
+	// long as anybody had been told.
+	configRefreshSeconds = 300
 )
