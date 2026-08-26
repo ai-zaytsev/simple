@@ -33,6 +33,29 @@ object VpnController {
         ContextCompat.startForegroundService(context, intent)
     }
 
+    /**
+     * Asks a running service to check now rather than at its next tick.
+     *
+     * Called when the application is brought to the screen. Somebody whose
+     * connection has stopped working opens the application to find out why,
+     * and that is exactly the moment an answer is worth having; waiting out
+     * the remaining minutes of a timer would show them a screen that says
+     * everything is fine.
+     *
+     * It costs nothing to run, because it runs only when somebody is looking.
+     * Asking on a shorter timer instead would cost battery on every phone,
+     * awake or not, for the sake of the rare minute when it matters.
+     */
+    fun recheck(context: Context) {
+        if (state.value !is VpnConnectionState.Connected) return
+        val intent = Intent(context, SimpleVpnService::class.java).apply {
+            action = SimpleVpnService.ACTION_RECHECK
+        }
+        // Not startForegroundService: this must never bring a stopped service
+        // to life, only prod one that is already running.
+        context.startService(intent)
+    }
+
     fun stop(context: Context) {
         val intent = Intent(context, SimpleVpnService::class.java).apply {
             action = SimpleVpnService.ACTION_STOP

@@ -24,6 +24,7 @@ import download.simplevpn.core.TunBridge
 import download.simplevpn.core.XrayEngine
 import download.simplevpn.net.NetworkMonitor
 import download.simplevpn.config.ConnectionProfile
+import download.simplevpn.plan.AlreadyTunnelled
 import download.simplevpn.plan.ConfigSource
 import download.simplevpn.plan.EndpointChoice
 import download.simplevpn.auth.AccountStore
@@ -87,6 +88,11 @@ class SimpleVpnService : VpnService() {
     private var currentEndpoint: ConnectionProfile? = null
     private var failures = EndpointChoice.Failures(DEFAULT_FAILOVER_AFTER)
 
+    // Where traffic goes, as the last plan said. Held because the engine is
+    // rebuilt on a network change and on a failover, and it must be rebuilt
+    // with the same rules rather than with whatever the build was born with.
+    private var routing = RoutingPolicy.UNTIL_A_PLAN_ARRIVES
+
     /** Watches the node in use and the switch that can stop everything. */
     private val watchHandler = Handler(Looper.getMainLooper())
     private val watchEndpoint = Runnable { checkEndpoint() }
@@ -117,6 +123,13 @@ class SimpleVpnService : VpnService() {
                 // includes asking the Control Plane where to connect, and a
                 // network call on the main thread is an immediate crash.
                 starts.execute { handleStart() }
+            }
+
+            // Somebody is looking at the application right now. Whatever the
+            // timer would have asked in a few minutes, ask it now.
+            ACTION_RECHECK -> if (engine.isRunning) {
+                watchHandler.removeCallbacks(watchConfig)
+                watchHandler.post(watchConfig)
             }
 
             ACTION_STOP -> handleStop(VpnConnectionState.Disconnected)
@@ -174,6 +187,23 @@ class SimpleVpnService : VpnService() {
             val available = planResult as PlanSource.Result.Available
             adoptPlan(available)
 
+            // A router running this VPN is invisible from the phone, which sees
+            // ordinary Wi-Fi. What gives it away is the address we are seen
+            // from: if it is one of our own nodes, the network already goes
+            // through us and a second tunnel would nest inside the first.
+            when (val already = AlreadyTunnelled.decide(planSource.seenFrom(), endpoints)) {
+                is AlreadyTunnelled.Verdict.ThroughOurNode -> {
+                    SessionLog.record(this, "network already runs through node ${already.alias}, not building a second tunnel")
+                    failAndStop(getString(R.string.error_already_tunnelled))
+                    return
+                }
+
+                is AlreadyTunnelled.Verdict.Unknown ->
+                    SessionLog.record(this, "could not tell whether the network is already tunnelled, continuing")
+
+                is AlreadyTunnelled.Verdict.NotTunnelled -> Unit
+            }
+
             // The first endpoint that answers, in the order the server chose.
             // A reserve nobody ever tries is a reserve that does not exist.
             val choice = EndpointChoice.choose(endpoints) { reachable(it) }
@@ -200,7 +230,9 @@ class SimpleVpnService : VpnService() {
                     "transport ${profile.transport::class.simpleName}",
             )
 
-            val policy = RoutingPolicy.DEFAULT
+            // From the plan, not from the build. A route that turns out wrong is
+            // then an operator changing a row, not a release.
+            val policy = routing
 
             val descriptor = TunConfigurator(this).establish(policy)
             if (descriptor == null) {
@@ -277,6 +309,7 @@ class SimpleVpnService : VpnService() {
      */
     private fun adoptPlan(available: PlanSource.Result.Available) {
         endpoints = available.plan.endpoints
+        routing = available.plan.routing
         connectTimeoutMs = available.plan.connectTimeoutMs
         probeIntervalMs = available.plan.probeIntervalSeconds * 1000L
         failures = EndpointChoice.Failures(available.plan.failoverAfterFailures)
@@ -553,7 +586,7 @@ class SimpleVpnService : VpnService() {
 
             val configJson = XrayConfigBuilder.build(
                 profile,
-                RoutingPolicy.DEFAULT,
+                routing,
                 SessionLog.engineFile(this).absolutePath,
             )
             when (val result = engine.start(configJson, TUN_FD_OWNED_BY_BRIDGE)) {
@@ -721,6 +754,7 @@ class SimpleVpnService : VpnService() {
     companion object {
         const val ACTION_START = "download.simplevpn.action.START"
         const val ACTION_STOP = "download.simplevpn.action.STOP"
+        const val ACTION_RECHECK = "download.simplevpn.action.RECHECK"
 
         private const val TAG = "SimpleVpnService"
 

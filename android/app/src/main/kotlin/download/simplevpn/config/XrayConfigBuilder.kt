@@ -358,19 +358,24 @@ object XrayConfigBuilder {
             },
         )
 
-        // Direct by geography and by private ranges.
-        if (policy.directGeoRules.isNotEmpty()) {
+        // The order below is the product rule, and each block exists because
+        // the one after it would otherwise decide wrongly.
+
+        // Straight out, whatever else matches. First because these are the
+        // cases somebody has looked at and decided: a bank that refuses
+        // foreign addresses, a service that must be reached from Russia. A
+        // rule further down deciding otherwise would be a rule overriding
+        // somebody's deliberate answer with a guess about geography.
+        val directIPs = policy.directIPRules
+        if (directIPs.isNotEmpty()) {
             rules.put(
                 JSONObject().apply {
                     put("type", "field")
-                    put("ip", JSONArray(policy.directGeoRules))
+                    put("ip", JSONArray(directIPs))
                     put("outboundTag", "direct")
                 },
             )
         }
-
-        // Direct by name, for services that must be reached from a Russian
-        // address even when their addresses say otherwise.
         if (policy.directDomains.isNotEmpty()) {
             rules.put(
                 JSONObject().apply {
@@ -381,6 +386,45 @@ object XrayConfigBuilder {
             )
         }
 
+        // Through the tunnel, whatever else matches. Second, so an explicit
+        // "direct" still wins, and ahead of geography, so a foreign service
+        // with a server in Russia is still reached through the tunnel - which
+        // is the whole point of naming it.
+        if (policy.proxyDomains.isNotEmpty()) {
+            rules.put(
+                JSONObject().apply {
+                    put("type", "field")
+                    put("domain", JSONArray(policy.proxyDomains))
+                    put("outboundTag", "proxy")
+                },
+            )
+        }
+        if (policy.proxyIPs.isNotEmpty()) {
+            rules.put(
+                JSONObject().apply {
+                    put("type", "field")
+                    put("ip", JSONArray(policy.proxyIPs))
+                    put("outboundTag", "proxy")
+                },
+            )
+        }
+
+        // Geography, for everything nobody has named. Last of the rules,
+        // because it is the guess: a Russian address usually means a Russian
+        // service, and usually is not always.
+        val russia = policy.russiaIPRules
+        if (russia.isNotEmpty()) {
+            rules.put(
+                JSONObject().apply {
+                    put("type", "field")
+                    put("ip", JSONArray(russia))
+                    put("outboundTag", "direct")
+                },
+            )
+        }
+
+        // Everything else goes through the tunnel by falling off the end of
+        // this list, which is what the default outbound is for.
         return JSONObject().apply {
             // Addresses are matched as they arrive.
             //

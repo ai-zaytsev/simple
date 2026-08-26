@@ -1,6 +1,7 @@
 package download.simplevpn.plan
 
 import download.simplevpn.config.ConnectionProfile
+import download.simplevpn.config.RoutingPolicy
 import download.simplevpn.config.TransportParams
 import org.json.JSONObject
 
@@ -29,6 +30,11 @@ data class ConnectionPlan(
     val connectTimeoutMs: Int,
     val failoverAfterFailures: Int,
     val probeIntervalSeconds: Int,
+
+    // Where traffic goes. Part of the plan rather than of the build, which is
+    // the whole point of the stage: a route that turns out wrong is corrected
+    // by an operator, not by a release.
+    val routing: RoutingPolicy,
 ) {
     /** Everything to try, in the order the server chose. */
     val endpoints: List<ConnectionProfile> get() = listOf(primary) + reserves
@@ -69,6 +75,7 @@ data class ConnectionPlan(
                         ?: DEFAULT_FAILOVER,
                     probeIntervalSeconds = policy?.optInt("probe_interval_s", DEFAULT_PROBE_INTERVAL)
                         ?: DEFAULT_PROBE_INTERVAL,
+                    routing = RoutingPolicy.parse(payload.optJSONObject("routing")),
                 )
             } catch (t: Throwable) {
                 null

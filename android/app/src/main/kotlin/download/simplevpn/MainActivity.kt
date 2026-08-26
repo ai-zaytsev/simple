@@ -40,6 +40,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Somebody is looking at the application, so whatever the service would
+     * have asked at its next tick, ask it now.
+     *
+     * This is the moment an answer is worth having: a person whose connection
+     * has stopped working opens the application to find out why. Shortening the
+     * timer instead would cost battery on every phone, awake or not, for the
+     * sake of the rare minute when somebody is actually watching.
+     */
+    override fun onResume() {
+        super.onResume()
+        VpnController.recheck(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {

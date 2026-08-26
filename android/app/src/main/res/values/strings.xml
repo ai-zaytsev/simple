@@ -33,6 +33,7 @@
     <string name="error_service_stopped">Сервис временно остановлен. Попробуйте позже.</string>
     <string name="error_app_too_old">Эта версия приложения больше не поддерживается. Установите новую.</string>
     <string name="error_signed_in_elsewhere">Выполнен вход на другом устройстве. Войдите заново, чтобы пользоваться VPN здесь.</string>
+    <string name="error_already_tunnelled">Эта сеть уже работает через наш VPN. Второй туннель не нужен.</string>
 
     <string name="notification_channel_name">Состояние VPN</string>
 </resources>

@@ -36,7 +36,7 @@ class TunConfigurator(private val service: VpnService) {
             .addDnsServer(XrayConfigBuilder.TUN_DNS_ADDRESS)
 
         excludeSelf(builder)
-        excludeDirectPackages(builder, policy.directPackages)
+        excludeDirectPackages(builder, policy.directApps)
 
         return try {
             builder.establish()

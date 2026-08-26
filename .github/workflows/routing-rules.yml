@@ -1,0 +1,144 @@
+name: Routing Rules
+
+# Where traffic goes, changed without anybody installing anything.
+#
+# That is the whole requirement: a route that turns out wrong - a bank that
+# refuses a foreign address, a foreign service reached from a Russian one - is
+# corrected in a minute by an operator, not in a week by a release.
+#
+# The order the rules are applied in is not editable here, and that is
+# deliberate. It is the product rule, it lives in the client, and leaving it to
+# data would let one careless row put "everything Russian goes direct" above the
+# explicit lists that exist precisely for the cases where that is wrong.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do.
+        required: true
+        default: list
+        type: choice
+        options:
+          - list
+          - add
+          - disable
+          - enable
+      kind:
+        description: Which list. Ignored for list.
+        required: false
+        default: direct_domain
+        type: choice
+        options:
+          - direct_domain
+          - direct_ip
+          - direct_app
+          - proxy_domain
+          - proxy_ip
+      value:
+        description: 'Domain (domain:example.ru), address (1.2.3.0/24) or package (ru.example.app).'
+        required: false
+        type: string
+      note:
+        description: Why. Written down so that whoever finds this row in a year can judge it.
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rules:
+    name: Routing Rules
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Check the value
+        if: inputs.action != 'list'
+        env:
+          KIND: ${{ inputs.kind }}
+          VALUE: ${{ inputs.value }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VALUE}" ]; then
+            echo "A value is required for ${KIND}."
+            exit 1
+          fi
+
+          # Checked before it reaches a statement, and checked for shape rather
+          # than for meaning: a rule that is merely wrong can be disabled in a
+          # minute, but one that breaks the engine's configuration takes the
+          # tunnel down for everybody who fetches the next plan.
+          case "${KIND}" in
+            direct_domain|proxy_domain)
+              printf '%s' "${VALUE}" | grep -qE '^(domain|full|keyword|regexp|geosite):[A-Za-z0-9.:_@^$*+?()|\\/-]+$' \
+                || { echo "A domain rule looks like domain:example.ru or geosite:name."; exit 1; } ;;
+            direct_ip|proxy_ip)
+              printf '%s' "${VALUE}" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$|^geoip:[a-z-]+$' \
+                || { echo "An address rule looks like 1.2.3.0/24 or geoip:ru."; exit 1; } ;;
+            direct_app)
+              printf '%s' "${VALUE}" | grep -qE '^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$' \
+                || { echo "An application rule is a package name, like ru.example.app."; exit 1; } ;;
+          esac
+
+          # No quote may reach the statement: everything below is interpolated.
+          printf '%s%s' "${VALUE}" "${{ inputs.note }}" | grep -q "'" \
+            && { echo "Quotes are not allowed in a value or a note."; exit 1; }
+          echo "Value accepted."
+
+      - name: Apply
+        if: inputs.action != 'list'
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ACTION: ${{ inputs.action }}
+          KIND: ${{ inputs.kind }}
+          VALUE: ${{ inputs.value }}
+          NOTE: ${{ inputs.note }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          case "${ACTION}" in
+            add)     statement="insert into routing_rules (id, kind, value, note) values (gen_random_uuid(), '${KIND}', '${VALUE}', '${NOTE} (${ACTOR})') on conflict (kind, value) do update set enabled = true, note = excluded.note, updated_at = now();" ;;
+            disable) statement="update routing_rules set enabled = false, updated_at = now() where kind = '${KIND}' and value = '${VALUE}';" ;;
+            enable)  statement="update routing_rules set enabled = true, updated_at = now() where kind = '${KIND}' and value = '${VALUE}';" ;;
+          esac
+
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -' <<SQL
+          ${statement}
+          SQL
+
+      - name: Show what a device would now be told
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          # From the database rather than from a plan, because a plan needs a
+          # device to be issued to. What matters here is the list itself.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -P pager=off -f -' > /tmp/rules.txt <<'SQL'
+          select kind, value, enabled, note
+          from routing_rules
+          order by kind, value;
+          SQL
+          cat /tmp/rules.txt
+          {
+            echo '### Routing rules'
+            echo '```'
+            cat /tmp/rules.txt
+            echo '```'
+            echo
+            echo 'Order is fixed in the client: explicit direct, explicit proxy, then Russian addresses, then the tunnel.'
+          } >> "${GITHUB_STEP_SUMMARY}"

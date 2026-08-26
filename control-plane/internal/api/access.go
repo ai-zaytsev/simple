@@ -163,3 +163,35 @@ func (s *Server) nodeUsers(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("node asked for users", "node", alias, "count", len(credentials))
 	writeJSON(w, http.StatusOK, map[string]any{"credentials": credentials})
 }
+
+// whereFrom tells a device what address it is seen from.
+//
+// It exists for one question: is this phone's network already going through
+// one of our own nodes? That happens when somebody runs this VPN on their
+// router, and building a second tunnel inside the first is at best wasteful
+// and at worst a loop. The phone cannot answer it alone - a router's tunnel is
+// invisible from the device, which sees ordinary Wi-Fi - so something outside
+// has to say what address the traffic arrives from.
+//
+// Authenticated, so this is not a free "what is my address" service for the
+// internet. Never logged and never stored: the address is told back to the
+// only party that already knows it, and goes no further.
+func (s *Server) whereFrom(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.device(w, r); !ok {
+		return
+	}
+
+	address := r.Header.Get("x-real-ip")
+	if address == "" {
+		// Nginx is expected to supply it. Saying so plainly beats returning
+		// the address of the proxy, which every device would then compare
+		// against the node list and always fail to match - a check that
+		// silently never fires.
+		s.log.Error("x-real-ip is missing; the reverse proxy is not passing it")
+		writeError(w, http.StatusServiceUnavailable, "cannot determine the address")
+		return
+	}
+
+	w.Header().Set("cache-control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"address": address})
+}

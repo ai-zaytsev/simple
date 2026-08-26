@@ -40,9 +40,33 @@ type DNS struct {
 	Servers []string `json:"servers"`
 }
 
+// Routing is the whole of what the client is told about where traffic goes.
+//
+// Five lists rather than one, because the product rule is an order and an
+// order has to survive the journey. A single list of rules with a priority
+// field would let one careless row put "everything direct" above the explicit
+// ones; separate lists make the order a property of the schema, applied the
+// same way by every client that ever reads it.
+//
+// DirectApps is not a route but an exclusion: those applications never enter
+// the tunnel at all. It is the only rule Android can enforce per application,
+// and it is the one banking applications need, because they check the address
+// they are seen from rather than the names they talk to.
 type Routing struct {
 	Profile string `json:"profile"`
-	Rules   []any  `json:"rules"`
+
+	DirectApps    []string `json:"direct_apps"`
+	DirectDomains []string `json:"direct_domains"`
+	DirectIPs     []string `json:"direct_ips"`
+	ProxyDomains  []string `json:"proxy_domains"`
+	ProxyIPs      []string `json:"proxy_ips"`
+
+	// RussiaDirect decides what happens to everything no explicit rule
+	// mentions: Russian addresses and names go straight out, the rest goes
+	// through the tunnel. A switch rather than an assumption, because the day
+	// this product serves somebody outside Russia it has to be turned off, and
+	// that day must not need a release.
+	RussiaDirect bool `json:"russia_direct"`
 }
 
 // Policy carries the numbers a client would otherwise invent for itself:
