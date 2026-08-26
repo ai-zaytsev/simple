@@ -25,21 +25,28 @@ class ConfigSource(private val context: Context) {
     private val prefs = context.getSharedPreferences(NAME, Context.MODE_PRIVATE)
     private val client = ControlPlaneClient(context)
 
-    /** Must not be called on the main thread: it may open a connection. */
+    /**
+     * Asks the server, every time.
+     *
+     * There is no freshness rule here, and that is the fix for a real failure:
+     * this used to keep a stored document for as long as the document itself
+     * said, while the caller woke on a shorter schedule of its own. The caller
+     * asked, this answered from memory, and nobody asked the server. The switch
+     * worked and took three times as long as anybody had been told.
+     *
+     * When to ask is now the caller's decision alone, taken from the interval
+     * the server states. Asking is one small request.
+     *
+     * Must not be called on the main thread: it opens a connection.
+     */
     fun current(now: Long = System.currentTimeMillis()): ServiceConfig? {
-        val stored = stored()
-
-        val fresh = stored != null && now < prefs.getLong(KEY_FETCHED_AT, 0L) +
-            stored.refreshAfterSeconds * 1000L
-        if (fresh) return stored
-
         val fetched = fetch(now)
         if (fetched != null) return fetched
 
         // Kept rather than discarded, and kept whatever its age. See above:
         // this is the difference between a switch that survives an outage and
         // one an adversary can clear by cutting a wire.
-        return stored
+        return stored()
     }
 
     private fun fetch(now: Long): ServiceConfig? {
