@@ -178,6 +178,7 @@ private fun BridgeCounters() {
         node = withContext(Dispatchers.IO) {
             when (val known = PlanSource(context).currentProfile()) {
                 is PlanSource.Result.Missing -> "node: ${known.reason}"
+                is PlanSource.Result.Revoked -> "node: this installation is not recognised"
                 is PlanSource.Result.Available -> {
                     val serverName = when (val transport = known.profile.transport) {
                         is TransportParams.VlessWsTls -> transport.serverName
