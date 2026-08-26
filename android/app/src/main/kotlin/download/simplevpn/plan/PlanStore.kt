@@ -46,10 +46,16 @@ class PlanStore(context: Context) {
     /**
      * Validates a freshly received plan and stores it as the candidate.
      *
-     * A newer plan resets the failure count, deliberately. It is a different
-     * plan and deserves its own chance: carrying the previous one's failures
-     * forward would let one bad plan poison every plan after it, which is the
-     * opposite of what this stage is for.
+     * A plan that says something different resets the failure count: it is a
+     * different plan and deserves its own chance, and carrying the previous
+     * one's failures forward would let one bad plan poison every plan after it.
+     *
+     * A plan that says the same thing does not, however new its number. The
+     * server issues a new number on every request, so two plans a second apart
+     * carry different numbers and identical instructions. Resetting on the
+     * number made the rollback inert: each retry fetched a fresh number, the
+     * count went back to zero, and the same broken plan was tried for ever.
+     * The count follows what the plan says, not which copy of it this is.
      */
     fun accept(payload: JSONObject, now: Long): Outcome {
         val plan = ConnectionPlan.parse(payload)
@@ -66,12 +72,15 @@ class PlanStore(context: Context) {
             return Outcome.Refused("plan has expired")
         }
 
+        val sameInstructions = plan.fingerprint == prefs.getString(KEY_FINGERPRINT, null)
+
         return try {
             prefs.edit()
                 .putString(KEY_PLAN, payload.toString())
                 .putLong(KEY_SEQ, plan.seq)
                 .putLong(KEY_STORED_AT, now)
-                .putInt(KEY_FAILURES, 0)
+                .putString(KEY_FINGERPRINT, plan.fingerprint)
+                .putInt(KEY_FAILURES, if (sameInstructions) candidateFailures else 0)
                 .apply()
             Outcome.Accepted
         } catch (t: Throwable) {
@@ -167,6 +176,7 @@ class PlanStore(context: Context) {
             .remove(KEY_GOOD)
             .remove(KEY_GOOD_SEQ)
             .remove(KEY_FAILURES)
+            .remove(KEY_FINGERPRINT)
             .apply()
         // The sequence number survives on purpose. Forgetting it would make
         // the client accept a replayed older plan the moment it is offered.
@@ -191,6 +201,7 @@ class PlanStore(context: Context) {
         const val KEY_GOOD = "known_good"
         const val KEY_GOOD_SEQ = "known_good_seq"
         const val KEY_FAILURES = "candidate_failures"
+        const val KEY_FINGERPRINT = "candidate_fingerprint"
         const val CLOCK_TOLERANCE_MS = 5 * 60 * 1000L
 
         /**
