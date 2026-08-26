@@ -52,6 +52,15 @@ class LibXrayEngine(private val vpnService: VpnService) : XrayEngine {
             Vpncore.setAssetDir(assets.absolutePath)
             Vpncore.setProtector(protector)
 
+            // Never on top of one that is still alive. Two engines share the
+            // local proxy port, and whichever holds it decides where traffic
+            // goes - which once sent everything to a node that had just been
+            // abandoned, through a tunnel that reported success.
+            if (queryRunning()) {
+                Log.w(TAG, "an engine is already running, stopping it first")
+                stop()
+            }
+
             // A refused configuration arrives here as a thrown exception, which
             // is how the binding reports a Go error.
             Vpncore.startEngine(configJson)
@@ -70,6 +79,21 @@ class LibXrayEngine(private val vpnService: VpnService) : XrayEngine {
         }
     }
 
+    /**
+     * Stops the engine and waits until it has actually stopped.
+     *
+     * Asking it to stop is not the same as it having stopped, and the
+     * difference showed up as one of the strangest failures in this project: a
+     * plan was rolled back, a new engine was started on a working node, and
+     * traffic still went to the address of the plan that had been abandoned.
+     * Two engines were alive at once. The old one still held the local proxy
+     * port, so everything handed to that port went out through the endpoint
+     * nobody wanted any more - a rebuild that looked complete and changed
+     * nothing.
+     *
+     * The engine is asked whether it is running rather than told. A local flag
+     * says what was requested; this says what is true.
+     */
     override fun stop() {
         try {
             Vpncore.stopEngine()
@@ -77,6 +101,23 @@ class LibXrayEngine(private val vpnService: VpnService) : XrayEngine {
             Log.w(TAG, "engine stop failed", t)
         } finally {
             running = false
+        }
+
+        val deadline = System.currentTimeMillis() + STOP_TIMEOUT_MS
+        while (queryRunning() && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(STOP_POLL_MS)
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+        }
+
+        if (queryRunning()) {
+            // Worth saying out loud rather than continuing quietly. Starting a
+            // second engine now is what produced the failure above, and a log
+            // that says so turns an inexplicable result into a named one.
+            Log.w(TAG, "engine still reports running after ${STOP_TIMEOUT_MS}ms")
         }
     }
 
@@ -90,5 +131,10 @@ class LibXrayEngine(private val vpnService: VpnService) : XrayEngine {
 
     private companion object {
         const val TAG = "LibXrayEngine"
+
+        // Long enough for an orderly shutdown, short enough that a stuck
+        // engine does not hold a reconnection for ever.
+        const val STOP_TIMEOUT_MS = 3_000L
+        const val STOP_POLL_MS = 25L
     }
 }
