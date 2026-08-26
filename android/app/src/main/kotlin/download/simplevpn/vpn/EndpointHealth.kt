@@ -1,5 +1,6 @@
 package download.simplevpn.vpn
 
+import android.util.Base64
 import android.util.Log
 import download.simplevpn.config.ConnectionProfile
 import download.simplevpn.config.TransportParams
@@ -8,7 +9,7 @@ import java.io.InputStreamReader
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.SecureRandom
-import java.util.Base64
+import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
@@ -27,9 +28,13 @@ import javax.net.ssl.SSLSocketFactory
  * the machine gone nothing answers at all. All three are now distinguishable
  * from here.
  *
- * The request sent is the one the engine itself sends. A health check with a
- * shape of its own would be a second thing to fingerprint, visible to anyone
- * watching the connection and present on no other client.
+ * The HTTP request sent is the one the engine itself sends. A health check
+ * with a shape of its own would be a second thing to fingerprint, visible to
+ * anyone watching the connection and present on no other client.
+ *
+ * The TLS handshake underneath is the platform's, which is not the same as the
+ * engine's. That is a real if small difference and it is the price of asking
+ * at all; the alternative is no failover.
  */
 class EndpointHealth(private val protect: (Socket) -> Boolean) {
 
@@ -62,22 +67,27 @@ class EndpointHealth(private val protect: (Socket) -> Boolean) {
     ): Boolean {
         var plain: Socket? = null
         return try {
-            plain = Socket()
-            protect(plain)
-            plain.connect(InetSocketAddress(profile.host, profile.port), timeoutMs)
-            plain.soTimeout = timeoutMs
+            val socket = Socket()
+            plain = socket
+            protect(socket)
+            socket.connect(InetSocketAddress(profile.host, profile.port), timeoutMs)
+            socket.soTimeout = timeoutMs
 
             val tls = SSLSocketFactory.getDefault()
-                .createSocket(plain, transport.serverName, profile.port, false) as SSLSocket
+                .createSocket(socket, transport.serverName, profile.port, false) as SSLSocket
+            tls.soTimeout = timeoutMs
 
             // The name in the handshake, exactly as the engine sends it: the
             // node is dialled by address and recognises itself by this.
+            //
+            // No ALPN is offered, deliberately. Nginx serves HTTP/2 only when a
+            // client asks for it by name, and the upgrade this check depends on
+            // exists only over HTTP/1.1 - a lesson already paid for once, when
+            // offering h2 turned a perfect handshake into a hang. Saying
+            // nothing gets HTTP/1.1 and works on every Android this build
+            // supports; naming the protocol needs API 29.
             tls.sslParameters = tls.sslParameters.apply {
-                serverNames = listOf(javax.net.ssl.SNIHostName(transport.serverName))
-                // Only what the transport speaks. Offering h2 here once made a
-                // perfect handshake end in a hang, because the upgrade that
-                // follows exists only over HTTP/1.1.
-                applicationProtocols = arrayOf("http/1.1")
+                serverNames = listOf(SNIHostName(transport.serverName))
             }
             tls.startHandshake()
 
@@ -87,7 +97,9 @@ class EndpointHealth(private val protect: (Socket) -> Boolean) {
                 append("Host: ").append(transport.hostHeader).append("\r\n")
                 append("Upgrade: websocket\r\n")
                 append("Connection: Upgrade\r\n")
-                append("Sec-WebSocket-Key: ").append(Base64.getEncoder().encodeToString(key)).append("\r\n")
+                // Android's encoder, not java.util.Base64: the latter arrived
+                // in API 26 and this build runs from 24.
+                append("Sec-WebSocket-Key: ").append(Base64.encodeToString(key, Base64.NO_WRAP)).append("\r\n")
                 append("Sec-WebSocket-Version: 13\r\n")
                 append("\r\n")
             }
