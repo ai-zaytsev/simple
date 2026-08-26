@@ -76,10 +76,9 @@ class SimpleVpnService : VpnService() {
     private val health by lazy { EndpointHealth { socket -> protect(socket) } }
     private var probeAttempts = 0
 
-    // How many times this session has rebuilt the tunnel on a different plan.
-    // Bounded, because the plan rolled back to can fail as well, and a device
-    // rebuilding for ever is worse than one that says plainly nothing works.
-    private var rollbacks = 0
+    // Set while a failed plan is being replaced, so the session log keeps the
+    // reason the previous one was abandoned.
+    private var rebuilding = false
 
     /**
      * The endpoints of the plan in use and which one is live.
@@ -161,11 +160,11 @@ class SimpleVpnService : VpnService() {
         // Cleared here and not later: everything below belongs to this attempt,
         // and a log holding two of them is worse than none.
         //
-        // Except when this attempt is a rollback. Then the reason the previous
-        // plan was abandoned is the most useful thing in the file, and wiping
-        // it would leave a log that shows a connection working and no trace of
-        // what it replaced.
-        if (rollbacks == 0) SessionLog.reset(this)
+        // Except when this attempt follows a plan that was just abandoned.
+        // Then the reason it was abandoned is the most useful thing in the
+        // file, and wiping it would leave a log showing a connection that
+        // works and no trace of what it replaced.
+        if (!rebuilding) SessionLog.reset(this)
 
         try {
             // Asked before anything is established. This is the one answer that
@@ -330,12 +329,27 @@ class SimpleVpnService : VpnService() {
      * saying plainly that nothing works.
      */
     private fun proveOrRollBack(source: PlanStore.Source) {
+        // Deliberately broad, and it is not defensive habit. This runs on a
+        // background thread, and an exception thrown here takes the process
+        // down with it: the tunnel disappears, the session log stops
+        // mid-sentence, and the person is left pressing the button again with
+        // nothing to explain why. That is what a live test showed happening.
+        try {
+            proveOrRollBackOrThrow(source)
+        } catch (t: Throwable) {
+            Log.e(TAG, "failed while proving the tunnel", t)
+            SessionLog.record(this, "unexpected failure while proving the tunnel: ${t.message}")
+            failAndStop(getString(R.string.error_unexpected))
+        }
+    }
+
+    private fun proveOrRollBackOrThrow(source: PlanStore.Source) {
         if (!engine.isRunning) return
 
         if (TunnelProof.carriesTraffic(connectTimeoutMs)) {
             SessionLog.record(this, "tunnel carries traffic")
             planSource.proved(source)
-            rollbacks = 0
+            rebuilding = false
             return
         }
 
@@ -349,22 +363,38 @@ class SimpleVpnService : VpnService() {
         // to install gets the same one.
         starts.execute { planSource.reportFailure(seq, "no traffic through the tunnel") }
 
-        if (rollbacks >= MAX_ROLLBACKS) {
-            SessionLog.record(this, "no usable plan after $rollbacks attempts")
+        // When the plan that just failed was already the fallback, there is
+        // nothing older to fall back to and rebuilding would try the same two
+        // plans for ever.
+        //
+        // Judged from what the store remembers rather than from a counter in
+        // this object, because this object does not always survive: a live test
+        // showed the process ending between attempts, and an in-memory count
+        // silently started again from zero each time - a bound that bounded
+        // nothing.
+        if (source == PlanStore.Source.KNOWN_GOOD) {
+            SessionLog.record(this, "neither the newest plan nor the last good one works")
             failAndStop(getString(R.string.error_no_working_plan))
             return
         }
-        rollbacks++
 
-        SessionLog.record(this, "trying another plan, attempt $rollbacks")
+        SessionLog.record(this, "trying another plan")
         VpnController.update(VpnConnectionState.Reconnecting)
         updateNotification(getString(R.string.status_reconnecting))
 
         // A full rebuild rather than an engine restart: a different plan can
         // name different applications to keep out of the tunnel, and that is
         // decided when the interface is built.
-        teardown()
-        starts.execute { handleStart() }
+        //
+        // Both halves run on the same thread that establishes, so a rebuild
+        // cannot overlap with the restart that a network change schedules.
+        // Overlapping them was what left an interface half torn down while
+        // another thread was building one.
+        rebuilding = true
+        starts.execute {
+            teardown()
+            handleStart()
+        }
     }
 
     /**
@@ -646,8 +676,13 @@ class SimpleVpnService : VpnService() {
             // The endpoint in hand, not a fresh request. A network that has
             // just changed is the worst moment to depend on reaching a server,
             // and after a failover the answer is already decided.
+            // Nothing to restart. This happens when a scheduled restart fires
+            // while the tunnel is being rebuilt on another plan, and it is not a
+            // failure: the rebuild will establish an interface of its own in a
+            // moment. Ending the session here would take the tunnel away from
+            // somebody whose connection was about to be restored.
             val profile = currentEndpoint ?: run {
-                failAndStop(getString(R.string.error_unexpected))
+                SessionLog.record(this, "restart arrived with no endpoint in hand, ignoring")
                 return
             }
 
@@ -706,6 +741,7 @@ class SimpleVpnService : VpnService() {
     }
 
     private fun failAndStop(reason: String) {
+        rebuilding = false
         SessionLog.record(this, "stopping after failure: " + reason)
         VpnController.update(VpnConnectionState.Failed(reason))
         teardown()
@@ -713,6 +749,7 @@ class SimpleVpnService : VpnService() {
     }
 
     private fun handleStop(finalState: VpnConnectionState) {
+        rebuilding = false
         SessionLog.record(this, "stop requested")
         VpnController.update(VpnConnectionState.Disconnecting)
         teardown()
@@ -854,9 +891,6 @@ class SimpleVpnService : VpnService() {
          * waiting in silence.
          */
         private const val MAX_PROBE_ATTEMPTS = 10
-
-        /** Two: the newest plan, then the one remembered as working. */
-        private const val MAX_ROLLBACKS = 2
 
 
         /**
