@@ -73,7 +73,10 @@ class EndpointHealth(private val protect: (Socket) -> Boolean) {
             socket.connect(InetSocketAddress(profile.host, profile.port), timeoutMs)
             socket.soTimeout = timeoutMs
 
-            val tls = SSLSocketFactory.getDefault()
+            // Cast because getDefault() is declared to return a SocketFactory,
+            // and only the SSL one can wrap a socket that is already connected.
+            val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
+            val tls = factory
                 .createSocket(socket, transport.serverName, profile.port, false) as SSLSocket
             tls.soTimeout = timeoutMs
 
