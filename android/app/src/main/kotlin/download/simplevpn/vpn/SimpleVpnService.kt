@@ -774,7 +774,13 @@ class SimpleVpnService : VpnService() {
         bridge.stop()
 
         try {
+            // Waits until the engine has actually stopped, not merely been
+            // asked to. Starting the next one on top of a live one leaves two
+            // sharing the local proxy port, and whichever holds it decides
+            // where traffic goes - which once sent everything to a node that
+            // had just been abandoned, through a tunnel reporting success.
             engine.stop()
+            SessionLog.record(this, "engine stopped")
         } catch (t: Throwable) {
             Log.w(TAG, "engine stop failed", t)
         }
