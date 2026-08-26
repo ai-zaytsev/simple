@@ -82,6 +82,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/devices", s.listDevices)
 	mux.HandleFunc("POST /v1/devices/revoke", s.revokeDevice)
 	mux.HandleFunc("POST /v1/whereami", s.whereFrom)
+	mux.HandleFunc("POST /v1/plan/failed", s.planFailed)
 	mux.HandleFunc("GET /v1/node/users", s.nodeUsers)
 	mux.HandleFunc("GET /v1/config", s.config)
 	mux.HandleFunc("GET /v1/bootstrap", s.bootstrap)

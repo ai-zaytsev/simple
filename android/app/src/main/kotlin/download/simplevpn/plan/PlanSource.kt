@@ -15,21 +15,23 @@ import download.simplevpn.config.ConnectionProfile
  * device cut off while holding a plan that still looked good would connect on
  * a credential no node accepts, report success, and carry nothing.
  *
- * If the answer is signed, newer and unexpired, it replaces what was stored.
+ * If the answer is signed, newer and unexpired, it becomes the candidate.
  *
- * If the request fails, the stored plan is used, fresh or stale. This is the
+ * Which plan is then used is not necessarily that one. A candidate is a
+ * proposal until it has been shown to carry traffic; one that cannot is
+ * abandoned for the last plan that could. That is what keeps a mistake in
+ * settings from breaking the product for everybody at once, and it happens
+ * without anybody pressing anything.
+ *
+ * If the request fails, what is stored is used, fresh or stale. This is the
  * grace period from remote-config.md, and it is what keeps a briefly
  * unreachable Control Plane from disconnecting everyone who is already
  * working. Asking first does not put the Control Plane on the critical path,
  * because failing to reach it changes nothing about the outcome.
  *
  * If the server answers that it does not know this device, that is final and
- * the stored plan is not reached for. Somebody has signed in elsewhere, or this
+ * nothing stored is reached for. Somebody has signed in elsewhere, or this
  * device was cut off; retrying cannot change it.
- *
- * Only when there is nothing stored and nothing can be fetched does the client
- * say it has no endpoint, which is true and is better than failing obscurely
- * later.
  */
 class PlanSource(private val context: Context) {
 
@@ -44,11 +46,11 @@ class PlanSource(private val context: Context) {
         /**
          * The server no longer knows this installation.
          *
-         * Separate from [Missing] because the stored plan must not be used to
-         * paper over it. A revoked device still holds a plan that looks
-         * perfectly good and a credential no node will accept: connecting on it
-         * would produce a tunnel that carries nothing and an explanation
-         * nobody can find.
+         * Separate from [Missing] because nothing stored must be used to paper
+         * over it. A revoked device still holds a plan that looks perfectly
+         * good and a credential no node will accept: connecting on it would
+         * produce a tunnel that carries nothing and an explanation nobody can
+         * find.
          */
         data object Revoked : Result
     }
@@ -58,37 +60,43 @@ class PlanSource(private val context: Context) {
 
     /** Must not be called on the main thread: it may open a connection. */
     fun currentProfile(now: Long = System.currentTimeMillis()): Result {
-        val stored = store.stored()
+        val refreshed = refresh(now)
+        if (refreshed == Refresh.REVOKED) return Result.Revoked
 
-        // Asked every time, and the stored plan is what happens when asking
-        // fails - not what happens instead of asking.
-        //
-        // The difference matters because a device can be cut off while holding
-        // a plan that still looks perfectly good. Not asking would let it
-        // connect on a credential no node accepts: a tunnel that reports
-        // success and carries nothing, with the explanation sitting unread on
-        // the server. The grace period below is untouched; the Control Plane
-        // is still not on the critical path when it cannot be reached.
-        when (val fetched = fetch(now)) {
-            is Result.Available -> return fetched
+        val choice = store.bestToTry()
+        val plan = choice.plan
+            ?: return Result.Missing("no endpoint and the control plane cannot be reached")
 
-            // Final, so the stored plan is not reached for. See Revoked.
-            is Result.Revoked -> return Result.Revoked
+        val reachedServer = refreshed == Refresh.UPDATED || refreshed == Refresh.UNCHANGED
+        val source = when {
+            choice.source == PlanStore.Source.KNOWN_GOOD ->
+                "last plan known to work, after ${store.candidateFailures} failed attempts on the newest"
 
-            is Result.Missing -> Log.i(TAG, "could not refresh: ${fetched.reason}")
+            refreshed == Refresh.UPDATED -> "fresh plan"
+            reachedServer -> "stored plan"
+            else -> "stored plan, control plane unreachable"
         }
 
-        if (stored != null) {
-            // The server cannot be reached. Using what is stored is the lesser
-            // failure: the nodes it names are probably still there, and the
-            // alternative is disconnecting somebody over a server outage that
-            // has nothing to do with them.
-            val age = if (now < stored.expiresAt) "stored plan" else "expired plan"
-            return Result.Available(stored, stored.primary, "$age, control plane unreachable")
-        }
-
-        return Result.Missing("no endpoint and the control plane cannot be reached")
+        return Result.Available(plan, plan.primary, source)
     }
+
+    /** Which of the two plans the last connection used. */
+    fun sourceInUse(): PlanStore.Source = store.bestToTry().source
+
+    /** Records that the plan in use carried traffic. */
+    fun proved(source: PlanStore.Source) = store.proved(source)
+
+    /**
+     * Records that it did not.
+     *
+     * Which plan failed decides what happens next, and the difference matters:
+     * a candidate that fails is rolled back from, a known good one that fails
+     * is forgotten. See PlanStore.failed.
+     */
+    fun failed(source: PlanStore.Source) = store.failed(source)
+
+    /** The number of the plan currently proposed, for reporting a bad one. */
+    fun candidateSeq(): Long = store.lastSeq
 
     /**
      * What address this device is seen from, or null when nobody could say.
@@ -122,11 +130,21 @@ class PlanSource(private val context: Context) {
         is ControlPlaneClient.Result.Failed -> Standing.UNREACHABLE
     }
 
-    private fun fetch(now: Long): Result {
+    /** Tells the server a plan did not work, so somebody can look at it. */
+    fun reportFailure(seq: Long, reason: String) {
+        client.reportPlanFailure(seq, reason)
+    }
+
+    private enum class Refresh { UPDATED, UNCHANGED, UNREACHABLE, REVOKED }
+
+    private fun refresh(now: Long): Refresh {
         val response = when (val answer = client.requestPlan()) {
             is ControlPlaneClient.Result.Received -> answer.envelopeJson
-            is ControlPlaneClient.Result.Revoked -> return Result.Revoked
-            is ControlPlaneClient.Result.Failed -> return Result.Missing(answer.reason)
+            is ControlPlaneClient.Result.Revoked -> return Refresh.REVOKED
+            is ControlPlaneClient.Result.Failed -> {
+                Log.i(TAG, "could not refresh: ${answer.reason}")
+                return Refresh.UNREACHABLE
+            }
         }
 
         // Signature first, always. Everything below this line trusts the
@@ -135,16 +153,16 @@ class PlanSource(private val context: Context) {
             is SignedDocument.Result.Trusted -> opened.payload
             is SignedDocument.Result.Rejected -> {
                 Log.w(TAG, "document rejected: ${opened.reason}")
-                return Result.Missing(opened.reason)
+                return Refresh.UNREACHABLE
             }
         }
 
         return when (val outcome = store.accept(payload, now)) {
-            is PlanStore.Outcome.Accepted ->
-                store.stored()?.let { Result.Available(it, it.primary, "fresh plan") }
-                    ?: Result.Missing("plan stored but unreadable")
-
-            is PlanStore.Outcome.Refused -> Result.Missing(outcome.reason)
+            is PlanStore.Outcome.Accepted -> Refresh.UPDATED
+            is PlanStore.Outcome.Refused -> {
+                Log.i(TAG, "plan not taken: ${outcome.reason}")
+                Refresh.UNCHANGED
+            }
         }
     }
 

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -195,3 +196,48 @@ func (s *Server) whereFrom(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("cache-control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"address": address})
 }
+
+type planFailureReport struct {
+	Seq    int64  `json:"seq"`
+	Reason string `json:"reason"`
+}
+
+// planFailed records that a plan did not work on somebody's device.
+//
+// Rolling back on the device is only half of not breaking the product for
+// everybody: without this, a plan that fails in the field fails silently, and
+// the next person to install gets the same one. This is how an operator finds
+// out, and it is the only signal that exists for it.
+//
+// A number and a reason. The user key is derived and irreversible, so the same
+// device failing repeatedly is visible as one device without anybody being
+// identifiable from the log.
+func (s *Server) planFailed(w http.ResponseWriter, r *http.Request) {
+	device, ok := s.device(w, r)
+	if !ok {
+		return
+	}
+
+	var report planFailureReport
+	if err := decode(w, r, &report); err != nil {
+		writeError(w, http.StatusBadRequest, "request could not be read")
+		return
+	}
+
+	// Trimmed, because it is written by a client and ends up in a log. A
+	// reason long enough to bury the rest of a line is a reason that hides
+	// what it was supposed to reveal.
+	reason := report.Reason
+	if len(reason) > maxReasonLength {
+		reason = reason[:maxReasonLength]
+	}
+
+	s.log.Warn("plan did not work",
+		"user", s.analytics.ID(device.AccountID, time.Now().UTC()),
+		"plan_seq", report.Seq,
+		"reason", reason)
+
+	writeJSON(w, http.StatusOK, map[string]any{"recorded": true})
+}
+
+const maxReasonLength = 200

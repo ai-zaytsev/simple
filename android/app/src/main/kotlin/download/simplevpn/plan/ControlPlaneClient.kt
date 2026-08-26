@@ -99,6 +99,26 @@ class ControlPlaneClient(private val context: Context) {
         }
     }
 
+    /**
+     * Tells the server that a plan did not work.
+     *
+     * The whole point of the stage is that our mistake must not break the
+     * product for everybody, and rolling back on the device is only half of
+     * that: somebody has to learn a plan is failing in the field, or the next
+     * person to install gets the same one.
+     *
+     * Carries a number and a reason and nothing else. What went wrong is
+     * useful; who it went wrong for is not.
+     */
+    fun reportPlanFailure(seq: Long, reason: String) {
+        val token = accounts.deviceToken ?: return
+        val body = org.json.JSONObject()
+            .put("seq", seq)
+            .put("reason", reason)
+            .toString()
+        post(ControlPlane.BASE_URL + "/v1/plan/failed", body, token)
+    }
+
     private fun get(url: String): Result {
         var connection: HttpURLConnection? = null
         return try {
