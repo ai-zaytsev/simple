@@ -81,6 +81,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/plan", s.plan)
 	mux.HandleFunc("POST /v1/devices", s.listDevices)
 	mux.HandleFunc("POST /v1/devices/revoke", s.revokeDevice)
+	mux.HandleFunc("POST /v1/whereami", s.whereFrom)
 	mux.HandleFunc("GET /v1/node/users", s.nodeUsers)
 	mux.HandleFunc("GET /v1/config", s.config)
 	mux.HandleFunc("GET /v1/bootstrap", s.bootstrap)
@@ -134,6 +135,16 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Where traffic goes, decided here and not by the client. A client that
+	// chose its own routes would be a client whose wrong route needs a release
+	// to correct.
+	routing, err := s.store.LoadRouting(ctx)
+	if err != nil {
+		s.log.Error("cannot read routing rules", "error", err)
+		writeError(w, http.StatusInternalServerError, "cannot issue a plan")
+		return
+	}
+
 	// This device's own way in, on every node it might be sent to. One device
 	// cut off leaves the rest untouched, and a credential taken off one phone
 	// is that phone's alone.
@@ -172,7 +183,7 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 			Mode:    "tunnel",
 			Servers: []string{"https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"},
 		},
-		Routing: document.Routing{Profile: "default-ru", Rules: []any{}},
+		Routing: routing,
 		Policy: document.Policy{
 			ConnectTimeoutMS:     8000,
 			FailoverAfterFailure: 2,

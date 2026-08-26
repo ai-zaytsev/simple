@@ -90,6 +90,16 @@ class PlanSource(private val context: Context) {
         return Result.Missing("no endpoint and the control plane cannot be reached")
     }
 
+    /**
+     * What address this device is seen from, or null when nobody could say.
+     *
+     * The one question a phone cannot answer about itself, and the only way to
+     * notice that its network already runs through one of our nodes.
+     *
+     * Must not be called on the main thread: it opens a connection.
+     */
+    fun seenFrom(): String? = client.whereFrom()
+
     /** What the server says about this installation still being known. */
     enum class Standing { KNOWN, REVOKED, UNREACHABLE }
 

@@ -80,6 +80,25 @@ class ControlPlaneClient(private val context: Context) {
         return post(ControlPlane.BASE_URL + "/v1/devices", "{}", token)
     }
 
+    /**
+     * Asks what address this device is seen from.
+     *
+     * The one question a phone cannot answer about itself. Used to notice that
+     * the network already runs through one of our nodes, which is what a
+     * router running this VPN looks like from the inside: nothing at all.
+     */
+    fun whereFrom(): String? {
+        val token = accounts.deviceToken ?: return null
+        val answer = post(ControlPlane.BASE_URL + "/v1/whereami", "{}", token)
+        if (answer !is Result.Received) return null
+        return try {
+            org.json.JSONObject(answer.envelopeJson).optString("address").ifBlank { null }
+        } catch (t: Throwable) {
+            Log.w(TAG, "cannot read the address", t)
+            null
+        }
+    }
+
     private fun get(url: String): Result {
         var connection: HttpURLConnection? = null
         return try {
