@@ -61,7 +61,18 @@ fun SignInScreen(onSignedIn: (accountId: String) -> Unit) {
 
     var email by remember { mutableStateOf(resumed?.email ?: "") }
     var attemptId by remember { mutableStateOf(resumed?.id) }
-    var message by remember { mutableStateOf<String?>(null) }
+    // Why this screen is showing again, when it is showing again because
+    // somebody signed in elsewhere. Read once: seeing it a second time would
+    // mean explaining something that has already been dealt with.
+    var message by remember {
+        mutableStateOf<String?>(
+            if (accounts.takeSignedOutNotice()) {
+                context.getString(R.string.error_signed_in_elsewhere)
+            } else {
+                null
+            },
+        )
+    }
     var busy by remember { mutableStateOf(false) }
     var resendIn by remember { mutableStateOf(0) }
 

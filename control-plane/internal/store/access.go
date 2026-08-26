@@ -221,3 +221,69 @@ func (s *Store) SetNodeToken(ctx context.Context, alias string, hash []byte) err
 	}
 	return nil
 }
+
+// evictBeyondLimit cuts off the oldest devices when an account has more than
+// its tier allows.
+//
+// Oldest by when their access was granted, and the device that has just signed
+// in is never among them: a person who signs in has said which device they
+// mean, and taking that one away would make signing in do the opposite of what
+// it looks like.
+//
+// Both halves go, exactly as a deliberate revocation does. Leaving the token
+// would let a cut-off device ask for a plan and be handed a fresh credential;
+// leaving the credential would let it keep connecting with the one it has.
+func evictBeyondLimit(ctx context.Context, tx pgx.Tx, accountID, keep uuid.UUID) ([]uuid.UUID, error) {
+	var limit int
+	err := tx.QueryRow(ctx, `
+		select l.max_devices
+		from accounts a join tier_limits l on l.tier = a.tier
+		where a.id = $1`, accountID).Scan(&limit)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read the device limit: %w", err)
+	}
+
+	rows, err := tx.Query(ctx, `
+		select c.device_id
+		from device_credentials c
+		join devices d on d.id = c.device_id
+		where d.account_id = $1
+		  and c.state = 'ACTIVE'
+		  and c.device_id <> $2
+		order by c.created_at desc
+		offset $3`, accountID, keep, limit-1)
+	if err != nil {
+		return nil, fmt.Errorf("cannot find devices over the limit: %w", err)
+	}
+
+	var over []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("cannot read a device over the limit: %w", err)
+		}
+		over = append(over, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("cannot finish reading devices: %w", err)
+	}
+	if len(over) == 0 {
+		return nil, nil
+	}
+
+	if _, err := tx.Exec(ctx, `
+		update device_credentials
+		set state = 'REVOKED', revoked_at = now(), updated_seq = next_seq('credentials')
+		where device_id = any($1) and state = 'ACTIVE'`, over); err != nil {
+		return nil, fmt.Errorf("cannot revoke a credential: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`update devices set token_hash = null where id = any($1)`, over); err != nil {
+		return nil, fmt.Errorf("cannot clear a device token: %w", err)
+	}
+
+	return over, nil
+}

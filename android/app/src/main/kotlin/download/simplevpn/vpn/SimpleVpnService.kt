@@ -26,7 +26,9 @@ import download.simplevpn.net.NetworkMonitor
 import download.simplevpn.config.ConnectionProfile
 import download.simplevpn.plan.ConfigSource
 import download.simplevpn.plan.EndpointChoice
+import download.simplevpn.auth.AccountStore
 import download.simplevpn.plan.PlanSource
+import download.simplevpn.plan.PlanStore
 import download.simplevpn.plan.ServiceConfig
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -160,6 +162,10 @@ class SimpleVpnService : VpnService() {
             // whole point of the stage: the endpoint can change on the server
             // without anybody installing anything.
             val planResult = planSource.currentProfile()
+            if (planResult is PlanSource.Result.Revoked) {
+                signOutAndStop()
+                return
+            }
             if (planResult is PlanSource.Result.Missing) {
                 SessionLog.record(this, "no endpoint: ${planResult.reason}")
                 failAndStop(planResult.reason)
@@ -356,6 +362,25 @@ class SimpleVpnService : VpnService() {
     }
 
     /**
+     * Ends the session because this installation is no longer recognised.
+     *
+     * Everything about being signed in goes, because none of it works any more:
+     * the secret is not one the server knows, and the stored plan names a
+     * credential no node will accept. Leaving either behind would produce an
+     * application that looks signed in and fails at every turn.
+     *
+     * The reason is written down rather than shown from here, because by the
+     * time anybody reads it this screen is gone and the sign-in screen has
+     * taken its place. It is shown there.
+     */
+    private fun signOutAndStop() {
+        SessionLog.record(this, "this installation is no longer recognised, signing out")
+        AccountStore(this).signedOutElsewhere()
+        PlanStore(this).clear()
+        failAndStop(getString(R.string.error_signed_in_elsewhere))
+    }
+
+    /**
      * Asks whether the service has been stopped since this connection began.
      *
      * The next question is scheduled by the answer to this one, and by nothing
@@ -369,10 +394,19 @@ class SimpleVpnService : VpnService() {
         if (!engine.isRunning) return
 
         starts.execute {
+            // Two questions on one rhythm: is the service running, and is
+            // this device still one the server knows. They are asked together
+            // because they are the two ways a running connection can become
+            // one that should not continue.
+            val standing = planSource.standing()
             val config = configSource.current()
 
             watchHandler.post {
                 if (!engine.isRunning) return@post
+                if (standing == PlanSource.Standing.REVOKED) {
+                    signOutAndStop()
+                    return@post
+                }
                 if (config != null) {
                     configRefreshMs = config.refreshAfterSeconds * 1000L
                     SessionLog.record(

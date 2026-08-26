@@ -40,6 +40,29 @@ class AccountStore(context: Context) {
         prefs.edit().remove(KEY_ACCOUNT).remove(KEY_TOKEN).apply()
     }
 
+    /**
+     * Signed out because somebody signed in somewhere else.
+     *
+     * The reason is kept for one reading. It is discovered by a background
+     * service, at a moment when the screen that could show it does not exist
+     * yet; without somewhere to leave it, the person would arrive at the
+     * sign-in screen with no idea why.
+     */
+    fun signedOutElsewhere() {
+        prefs.edit()
+            .remove(KEY_ACCOUNT)
+            .remove(KEY_TOKEN)
+            .putBoolean(KEY_NOTICE, true)
+            .apply()
+    }
+
+    /** Reads the reason once, and forgets it. */
+    fun takeSignedOutNotice(): Boolean {
+        val notice = prefs.getBoolean(KEY_NOTICE, false)
+        if (notice) prefs.edit().remove(KEY_NOTICE).apply()
+        return notice
+    }
+
     /** A sign-in that has been started and is waiting for somebody to follow a link. */
     data class Pending(val id: String, val email: String)
 
@@ -77,6 +100,7 @@ class AccountStore(context: Context) {
         const val NAME = "account"
         const val KEY_ACCOUNT = "account_id"
         const val KEY_TOKEN = "device_token"
+        const val KEY_NOTICE = "signed_out_elsewhere"
         const val KEY_PENDING_ID = "pending_attempt_id"
         const val KEY_PENDING_EMAIL = "pending_email"
     }

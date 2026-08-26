@@ -16,6 +16,30 @@ android {
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        getByName("debug") {
+            // The same key on every build, when CI supplies one.
+            //
+            // Gradle's default is a keystore generated on the spot, which on a
+            // fresh build machine means a different key each time. Android
+            // then refuses to install the new APK over the old one, a tester
+            // uninstalls to get past it, and uninstalling wipes the app data -
+            // where the identity of the installation lives. Six devices
+            // accumulated on one account that way, and it looked like the
+            // identity model was wrong when it was the build.
+            //
+            // Absent, the local default applies, so a developer machine builds
+            // as before.
+            System.getenv("DEBUG_KEYSTORE")?.let { path ->
+                storeFile = file(path)
+                storeType = "PKCS12"
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
