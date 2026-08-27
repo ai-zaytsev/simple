@@ -248,20 +248,42 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 	s.issue(w, ctx, "config", "config", seq, cfg)
 }
 
+// bootstrap says every way this service can be reached.
+//
+// The one document that has to survive its own subject being blocked, which is
+// why it is served here, mirrored outside our infrastructure, and signed. The
+// signature is what makes an untrusted mirror acceptable: its contents cannot
+// be altered, only made unavailable.
 func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// Read before a number is taken, so a failure does not consume one. A
+	// client that saw a higher number refuses everything below it afterwards,
+	// including the descriptor we failed to build.
+	entries, err := s.store.LoadBootstrapEntries(ctx)
+	if err != nil {
+		s.log.Error("cannot read bootstrap entries", "error", err)
+		writeError(w, http.StatusInternalServerError, "cannot issue a descriptor")
+		return
+	}
+
+	if len(entries) == 0 {
+		// Falling back to the configured host is better than issuing a
+		// descriptor with no way in at all, which every client would then
+		// store and be unable to replace.
+		for _, host := range s.bootstrapHosts {
+			entries = append(entries, document.BootstrapEntry{
+				Kind: "https-direct", Host: host, Port: 443, Weight: 100,
+			})
+		}
+		s.log.Warn("no bootstrap entries configured, falling back to the host in the environment")
+	}
+
 	seq, err := s.store.NextSeq(ctx, "bootstrap")
 	if err != nil {
 		s.log.Error("cannot advance the sequence", "error", err)
 		writeError(w, http.StatusInternalServerError, "cannot issue a descriptor")
 		return
-	}
-
-	entries := make([]document.BootstrapEntry, 0, len(s.bootstrapHosts))
-	for _, host := range s.bootstrapHosts {
-		entries = append(entries, document.BootstrapEntry{
-			Kind: "https-direct", Host: host, Weight: 100,
-		})
 	}
 
 	now := time.Now().UTC()

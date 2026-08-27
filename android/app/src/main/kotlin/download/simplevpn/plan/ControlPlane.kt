@@ -1,18 +1,21 @@
 package download.simplevpn.plan
 
 /**
- * The one address compiled into the build.
+ * The canonical name of this service.
  *
- * A name rather than an address, and that is what makes the service movable:
- * putting it on another machine is a DNS change, not an update to every
- * installation.
+ * No longer the only way to reach it - that is what [Entry] and [EntryBook] are
+ * for, and a single address was the single point of recovery this product may
+ * not have. What remains here is the name the service calls itself, used where
+ * a name is wanted rather than a way in: the certificate to expect, and a
+ * destination for the request that proves a tunnel carries traffic.
  *
- * A name works here and would not work for a node. This is reached before any
- * tunnel exists, over the phone's ordinary network, where the system resolver
+ * A name works for that and would not work for a node. It is reached over the
+ * phone's ordinary network or through an established tunnel, where a resolver
  * behaves normally. A node is dialled by the engine while the tunnel is being
- * established, when the resolver already points inside a tunnel that is not up
- * yet - which is why ADR-028 requires node addresses to be numeric.
+ * built, when the resolver already points inside a tunnel that is not up yet -
+ * which is why ADR-028 requires node addresses to be numeric.
  */
 object ControlPlane {
-    const val BASE_URL = "https://simple-syncbridge.download"
+    const val NAME = "simple-syncbridge.download"
+    const val BASE_URL = "https://$NAME"
 }

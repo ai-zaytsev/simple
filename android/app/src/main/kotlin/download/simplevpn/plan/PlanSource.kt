@@ -57,10 +57,12 @@ class PlanSource(private val context: Context) {
 
     private val store = PlanStore(context)
     private val client = ControlPlaneClient(context)
+    private val book = EntryBook(context)
 
     /** Must not be called on the main thread: it may open a connection. */
     fun currentProfile(now: Long = System.currentTimeMillis()): Result {
         val refreshed = refresh(now)
+        lastAskReachedServer = refreshed != Refresh.UNREACHABLE
         if (refreshed == Refresh.REVOKED) return Result.Revoked
 
         val choice = store.bestToTry()
@@ -135,6 +137,89 @@ class PlanSource(private val context: Context) {
         client.reportPlanFailure(seq, reason)
     }
 
+    /** Whether the last attempt to ask actually reached the service. */
+    
+    var lastAskReachedServer: Boolean = false
+        private set
+
+    /**
+     * Asks again from inside the tunnel, and takes whatever it learns.
+     *
+     * The recovery channel of last resort for a device that still works. Every
+     * public way in is blocked, but the plan it is connected on is a way
+     * through the block, so it asks from the inside - and what comes back is
+     * the new list of ways in. The next connection needs no tunnel to reach
+     * the service, and nobody installed anything.
+     *
+     * Both documents, in that order: the list of ways in first, because it is
+     * what makes the next attempt possible even if everything else fails, and
+     * the plan second, because it is what makes this attempt last.
+     *
+     * Must not be called on the main thread: it opens connections.
+     */
+    fun recoverThroughTunnel(proxy: java.net.Proxy, now: Long = System.currentTimeMillis()): Boolean {
+        val inside = ControlPlaneClient(context, proxy)
+
+        var learned = false
+        if (acceptBootstrap(inside.requestBootstrap())) learned = true
+
+        when (val answer = inside.requestPlan()) {
+            is ControlPlaneClient.Result.Received -> {
+                val payload = when (val opened = SignedDocument.open(answer.envelopeJson)) {
+                    is SignedDocument.Result.Trusted -> opened.payload
+                    is SignedDocument.Result.Rejected -> {
+                        Log.w(TAG, "plan through the tunnel rejected: ${opened.reason}")
+                        null
+                    }
+                }
+                if (payload != null && store.accept(payload, now) is PlanStore.Outcome.Accepted) {
+                    learned = true
+                }
+            }
+
+            else -> Log.i(TAG, "no plan through the tunnel either")
+        }
+
+        return learned
+    }
+
+    /**
+     * Fetches the list of ways in, and falls back to a mirror when none of
+     * them answers.
+     *
+     * The mirror is not ours, and that is the point: an installation that has
+     * never connected has no plan and so no tunnel, and would otherwise have
+     * no way of learning anything while the ordinary ways in are blocked.
+     *
+     * The signature is checked identically whatever the source. That is what
+     * makes somebody else's server an acceptable place to keep this: it can
+     * withhold the document or serve an old one, and the sequence rule catches
+     * the second, but it cannot change a word.
+     */
+    fun refreshEntries(): Boolean {
+        if (acceptBootstrap(client.requestBootstrap())) return true
+
+        val mirrored = RescueMirror.fetch(MIRROR_TIMEOUT_MS) ?: return false
+        Log.i(TAG, "descriptor came from a mirror")
+        return acceptBootstrap(ControlPlaneClient.Result.Received(mirrored))
+    }
+
+    private fun acceptBootstrap(answer: ControlPlaneClient.Result): Boolean {
+        val envelope = (answer as? ControlPlaneClient.Result.Received)?.envelopeJson ?: return false
+
+        // Signature first, as with every document. It is what makes an
+        // untrusted mirror an acceptable place to keep this one: its contents
+        // cannot be altered, only made unavailable.
+        val payload = when (val opened = SignedDocument.open(envelope)) {
+            is SignedDocument.Result.Trusted -> opened.payload
+            is SignedDocument.Result.Rejected -> {
+                Log.w(TAG, "descriptor rejected: ${opened.reason}")
+                return false
+            }
+        }
+        return book.accept(payload)
+    }
+
     private enum class Refresh { UPDATED, UNCHANGED, UNREACHABLE, REVOKED }
 
     private fun refresh(now: Long): Refresh {
@@ -168,5 +253,10 @@ class PlanSource(private val context: Context) {
 
     private companion object {
         const val TAG = "PlanSource"
+
+        // Longer than an ordinary attempt: by the time a mirror is asked,
+        // every quick way in has already failed and there is nothing left to
+        // be quick for.
+        const val MIRROR_TIMEOUT_MS = 15_000
     }
 }

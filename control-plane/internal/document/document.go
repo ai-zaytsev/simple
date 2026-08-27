@@ -125,11 +125,41 @@ type KillSwitch struct {
 }
 
 // BootstrapEntry is one way of reaching the Control Plane.
+// BootstrapEntry is one way of reaching this service.
+//
+// Several, because one is a single point of recovery and the whole purpose of
+// this document is not to have one. They differ deliberately: by name, by
+// address, by machine, by provider and by country, so that whatever takes one
+// away is unlikely to take the next.
+//
+// The contents are public by construction - an adversary will read this
+// document. Its value is not secrecy but the speed with which entries can be
+// replaced, which is why it is signed rather than hidden.
 type BootstrapEntry struct {
-	Kind   string `json:"kind"`
-	Host   string `json:"host"`
-	Port   int    `json:"port,omitempty"`
-	Weight int    `json:"weight"`
+	// Kind is how to use Host.
+	//
+	//   https-direct  a name, resolved normally
+	//   https-ip      an address, with ServerName carried in the handshake;
+	//                 this one needs no resolver at all and so survives a
+	//                 poisoned or blocked one
+	//   https-edge    a node that forwards the API inward; a different
+	//                 machine, provider, country and registrar from the
+	//                 service itself
+	Kind string `json:"kind"`
+
+	Host string `json:"host"`
+	Port int    `json:"port,omitempty"`
+
+	// ServerName is the name to present in the handshake when Host is an
+	// address, and the path prefix is where an edge forwards from. Both are
+	// empty for a plain name.
+	ServerName string `json:"server_name,omitempty"`
+	PathPrefix string `json:"path_prefix,omitempty"`
+
+	// Weight orders the attempts. Random within weights rather than fixed:
+	// one order for every client is a signature, and it puts the whole
+	// installed base on whichever entry happens to be first.
+	Weight int `json:"weight"`
 }
 
 // Bootstrap is the list of entry points, and is the mechanism by which the
