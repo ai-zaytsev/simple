@@ -1,0 +1,60 @@
+name: Tidy Go Modules
+
+# Writes down which versions a Go module actually uses.
+#
+# Without this the module file lists only what somebody remembered to add, and
+# anything else is resolved to whatever is newest at build time. Two builds of
+# the same commit then differ, which is the thing every pinned version in this
+# repository exists to prevent - and it fails silently, because a build that
+# resolves something newer still succeeds.
+#
+# Pushes to the branch it ran on. It cannot reach the default branch, which is
+# protected, so the result arrives the same way every other change does.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tidy:
+    name: Tidy Go Modules
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Tidy
+        working-directory: control-plane
+        run: |
+          set -euo pipefail
+          go mod tidy
+          echo "Modules now recorded:"
+          grep -E "^\s+[a-z]" go.mod | sed 's/^/  /'
+
+      - name: Commit if anything changed
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- control-plane/go.mod control-plane/go.sum; then
+            echo "Already tidy. Nothing to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add control-plane/go.mod control-plane/go.sum
+          git commit -qm "Record the versions this module actually uses
+
+          Written by the tidy workflow. Without these lines the versions are
+          resolved at build time, so two builds of one commit can differ."
+          git push -q origin "HEAD:${GITHUB_REF_NAME}"
+          echo "Recorded and pushed to ${GITHUB_REF_NAME}."

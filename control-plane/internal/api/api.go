@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"download.simplevpn/control-plane/internal/analytics"
+	"download.simplevpn/control-plane/internal/certs"
 	"download.simplevpn/control-plane/internal/document"
 	"download.simplevpn/control-plane/internal/mail"
 	"download.simplevpn/control-plane/internal/signing"
@@ -46,6 +47,11 @@ type Server struct {
 	// analytics turns an account into the only user key measurement may hold.
 	// Kept here so that no handler is ever tempted to log an account instead.
 	analytics *analytics.Deriver
+
+	// certs signs what a node asks for, without ever holding what a node keeps.
+	// Nil when no account key is configured, which is a service that cannot
+	// issue rather than one that issues badly.
+	certs *certs.Issuer
 }
 
 func New(
@@ -56,6 +62,7 @@ func New(
 	sender *mail.Sender,
 	baseURL string,
 	deriver *analytics.Deriver,
+	issuer *certs.Issuer,
 	log *slog.Logger,
 ) *Server {
 	return &Server{
@@ -66,6 +73,7 @@ func New(
 		mail:           sender,
 		baseURL:        baseURL,
 		analytics:      deriver,
+		certs:          issuer,
 		log:            log,
 	}
 }
@@ -84,6 +92,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/whereami", s.whereFrom)
 	mux.HandleFunc("POST /v1/plan/failed", s.planFailed)
 	mux.HandleFunc("GET /v1/node/users", s.nodeUsers)
+	mux.HandleFunc("POST /v1/node/certificate", s.nodeCertificate)
 	mux.HandleFunc("GET /v1/config", s.config)
 	mux.HandleFunc("GET /v1/bootstrap", s.bootstrap)
 	return mux

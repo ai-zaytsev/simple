@@ -20,6 +20,8 @@ import (
 
 	"download.simplevpn/control-plane/internal/analytics"
 	"download.simplevpn/control-plane/internal/api"
+	"download.simplevpn/control-plane/internal/certs"
+	"download.simplevpn/control-plane/internal/dnsedit"
 	"download.simplevpn/control-plane/internal/mail"
 	"download.simplevpn/control-plane/internal/signing"
 	"download.simplevpn/control-plane/internal/store"
@@ -112,6 +114,26 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("CP_ANALYTICS_KEY: %w", err)
 	}
 
+	// Certificates are issued centrally so that a node never holds a key to
+	// our DNS. Optional rather than required: a service that cannot issue is
+	// still a service, and refusing to start would turn a missing token into
+	// an outage of everything else.
+	var issuer *certs.Issuer
+	if accountKey := os.Getenv("CP_ACME_KEY"); accountKey != "" {
+		editor := dnsedit.New(
+			os.Getenv("CP_DNS_CLOUDFLARE_TOKEN"),
+			os.Getenv("CP_DNS_SPACESHIP_KEY"),
+			os.Getenv("CP_DNS_SPACESHIP_SECRET"),
+		)
+		issuer, err = certs.New(accountKey, os.Getenv("CP_ACME_DIRECTORY"), editor, log)
+		if err != nil {
+			return fmt.Errorf("CP_ACME_KEY: %w", err)
+		}
+		log.Info("certificate issuance is available")
+	} else {
+		log.Warn("no ACME account key; nodes cannot be issued certificates")
+	}
+
 	signer, err := signing.NewSigner(keyID, seed)
 	if err != nil {
 		return err
@@ -142,7 +164,7 @@ func run(log *slog.Logger) error {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           api.New(st, signer, cleaned, planTTL, sender, baseURL, deriver, log).Routes(),
+		Handler:           api.New(st, signer, cleaned, planTTL, sender, baseURL, deriver, issuer, log).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

@@ -82,6 +82,10 @@ jobs:
           BREVO_KEY: ${{ secrets.BREVO_API_KEY }}
           MAIL_FROM: ${{ secrets.BREVO_SENDER_EMAIL }}
           ANALYTICS_KEY: ${{ secrets.CP_ANALYTICS_KEY }}
+          ACME_KEY: ${{ secrets.CP_ACME_KEY }}
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SS_KEY: ${{ secrets.SPACESHIP_API_KEY }}
+          SS_SECRET: ${{ secrets.SPACESHIP_API_SECRET }}
         run: |
           set -euo pipefail
           if [ "${SLOT}" = "a" ]; then
@@ -107,6 +111,10 @@ jobs:
           CP_MAIL_FROM=${MAIL_FROM}
           CP_BASE_URL=https://simple-syncbridge.download
           CP_ANALYTICS_KEY=${ANALYTICS_KEY}
+          CP_ACME_KEY=${ACME_KEY}
+          CP_DNS_CLOUDFLARE_TOKEN=${CF_TOKEN}
+          CP_DNS_SPACESHIP_KEY=${SS_KEY}
+          CP_DNS_SPACESHIP_SECRET=${SS_SECRET}
           ENVFILE
 
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'bash -s' <<'REMOTE'
