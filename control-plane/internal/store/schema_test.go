@@ -20,6 +20,11 @@ var namedOnPurpose = map[string]string{
 	"bootstrap_entries.host":        "our own way in",
 	"bootstrap_entries.server_name": "our own name in the handshake",
 
+	// A node of ours, and the address clients are sent to. Every user of the
+	// service connects to one of these, which is the opposite of a record of
+	// where any particular one of them went.
+	"nodes.host": "the address of one of our own nodes",
+
 	// The name a certificate is issued for. Ours.
 	"certificate_issues.name": "the domain we asked to have certified",
 
