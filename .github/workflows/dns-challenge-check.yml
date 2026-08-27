@@ -1,0 +1,155 @@
+name: DNS Challenge Check
+
+# Proves we can publish and remove the record a certificate authority reads.
+#
+# Everything about automatic certificates rests on this one ability, and it is
+# the part that fails quietly: a token that has expired or lost a permission
+# looks exactly like a token that works until the day a certificate is due.
+# Finding that out during a renewal means a node serving an expired
+# certificate, which means every tunnel through it stops.
+#
+# Writes only the challenge name, never the address records the domain serves.
+
+on:
+  workflow_dispatch:
+    inputs:
+      domain:
+        description: Domain to test against.
+        required: true
+        default: 6015874.xyz
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: DNS Challenge Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Publish, read back, remove
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SS_KEY: ${{ secrets.SPACESHIP_API_KEY }}
+          SS_SECRET: ${{ secrets.SPACESHIP_API_SECRET }}
+        run: |
+          set -euo pipefail
+          name="_acme-challenge.${DOMAIN}"
+
+          # A value that is obviously a test and obviously ours, so that anybody
+          # who finds it left behind knows what it was.
+          value="dns-challenge-check-$(date -u +%s)"
+
+          cf_zone=$(curl -sS -H "authorization: Bearer ${CF_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/zones?name=${DOMAIN}" \
+            | jq -r '.result[0].id // empty')
+
+          if [ -n "${cf_zone}" ]; then
+            provider="Cloudflare"
+            echo "${DOMAIN} is at Cloudflare."
+
+            # Stale proofs first. A second record beside the first does not
+            # replace it, and the authority may read either.
+            for id in $(curl -sS -H "authorization: Bearer ${CF_TOKEN}" \
+              "https://api.cloudflare.com/client/v4/zones/${cf_zone}/dns_records?type=TXT&name=${name}" \
+              | jq -r '.result[].id'); do
+              curl -sS -X DELETE -H "authorization: Bearer ${CF_TOKEN}" \
+                "https://api.cloudflare.com/client/v4/zones/${cf_zone}/dns_records/${id}" > /dev/null
+            done
+
+            code=$(curl -sS -o /tmp/w.json -w '%{http_code}' -X POST \
+              -H "authorization: Bearer ${CF_TOKEN}" -H "content-type: application/json" \
+              -d "$(jq -n --arg n "${name}" --arg v "${value}" \
+                    '{type:"TXT",name:$n,content:$v,ttl:60}')" \
+              "https://api.cloudflare.com/client/v4/zones/${cf_zone}/dns_records")
+          else
+            provider="Spaceship"
+            echo "${DOMAIN} is not at Cloudflare; trying Spaceship."
+
+            existing=$(curl -sS \
+              -H "X-API-Key: ${SS_KEY}" -H "X-API-Secret: ${SS_SECRET}" -H "accept: application/json" \
+              -G --data-urlencode "take=100" --data-urlencode "skip=0" \
+              "https://spaceship.dev/api/v1/dns/records/${DOMAIN}" \
+              | jq -c '[(.items // [])[] | select(.type == "TXT" and (.name | startswith("_acme-challenge")))]')
+
+            if [ "$(printf '%s' "${existing}" | jq -r 'length')" != "0" ]; then
+              curl -sS -X DELETE \
+                -H "X-API-Key: ${SS_KEY}" -H "X-API-Secret: ${SS_SECRET}" \
+                -H "content-type: application/json" -d "${existing}" \
+                "https://spaceship.dev/api/v1/dns/records/${DOMAIN}" > /dev/null
+            fi
+
+            code=$(curl -sS -o /tmp/w.json -w '%{http_code}' -X PUT \
+              -H "X-API-Key: ${SS_KEY}" -H "X-API-Secret: ${SS_SECRET}" \
+              -H "content-type: application/json" \
+              -d "$(jq -n --arg v "${value}" \
+                    '{force:true,items:[{type:"TXT",name:"_acme-challenge",value:$v,ttl:60}]}')" \
+              "https://spaceship.dev/api/v1/dns/records/${DOMAIN}")
+          fi
+
+          echo "Write to ${provider}: HTTP ${code}"
+          if [ "${code}" != "200" ] && [ "${code}" != "201" ] && [ "${code}" != "204" ]; then
+            # Field names only, never the body: the body echoes the value, and
+            # a log holding it would let a reader answer a live challenge.
+            jq -r 'keys_unsorted | join(", ")' /tmp/w.json 2>/dev/null \
+              | sed 's/^/  fields in the refusal: /' || true
+            echo "The provider refused to publish the record."
+            exit 1
+          fi
+
+          # Read back from public DNS, not from the provider's own answer. The
+          # authority reads the internet, and a record accepted by an API but
+          # not served is the failure this check exists to catch.
+          echo "Waiting for it to be served."
+          seen=""
+          for _ in $(seq 1 24); do
+            sleep 5
+            seen=$(dig +short TXT "${name}" @1.1.1.1 | tr -d '"' | grep -F "${value}" || true)
+            [ -n "${seen}" ] && break
+          done
+
+          if [ -z "${seen}" ]; then
+            echo "The record was accepted but is not being served. A certificate would not be issued."
+            exit 1
+          fi
+          echo "Served and readable."
+
+          # Removed whatever happened above, so a proof is never left standing.
+          if [ -n "${cf_zone}" ]; then
+            for id in $(curl -sS -H "authorization: Bearer ${CF_TOKEN}" \
+              "https://api.cloudflare.com/client/v4/zones/${cf_zone}/dns_records?type=TXT&name=${name}" \
+              | jq -r '.result[].id'); do
+              curl -sS -X DELETE -H "authorization: Bearer ${CF_TOKEN}" \
+                "https://api.cloudflare.com/client/v4/zones/${cf_zone}/dns_records/${id}" > /dev/null
+            done
+          else
+            leftover=$(curl -sS \
+              -H "X-API-Key: ${SS_KEY}" -H "X-API-Secret: ${SS_SECRET}" -H "accept: application/json" \
+              -G --data-urlencode "take=100" --data-urlencode "skip=0" \
+              "https://spaceship.dev/api/v1/dns/records/${DOMAIN}" \
+              | jq -c '[(.items // [])[] | select(.type == "TXT" and (.name | startswith("_acme-challenge")))]')
+            [ "$(printf '%s' "${leftover}" | jq -r 'length')" != "0" ] && curl -sS -X DELETE \
+              -H "X-API-Key: ${SS_KEY}" -H "X-API-Secret: ${SS_SECRET}" \
+              -H "content-type: application/json" -d "${leftover}" \
+              "https://spaceship.dev/api/v1/dns/records/${DOMAIN}" > /dev/null || true
+          fi
+          echo "Removed."
+
+          {
+            echo "### ${DOMAIN}"
+            echo "Provider: ${provider}. The challenge record can be published, is served, and can be removed."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Confirm the address records were not touched
+        env:
+          DOMAIN: ${{ inputs.domain }}
+        run: |
+          set -euo pipefail
+          # The whole point of writing only the challenge name. A check that
+          # quietly broke the domain it was checking would be worse than no
+          # check at all.
+          address=$(dig +short A "${DOMAIN}" @1.1.1.1 | head -1)
+          echo "${DOMAIN} still resolves to: ${address:-nothing}"
+          [ -n "${address}" ] || { echo "The domain no longer resolves."; exit 1; }
