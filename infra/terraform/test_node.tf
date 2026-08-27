@@ -23,6 +23,17 @@ variable "test_node_domain" {
   default     = ""
 }
 
+variable "cover_site" {
+  description = "Which cover site this node serves. Two nodes with the same one are one group to anybody comparing hashes, so each gets its own."
+  type        = string
+  default     = "pigeons"
+
+  validation {
+    condition     = contains(["pigeons", "trams", "sourdough"], var.cover_site)
+    error_message = "cover_site must name a directory under sites/."
+  }
+}
+
 variable "test_node_ws_uuid" {
   description = "VLESS credential for the WebSocket transport. Generated per run, never stored."
   type        = string
@@ -137,8 +148,8 @@ resource "digitalocean_droplet" "test_node" {
     acme_email          = var.acme_email
     acme_staging        = var.acme_staging ? "true" : "false"
     debug_status        = var.debug_status ? "true" : "false"
-    site_html_b64       = base64encode(file("${path.module}/../../sites/pigeons/index.html"))
-    notfound_html_b64   = base64encode(file("${path.module}/../../sites/pigeons/404.html"))
+    site_html_b64       = base64encode(file("${path.module}/../../sites/${var.cover_site}/index.html"))
+    notfound_html_b64   = base64encode(file("${path.module}/../../sites/${var.cover_site}/404.html"))
     ws_path             = var.test_node_ws_path
     ws_uuid             = var.test_node_ws_uuid
     ws_backend_port     = var.ws_backend_port
