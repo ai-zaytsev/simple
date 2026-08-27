@@ -2,10 +2,12 @@ package download.simplevpn.auth
 
 import android.content.Context
 import android.util.Log
-import download.simplevpn.plan.ControlPlane
+import download.simplevpn.plan.Entry
+import download.simplevpn.plan.EntryBook
+import download.simplevpn.plan.EntryTransport
 import org.json.JSONObject
 import java.net.HttpURLConnection
-import java.net.URL
+
 
 /**
  * Signing in, which here means proving you can read a mailbox.
@@ -15,7 +17,7 @@ import java.net.URL
  * the mailbox anyway - every reset flow admits as much - so the mailbox is used
  * directly instead of as a fallback.
  */
-class AuthClient(context: Context) {
+class AuthClient(private val context: Context) {
 
     private val deviceId = DeviceIdentity.of(context).deviceId
 
@@ -107,13 +109,41 @@ class AuthClient(context: Context) {
         data class Failed(val reason: String) : Answer
     }
 
+    /**
+     * Walks the ways in until one answers.
+     *
+     * Signing in is the one thing a blocked domain must not prevent. A person
+     * who cannot sign in has no plan, and without a plan the tunnel that would
+     * work around the block cannot be raised either - so a single address here
+     * would make a blocked domain permanent for anybody installing the
+     * application for the first time.
+     */
     private fun post(path: String, body: String): Answer {
+        val entries = Entry.order(book.entries()) { bound -> random.nextInt(bound) }
+        var last: Answer = Answer.Failed("cannot reach the server")
+
+        for (entry in entries) {
+            when (val answer = attempt(entry, path, body)) {
+                is Answer.Ok -> return answer
+
+                // The server judged the request rather than failing to receive
+                // it. Another way in would produce the same judgement.
+                is Answer.Refused -> return answer
+
+                is Answer.Failed -> {
+                    last = answer
+                    Log.i(TAG, "entry ${entry.kind} did not answer: ${answer.reason}")
+                }
+            }
+        }
+        return last
+    }
+
+    private fun attempt(entry: Entry, path: String, body: String): Answer {
         var connection: HttpURLConnection? = null
         return try {
-            connection = (URL(ControlPlane.BASE_URL + path).openConnection() as HttpURLConnection).apply {
+            connection = EntryTransport.open(entry, path, TIMEOUT_MS).apply {
                 requestMethod = "POST"
-                connectTimeout = TIMEOUT_MS
-                readTimeout = TIMEOUT_MS
                 doOutput = true
                 setRequestProperty("content-type", "application/json")
                 setRequestProperty("accept", "application/json")
@@ -138,8 +168,14 @@ class AuthClient(context: Context) {
         }
     }
 
+    private val book by lazy { EntryBook(context) }
+    private val random = java.security.SecureRandom()
+
     private companion object {
         const val TAG = "AuthClient"
-        const val TIMEOUT_MS = 15_000
+
+        // Short, because a blocked way in must cost seconds rather than the
+        // whole budget for finding one that works.
+        const val TIMEOUT_MS = 8_000
     }
 }

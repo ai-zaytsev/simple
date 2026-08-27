@@ -1,0 +1,113 @@
+name: Publish Rescue Descriptor
+
+# Puts the signed list of ways in somewhere that is not our infrastructure.
+#
+# The last recovery channel, and the only one that works for an installation
+# that has never connected: a device with a working plan can ask from inside
+# its own tunnel, but a device installed during a block has no plan and no
+# tunnel. Its only hope is a copy of the descriptor somewhere the block does
+# not reach.
+#
+# A branch rather than the default one, so that publishing needs no review and
+# cannot be held up by the checks that guard the code. The file is data, not
+# code: it is signed by the Control Plane, and nothing here can alter it
+# without the signature failing on every device.
+#
+# The contents are public by construction. An adversary reads this file as
+# easily as anybody; what it buys is not concealment but the speed of replacing
+# an entry that has been blocked.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily. The descriptor is only useful if it is current when it is needed,
+    # and it is needed exactly when nobody can reach us to publish it.
+    - cron: "17 4 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Publish Rescue Descriptor
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Fetch the signed descriptor
+        run: |
+          set -euo pipefail
+          # From the running service, so that what is mirrored is what devices
+          # are actually told. Building it here from a copy of the rules would
+          # be a second source of truth, and the two would drift.
+          curl -fsS --max-time 20 https://simple-syncbridge.download/v1/bootstrap > /tmp/bootstrap.json
+
+          # Refused rather than published if it is not what it claims to be.
+          # A mirror serving a malformed file is worse than one serving
+          # nothing: a client would spend its last channel on it.
+          for field in payload_b64 alg key_id sig_b64; do
+            grep -q "\"${field}\"" /tmp/bootstrap.json \
+              || { echo "The descriptor has no ${field}."; exit 1; }
+          done
+
+          decoded=$(sed -n 's/.*"payload_b64":"\([^"]*\)".*/\1/p' /tmp/bootstrap.json \
+            | tr '_-' '/+' | base64 -d)
+          echo "${decoded}" | grep -q '"entries"' \
+            || { echo "The descriptor names no entries."; exit 1; }
+
+          echo "Publishing:"
+          echo "${decoded}"
+
+      - name: Put it on the rescue branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # An orphan branch: no history, no code, nothing but this file. A
+          # mirror that carried the repository would be a mirror people could
+          # be tempted to build from.
+          git checkout --orphan rescue-tmp
+          git rm -rq --cached . || true
+          find . -maxdepth 1 -mindepth 1 -not -name '.git' -exec rm -rf {} +
+
+          cp /tmp/bootstrap.json bootstrap.json
+          cat > README.md <<'NOTE'
+          # Rescue descriptor
+
+          Signed list of ways to reach the Control Plane, mirrored here so that
+          an installation can find its way back when the ordinary ones are
+          blocked.
+
+          Public by construction and safe to be so: it is signed, so it can be
+          withheld or served stale, but not altered. Clients refuse a descriptor
+          whose sequence number is not higher than the one they already have.
+
+          Nothing here is code and nothing here should be run.
+          NOTE
+
+          git add bootstrap.json README.md
+          git commit -qm "Rescue descriptor $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git branch -M rescue-tmp rescue
+          git push -qf origin rescue
+
+          echo "Published to the rescue branch."
+
+      - name: Prove a client could fetch it
+        run: |
+          set -euo pipefail
+          # From the public address a device would use, not from the checkout.
+          # The difference is the whole point: this step fails if the file is
+          # committed but not reachable.
+          sleep 5
+          url="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/rescue/bootstrap.json"
+          code=$(curl -sS -o /tmp/mirrored.json -w '%{http_code}' --max-time 20 "${url}")
+          echo "GET ${url} -> ${code}"
+          [ "${code}" = "200" ] || { echo "The mirror is not readable."; exit 1; }
+
+          diff -q /tmp/bootstrap.json /tmp/mirrored.json \
+            || { echo "The mirror does not match what was published."; exit 1; }
+
+          {
+            echo '### Rescue descriptor published'
+            echo "Readable at \`${url}\` and identical to what the service issued."
+          } >> "${GITHUB_STEP_SUMMARY}"

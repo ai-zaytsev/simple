@@ -350,6 +350,27 @@ class SimpleVpnService : VpnService() {
             SessionLog.record(this, "tunnel carries traffic")
             planSource.proved(source)
             rebuilding = false
+
+            // The tunnel channel. If no public way in answered when this
+            // connection was being made, the tunnel that is now up is a way
+            // through whatever is blocking them - so ask again from the
+            // inside. What comes back is the new list of ways in, and the next
+            // connection needs no tunnel to reach the service.
+            //
+            // This is what makes a block repair itself: nobody installs
+            // anything, and the old plan is the key that opens the door.
+            if (!planSource.lastAskReachedServer) {
+                SessionLog.record(this, "no way in answered directly, asking from inside the tunnel")
+                val proxy = java.net.Proxy(
+                    java.net.Proxy.Type.SOCKS,
+                    java.net.InetSocketAddress("127.0.0.1", XrayConfigBuilder.SOCKS_PORT),
+                )
+                val learned = planSource.recoverThroughTunnel(proxy)
+                SessionLog.record(
+                    this,
+                    if (learned) "learned new settings through the tunnel" else "nothing new through the tunnel",
+                )
+            }
             return
         }
 
@@ -530,6 +551,11 @@ class SimpleVpnService : VpnService() {
             // one that should not continue.
             val standing = planSource.standing()
             val config = configSource.current()
+
+            // And the list of ways in, on the same rhythm. It is the document
+            // that has to be current before it is needed, because the moment
+            // it is needed is the moment the service is hard to reach.
+            planSource.refreshEntries()
 
             watchHandler.post {
                 if (!engine.isRunning) return@post
