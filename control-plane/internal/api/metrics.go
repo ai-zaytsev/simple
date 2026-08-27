@@ -33,6 +33,7 @@ type nodeSample struct {
 	Load1            *float64           `json:"load1"`
 	MemoryPercent    *float64           `json:"memory_percent"`
 	Established      *int               `json:"established"`
+	VisitedDomains   []string           `json:"visited_domains"`
 	UplinkBytes      int64              `json:"uplink_bytes"`
 	DownlinkBytes    int64              `json:"downlink_bytes"`
 	UpstreamLatency  *float64           `json:"upstream_latency_ms"`

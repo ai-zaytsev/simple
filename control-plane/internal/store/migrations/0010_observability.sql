@@ -61,6 +61,7 @@ create table if not exists metrics.traffic_classes (
     at             timestamptz not null,
     node_alias     text        not null,
     class          text        not null,
+    sni            text        not null default '',
     uplink_bytes   bigint      not null default 0,
     downlink_bytes bigint      not null default 0,
     primary key (node_alias, at, class)
