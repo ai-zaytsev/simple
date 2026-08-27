@@ -52,6 +52,17 @@ type Server struct {
 	// Nil when no account key is configured, which is a service that cannot
 	// issue rather than one that issues badly.
 	certs *certs.Issuer
+
+	// adminToken opens the panel. Empty means the panel does not exist, which
+	// is the right answer for a deployment that was never given a secret: a
+	// dashboard with no lock is a dashboard for everybody.
+	adminToken string
+
+	// names is the set of addresses this service will accept a report about,
+	// cached for a minute. Guarded because device reports arrive in parallel.
+	names     map[string]bool
+	namesAt   time.Time
+	namesOnce namesGuard
 }
 
 func New(
@@ -63,6 +74,7 @@ func New(
 	baseURL string,
 	deriver *analytics.Deriver,
 	issuer *certs.Issuer,
+	adminToken string,
 	log *slog.Logger,
 ) *Server {
 	return &Server{
@@ -74,6 +86,7 @@ func New(
 		baseURL:        baseURL,
 		analytics:      deriver,
 		certs:          issuer,
+		adminToken:     adminToken,
 		log:            log,
 	}
 }
@@ -95,6 +108,16 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/node/certificate", s.nodeCertificate)
 	mux.HandleFunc("GET /v1/config", s.config)
 	mux.HandleFunc("GET /v1/bootstrap", s.bootstrap)
+
+	// What the service is doing, and what devices found when they tried to
+	// reach it. Neither carries a destination; see internal/store/metrics.go.
+	mux.HandleFunc("POST /v1/node/metrics", s.nodeMetrics)
+	mux.HandleFunc("POST /v1/app/report", s.appReport)
+
+	// The panel and the numbers behind it. The page is public and empty; the
+	// numbers are not.
+	mux.HandleFunc("GET /panel", s.panel)
+	mux.HandleFunc("GET /v1/admin/overview", s.adminOverview)
 	return mux
 }
 

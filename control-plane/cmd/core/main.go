@@ -23,6 +23,7 @@ import (
 	"download.simplevpn/control-plane/internal/certs"
 	"download.simplevpn/control-plane/internal/dnsedit"
 	"download.simplevpn/control-plane/internal/mail"
+	"download.simplevpn/control-plane/internal/probe"
 	"download.simplevpn/control-plane/internal/signing"
 	"download.simplevpn/control-plane/internal/store"
 )
@@ -80,6 +81,22 @@ func run(log *slog.Logger) error {
 			return errors.New("CP_PLAN_TTL below a minute would make every connection wait on this service")
 		}
 		planTTL = parsed
+	}
+
+	// How often our own addresses are checked. Configurable because the right
+	// answer changes with circumstances: minutes while something is being
+	// blocked and we are watching it happen, longer the rest of the time, when
+	// every check is a request somebody could count.
+	probeEvery := 5 * time.Minute
+	if raw := os.Getenv("CP_PROBE_EVERY"); raw != "" {
+		parsed, parseErr := time.ParseDuration(raw)
+		if parseErr != nil {
+			return fmt.Errorf("CP_PROBE_EVERY is not a duration: %w", parseErr)
+		}
+		if parsed < time.Minute {
+			return errors.New("CP_PROBE_EVERY below a minute would make us the busiest visitor our own sites have")
+		}
+		probeEvery = parsed
 	}
 
 	// Sending mail is not optional: without it nobody can sign in, and a
@@ -162,9 +179,28 @@ func run(log *slog.Logger) error {
 		log.Info("schema updated", "applied", strings.Join(applied, ","))
 	}
 
+	// Our own addresses are checked from here, and the same addresses are
+	// checked by devices. Neither reads user traffic to find out whether a way
+	// in still works, which is the point: the sensor is a test of our own, not
+	// a record of where people went.
+	go probe.New(st, probeEvery, log).Run(ctx)
+
+	// Minute rows are the bulk and stop being useful once a day has passed.
+	// Kept for five weeks so that a month can be compared with the one before
+	// it; the daily summaries stay for thirteen.
+	go probe.NewHousekeeper(st, 35*24*time.Hour, 400*24*time.Hour, log).Run(ctx)
+
+	// Empty means the panel is not served at all. A dashboard is the one place
+	// where every number in this system is visible at once, so it is closed
+	// unless somebody has deliberately opened it.
+	adminToken := os.Getenv("CP_ADMIN_TOKEN")
+	if adminToken == "" {
+		log.Warn("no CP_ADMIN_TOKEN; the panel is not available")
+	}
+
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           api.New(st, signer, cleaned, planTTL, sender, baseURL, deriver, issuer, log).Routes(),
+		Handler:           api.New(st, signer, cleaned, planTTL, sender, baseURL, deriver, issuer, adminToken, log).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
