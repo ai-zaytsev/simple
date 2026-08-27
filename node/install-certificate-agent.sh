@@ -17,6 +17,43 @@ fi
 install -m 0755 /tmp/certificate-agent.sh /usr/local/bin/simple-vpn-certificate
 rm -f /tmp/certificate-agent.sh
 
+# Obtained before nginx is pointed at it, and that order is forced rather than
+# chosen: nginx refuses a configuration naming files that do not exist, and the
+# files cannot exist until this has run. Doing it the other way round leaves a
+# node whose web server will not start.
+echo "Obtaining a certificate before changing any paths."
+# The one run that is allowed to end with nothing being served, because the
+# paths are set in the next step. Every later run treats that as a fault.
+ALLOW_UNSERVED=1 /usr/local/bin/simple-vpn-certificate
+
+# Nginx has to read the files the agent writes, and this is the step that is
+# easy to leave out: the agent installs a perfectly good certificate, reloads
+# nginx, reports success - and the site goes on serving the old one from
+# wherever it was originally put. That happened on the first run.
+DOMAIN=$(sed -n 's/^NODE_DOMAIN=//p' /etc/simple-vpn-node.env)
+SITE=/etc/nginx/sites-enabled/default
+
+if ! grep -q "/etc/simple-vpn-tls/${DOMAIN}.crt" "${SITE}"; then
+  cp "${SITE}" "/root/nginx-default.before-certificate-agent"
+  sed -i \
+    -e "s#ssl_certificate  *[^;]*;#ssl_certificate     /etc/simple-vpn-tls/${DOMAIN}.crt;#" \
+    -e "s#ssl_certificate_key  *[^;]*;#ssl_certificate_key /etc/simple-vpn-tls/${DOMAIN}.key;#" \
+    "${SITE}"
+
+  if ! nginx -t >/dev/null 2>&1; then
+    cp "/root/nginx-default.before-certificate-agent" "${SITE}"
+    echo "Nginx refused the new certificate paths. Put back what was there."
+    exit 1
+  fi
+  systemctl reload nginx
+  echo "Nginx now reads the certificate the agent maintains."
+fi
+
+# And the agent says so, rather than this script assuming it. A configuration
+# that passes nginx -t and a server that offers the right certificate are two
+# different claims.
+/usr/local/bin/simple-vpn-certificate
+
 cat > /etc/systemd/system/simple-vpn-certificate.service <<'UNIT'
 [Unit]
 Description=Simple VPN node certificate

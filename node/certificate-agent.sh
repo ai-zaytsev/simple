@@ -8,7 +8,7 @@
 # therefore takes one certificate for one machine, replaced by destroying the
 # machine. It does not take the other nodes, and it does not take the domains.
 #
-# Runs daily and usually does nothing. Asking for a certificate that is not
+# Runs daily and usually issues nothing. Asking for a certificate that is not
 # needed spends part of the authority's weekly allowance, and the allowance is
 # what a genuine renewal depends on.
 
@@ -32,6 +32,62 @@ RENEW_WITHIN_DAYS=30
 
 install -d -m 0700 "${DIR}"
 
+# What is actually being offered on the wire, which is not the same thing as
+# what is on disk. The first run of this agent installed a valid certificate
+# into a directory nginx was not reading, reported success, and changed
+# nothing: the site went on serving the old one, and nobody would have known
+# until it expired.
+#
+# Checked on every run rather than only after an issuance. A certificate that
+# stops being served is exactly as broken as one that was never obtained, and
+# it can stop at any time - somebody edits the site, a package replaces it.
+# This way at most a day passes before something says so.
+confirm_being_served() {
+  # Nginx not reading our path is normally the whole problem, not an excuse to
+  # pass: a site edited by hand or replaced by a package leaves a node with a
+  # perfectly maintained certificate that nobody is ever shown.
+  #
+  # It is legitimate exactly once, during installation, because the paths
+  # cannot name files that do not exist and the files cannot exist until this
+  # has run. The installer says so out loud for that one run rather than this
+  # check guessing, so the exception cannot quietly cover a real regression
+  # later.
+  if ! grep -q "${CRT}" /etc/nginx/sites-enabled/* 2>/dev/null; then
+    if [ "${ALLOW_UNSERVED:-}" = "1" ]; then
+      echo "Installed. Nginx is not pointed here yet, which the installer does next."
+      return 0
+    fi
+    echo "Installed, but nginx does not read ${CRT}, so this certificate is not served."
+    return 1
+  fi
+
+  local served installed
+  installed=$(openssl x509 -in "${CRT}" -noout -enddate 2>/dev/null | cut -d= -f2)
+
+  # Asked more than once, because a reload is not instant: nginx starts new
+  # workers and lets the old ones finish what they were already doing, so for
+  # a moment after a reload the honest answer is still the old certificate.
+  # Failing in that moment would be a check that goes off on a working node,
+  # which teaches everybody to ignore it.
+  for _ in 1 2 3 4 5; do
+    served=$(echo | openssl s_client -connect "127.0.0.1:443" -servername "${NODE_DOMAIN}" 2>/dev/null \
+      | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+    [ "${served}" = "${installed}" ] && break
+    sleep 1
+  done
+
+  if [ "${served}" != "${installed}" ]; then
+    echo "The server is offering a different certificate than the one installed."
+    echo "  serving:   ${served:-nothing}"
+    echo "  installed: ${installed}"
+    echo "Check that nginx reads ${CRT}."
+    return 1
+  fi
+
+  echo "Being served, valid until ${served}."
+  return 0
+}
+
 # The key is made once and kept. A new key on every renewal would be no safer -
 # the old one was never exposed - and would spend the weekly allowance faster,
 # because every issuance would be a fresh certificate rather than a renewal.
@@ -49,8 +105,9 @@ if [ -s "${CRT}" ]; then
     left=$(( ( $(date -u -d "${end}" +%s) - $(date -u +%s) ) / 86400 ))
     echo "Current certificate has ${left} day(s) left."
     if [ "${left}" -gt "${RENEW_WITHIN_DAYS}" ]; then
-      echo "Nothing to do."
-      exit 0
+      echo "No renewal needed."
+      confirm_being_served
+      exit $?
     fi
   fi
 fi
@@ -116,10 +173,10 @@ rm -f /tmp/new.crt "${CSR}"
 
 # Reloaded rather than restarted: a reload keeps every established connection,
 # and the certificate matters to new ones only.
-if nginx -t >/dev/null 2>&1; then
-  systemctl reload nginx
-  echo "Installed and in use."
-else
+if ! nginx -t >/dev/null 2>&1; then
   echo "Installed, but nginx refused its configuration. Not reloading."
   exit 1
 fi
+systemctl reload nginx
+
+confirm_being_served
