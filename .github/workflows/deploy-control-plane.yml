@@ -89,6 +89,10 @@ jobs:
           # Opens the panel. Absent means the panel is not served at all, which
           # is the right state for a deployment nobody has given a key.
           ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          # Where a capacity warning goes. Absent means warnings are written to
+          # the journal and nowhere else, which is a deployment that decides
+          # correctly and tells nobody.
+          ALERT_EMAIL: ${{ secrets.CP_ALERT_EMAIL }}
         run: |
           set -euo pipefail
           if [ "${SLOT}" = "a" ]; then
@@ -119,6 +123,7 @@ jobs:
           CP_DNS_SPACESHIP_KEY=${SS_KEY}
           CP_DNS_SPACESHIP_SECRET=${SS_SECRET}
           CP_ADMIN_TOKEN=${ADMIN_TOKEN}
+          CP_ALERT_EMAIL=${ALERT_EMAIL}
           ENVFILE
 
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'bash -s' <<'REMOTE'
