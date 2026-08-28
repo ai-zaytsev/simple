@@ -154,7 +154,13 @@ jobs:
           ALIAS: ${{ steps.claim.outputs.alias }}
         run: |
           set -euo pipefail
-          api="https://console.kamatera.com/service/server"
+          # The provider's own address, taken from the workflow that has been
+          # talking to it successfully all along rather than from what looked
+          # plausible. Three separate facts about this interface were invented
+          # across three attempts - the image name, the shape of its answer,
+          # and this host - and each cost a run. What follows mirrors the
+          # working operation step for step.
+          api="https://cloudcli.cloudwm.com"
 
           # Trimmed, because a credential that arrives with a trailing newline
           # is refused in a way that reads like a wrong credential.
@@ -163,12 +169,10 @@ jobs:
           auth=(-H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" -H "Accept: application/json")
 
           # Asked rather than assumed. Image identifiers belong to a datacenter
-          # and change; the first attempt at this used a name invented to look
-          # plausible, and the provider refused the whole creation. Looking it
-          # up means changing datacenter works, and an identifier that changes
-          # is noticed here rather than six months from now.
+          # and change, so looking one up means changing datacenter works and a
+          # changed identifier is noticed here rather than six months from now.
           image=$(curl -sS "${auth[@]}" \
-            "${api}?images=1&datacenter=${DATACENTER}" \
+            "${api}/service/server?images=1&datacenter=${DATACENTER}" \
             | jq -r '[.. | objects | select((.os? // "") == "Ubuntu" and ((.code? // "") | startswith("24.04")))] | .[0].id // empty')
 
           if [ -z "${image}" ]; then
@@ -189,7 +193,7 @@ jobs:
               monthlypackage: "", poweronaftercreate: "yes"}')
 
           created=$(curl -sS -X POST "${auth[@]}" -H "content-type: application/json" \
-            -d "${body}" "${api}" || echo '{}')
+            -d "${body}" "${api}/service/server" || echo '{}')
 
           # The provider returns a generated root password. It is not ours to
           # publish and we do not use it - access is by key - so it never
@@ -197,8 +201,10 @@ jobs:
           password=$(printf '%s' "${created}" | jq -r '.password // empty' 2>/dev/null || echo "")
           [ -n "${password}" ] && echo "::add-mask::${password}"
 
-          command_id=$(printf '%s' "${created}" | jq -r 'if type == "array" then .[0] else (.commandIds[0] // empty) end' 2>/dev/null || echo "")
-          if [ -z "${command_id}" ]; then
+          command_id=$(printf '%s' "${created}" \
+            | jq -r '(.commandIds[0]? // .commandId? // (if type == "array" then .[0] else empty end)) // empty' \
+            2>/dev/null || echo "")
+          if [ -z "${command_id}" ] || [ "${command_id}" = "null" ]; then
             echo "The provider did not start the creation."
             # What it objected to, after the generated password has been
             # masked. The first failure here printed only the field names,
@@ -209,21 +215,43 @@ jobs:
             exit 1
           fi
 
-          echo "Creation started, waiting for an address."
-          address=""
-          for _ in $(seq 1 60); do
-            sleep 10
-            info=$(curl -sS "${auth[@]}" "${api}/info" \
-              -H "content-type: application/json" \
-              -d "$(jq -n --arg n "simple-vpn-${ALIAS}" '{name: $n}')" || echo '[]')
-            address=$(printf '%s' "${info}" \
-              | jq -r '[.[] | .networks[]? | .ips[]?] | map(select(test("^(10\\.|172\\.|192\\.168\\.)") | not)) | .[0] // empty' 2>/dev/null || echo "")
-            [ -n "${address}" ] && break
-            echo "  still creating"
+          echo "Following command ${command_id}."
+
+          # The queue, then the listing. Not an invented endpoint that takes a
+          # name: this is how the provider says a creation finished, and the
+          # listing is what it considers true afterwards.
+          for _ in $(seq 1 40); do
+            sleep 15
+            info=$(curl -sS "${auth[@]}" "${api}/service/queue/${command_id}")
+            status=$(printf '%s' "${info}" \
+              | jq -r '(if type == "array" then .[0] else . end) | (.status // .state // empty)' \
+              2>/dev/null || echo "")
+
+            if [ -z "${status}" ]; then
+              # The shape, never the contents: printing the body is how a
+              # password reached a public log once already.
+              shape=$(printf '%s' "${info}" \
+                | jq -r '(if type == "array" then .[0] else . end) | keys_unsorted | join(", ")' \
+                2>/dev/null || echo "unreadable")
+              echo "  status field not found; fields present: ${shape}"
+            else
+              echo "  status: ${status}"
+            fi
+
+            case "${status}" in
+              complete|completed|done) break ;;
+              error|cancelled|failed) echo "  the provider reported ${status}"; exit 1 ;;
+            esac
           done
 
+          curl -sS "${auth[@]}" "${api}/service/servers" > /tmp/servers.json
+          address=$(jq -r --arg n "simple-vpn-${ALIAS}" \
+            'if type == "array" then (.[] | select(.name == $n) | .networks[]?.ips[]?) else empty end' \
+            /tmp/servers.json 2>/dev/null \
+            | grep -vE '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)' | head -1 || echo "")
+
           if [ -z "${address}" ]; then
-            echo "The machine did not report an address in ten minutes."
+            echo "The machine did not report an address."
             echo "Look for simple-vpn-${ALIAS} at the provider and remove it if it is there."
             exit 1
           fi
