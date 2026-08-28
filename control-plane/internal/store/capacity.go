@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"download.simplevpn/control-plane/internal/capacity"
@@ -15,12 +16,20 @@ import (
 // for the alert, which is why the alert can be trusted - it is looking at the
 // same numbers the panel is.
 func (s *Store) CapacityReading(ctx context.Context, now time.Time, defaultCapacity int) (capacity.Reading, error) {
-	var r capacity.Reading
-
 	standings, err := s.NodeStandings(ctx, "", defaultCapacity)
 	if err != nil {
-		return r, err
+		return capacity.Reading{}, err
 	}
+	return s.readingFrom(ctx, now, standings)
+}
+
+// readingFrom is the reading itself, taking standings the caller already has.
+//
+// Split out so the panel can build the same picture without asking the
+// database a second time for something it is holding.
+func (s *Store) readingFrom(ctx context.Context, now time.Time, standings []NodeStanding) (capacity.Reading, error) {
+	var r capacity.Reading
+	var err error
 
 	for _, standing := range standings {
 		switch {
@@ -148,4 +157,229 @@ func trimDetail(detail string) string {
 		return detail[:300]
 	}
 	return detail
+}
+
+// CapacityView is the same judgement the alert makes, with the breakdowns a
+// person needs in order to act on it.
+//
+// The state and the reasons come from capacity.Assess and are not recomputed
+// here: a panel that judged the fleet by its own rule would eventually
+// disagree with the message that woke somebody up, and then neither could be
+// trusted.
+type CapacityView struct {
+	State   string   `json:"state"`
+	Reasons []string `json:"reasons"`
+
+	SessionsNow   int     `json:"sessions_now"`
+	CapacityTotal int     `json:"capacity_total"`
+	Utilisation   float64 `json:"utilisation"`
+	SpareRoom     int     `json:"spare_room"`
+
+	PeakToday   int     `json:"peak_today"`
+	PeakWeek    int     `json:"peak_week"`
+	PeakUsed    float64 `json:"peak_used"`
+	PeakDay     int     `json:"peak_day"`
+	PeakEvening int     `json:"peak_evening"`
+
+	// The busiest each hour of the day has been over the week, Moscow time.
+	// A shape rather than a number, because "we are full at nine in the
+	// evening and empty at four in the morning" is a different problem from
+	// "we are full", and it is not visible in an average.
+	ByHour []int `json:"by_hour"`
+
+	P95Utilisation float64  `json:"p95_utilisation"`
+	Growth         *float64 `json:"growth_week_on_week"`
+
+	NodesUsable  int `json:"nodes_usable"`
+	NodesSpare   int `json:"nodes_spare"`
+	NodesBlocked int `json:"nodes_blocked"`
+	NodesFaulty  int `json:"nodes_faulty"`
+	DomainsSpare int `json:"domains_spare"`
+
+	Groups  []GroupCapacity `json:"groups"`
+	Domains []DomainLoad    `json:"domains"`
+}
+
+// GroupCapacity is one pool of machines and how full it is.
+type GroupCapacity struct {
+	Group       string  `json:"group"`
+	Nodes       int     `json:"nodes"`
+	Spare       int     `json:"spare"`
+	Sessions    int     `json:"sessions"`
+	Capacity    int     `json:"capacity"`
+	Utilisation float64 `json:"utilisation"`
+}
+
+// DomainLoad is how much of the load one way in is carrying.
+//
+// Named by domain rather than by node because that is the unit that gets
+// blocked, and a domain carrying most of the traffic is the one whose loss
+// would be felt.
+type DomainLoad struct {
+	Domain   string  `json:"domain"`
+	Node     string  `json:"node"`
+	Sessions int     `json:"sessions"`
+	Share    float64 `json:"share"`
+	Verdict  string  `json:"verdict"`
+}
+
+// capacityView builds the panel's capacity picture from standings the caller
+// already has, so that the panel and the chooser read one set of numbers.
+func (s *Store) capacityView(
+	ctx context.Context, now time.Time, standings []NodeStanding,
+) (CapacityView, error) {
+	var v CapacityView
+
+	reading, err := s.readingFrom(ctx, now, standings)
+	if err != nil {
+		return v, err
+	}
+	verdict := capacity.Assess(reading)
+
+	v.State = string(verdict.State)
+	v.Reasons = verdict.Reasons
+	v.SessionsNow = reading.SessionsNow
+	v.CapacityTotal = reading.CapacityTotal
+	v.Utilisation = verdict.Utilisation
+	v.SpareRoom = reading.CapacityTotal - reading.SessionsNow
+	if v.SpareRoom < 0 {
+		v.SpareRoom = 0
+	}
+	v.PeakToday = reading.PeakToday
+	v.PeakWeek = reading.PeakWeek
+	v.PeakUsed = verdict.PeakUsed
+	v.P95Utilisation = reading.P95Utilisation
+	v.Growth = reading.GrowthWeekOnWeek
+	v.NodesUsable = reading.NodesUsable
+	v.NodesSpare = reading.NodesSpare
+	v.NodesBlocked = reading.NodesBlocked
+	v.NodesFaulty = reading.NodesFaulty
+	v.DomainsSpare = reading.DomainsSpare
+
+	if v.ByHour, err = s.hourlyPeaks(ctx, now); err != nil {
+		return v, err
+	}
+	// Daytime and evening as people live them, not as UTC has them. The hours
+	// are Moscow's because that is where the load is; an evening peak read off
+	// a UTC clock lands in the afternoon and looks like nothing.
+	v.PeakDay = maxOfHours(v.ByHour, 9, 17)
+	v.PeakEvening = maxOfHours(v.ByHour, 18, 23)
+
+	v.Groups = groupCapacity(standings, now)
+	v.Domains = domainLoad(standings, now)
+	return v, nil
+}
+
+// hourlyPeaks is the busiest each hour of the day has been this week.
+func (s *Store) hourlyPeaks(ctx context.Context, now time.Time) ([]int, error) {
+	rows, err := s.pool.Query(ctx, `
+		with fleet as (
+			select at, sum(coalesce(sessions_online, 0))::int as sessions
+			from metrics.node_samples
+			where at >= $1
+			group by at
+		)
+		select extract(hour from (at at time zone 'Europe/Moscow'))::int,
+		       max(sessions)::int
+		from fleet group by 1`, now.Add(-7*24*time.Hour))
+	if err != nil {
+		return nil, fmt.Errorf("cannot read the daily shape: %w", err)
+	}
+	defer rows.Close()
+
+	hours := make([]int, 24)
+	for rows.Next() {
+		var hour, sessions int
+		if err := rows.Scan(&hour, &sessions); err != nil {
+			return nil, fmt.Errorf("cannot read an hour: %w", err)
+		}
+		if hour >= 0 && hour < 24 {
+			hours[hour] = sessions
+		}
+	}
+	return hours, rows.Err()
+}
+
+func maxOfHours(hours []int, from, to int) int {
+	best := 0
+	for hour := from; hour <= to && hour < len(hours); hour++ {
+		if hours[hour] > best {
+			best = hours[hour]
+		}
+	}
+	return best
+}
+
+func groupCapacity(standings []NodeStanding, now time.Time) []GroupCapacity {
+	index := map[string]*GroupCapacity{}
+	order := []string{}
+	for _, standing := range standings {
+		if !standing.Usable(now) {
+			continue
+		}
+		name := standing.Group
+		if name == "" {
+			name = "default"
+		}
+		group, ok := index[name]
+		if !ok {
+			group = &GroupCapacity{Group: name}
+			index[name] = group
+			order = append(order, name)
+		}
+		group.Nodes++
+		group.Capacity += standing.Capacity
+		group.Sessions += standing.Sessions
+		if standing.Lifecycle == "ready" {
+			group.Spare++
+		}
+	}
+
+	sort.Strings(order)
+	out := make([]GroupCapacity, 0, len(order))
+	for _, name := range order {
+		group := index[name]
+		if group.Capacity > 0 {
+			group.Utilisation = float64(group.Sessions) / float64(group.Capacity)
+		}
+		out = append(out, *group)
+	}
+	return out
+}
+
+func domainLoad(standings []NodeStanding, now time.Time) []DomainLoad {
+	total := 0
+	for _, standing := range standings {
+		if standing.Usable(now) {
+			total += standing.Sessions
+		}
+	}
+
+	out := []DomainLoad{}
+	for _, standing := range standings {
+		name := standing.ServerName
+		if name == "" {
+			name = standing.Node.Host
+		}
+		if name == "" {
+			continue
+		}
+		load := DomainLoad{
+			Domain:   name,
+			Node:     standing.Node.Alias,
+			Sessions: standing.Sessions,
+			Verdict:  standing.DomainVerdict,
+		}
+		if total > 0 {
+			load.Share = float64(standing.Sessions) / float64(total)
+		}
+		out = append(out, load)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Sessions != out[j].Sessions {
+			return out[i].Sessions > out[j].Sessions
+		}
+		return out[i].Domain < out[j].Domain
+	})
+	return out
 }

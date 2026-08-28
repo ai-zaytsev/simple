@@ -35,6 +35,11 @@ type Overview struct {
 	// and the four answers those produce together.
 	Lifecycles []Standing `json:"lifecycles"`
 
+	// How much room the service has, and the one of four words that follows
+	// from it. The same judgement that decides whether to send a warning, so
+	// that the screen and the message can never say different things.
+	Capacity CapacityView `json:"capacity"`
+
 	Usage     UsageShape       `json:"usage"`
 	Connect   ConnectSummary   `json:"connect"`
 	Endpoints []EndpointHealth `json:"endpoints"`
@@ -173,6 +178,9 @@ func (s *Store) Overview(ctx context.Context, now time.Time) (Overview, error) {
 		return o, err
 	}
 	if o.LoadShape, err = s.loadShape(ctx, now); err != nil {
+		return o, err
+	}
+	if o.Capacity, err = s.capacityView(ctx, now, standings); err != nil {
 		return o, err
 	}
 	if o.Lifecycles, err = s.Lifecycles(ctx, now); err != nil {

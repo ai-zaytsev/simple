@@ -28,6 +28,11 @@ type NodeStanding struct {
 	// it. See lifecycle.go for why the two are never the same column.
 	Lifecycle string
 
+	// Which pool of machines this one belongs to. Capacity is managed per
+	// group as well as in total, because a group that is full is full whatever
+	// room the others have - they are not interchangeable.
+	Group string
+
 	// Capacity is how many tunnel connections this node is sized for. A
 	// declared property of the machine, not a measurement: the point of it is
 	// to know how much room is left before the numbers get bad, which is too
@@ -288,6 +293,7 @@ func (s *Store) NodeStandings(ctx context.Context, kind string, defaultCapacity 
 		select
 			n.alias, n.host, n.port, n.transport_kind, n.params, n.state,
 			coalesce(n.params->>'server_name', ''),
+			coalesce(n.node_group, 'default'),
 			coalesce((n.params->>'capacity')::int, $2),
 			sample.at, sample.cpu_percent, sample.memory_percent,
 			coalesce(sample.sessions_online, 0), sample.upstream_loss_percent,
@@ -338,7 +344,7 @@ func (s *Store) NodeStandings(ctx context.Context, kind string, defaultCapacity 
 		)
 		if err := rows.Scan(
 			&st.Node.Alias, &st.Node.Host, &st.Node.Port, &tkind, &raw, &st.Lifecycle,
-			&st.ServerName, &st.Capacity,
+			&st.ServerName, &st.Group, &st.Capacity,
 			&st.LastSeen, &st.CPUPercent, &st.MemoryPercent,
 			&st.Sessions, &st.LossPercent, &st.UpstreamLatencyMS,
 			&st.DomainLatencyMS, &okRate,
