@@ -74,10 +74,15 @@ func (s *Server) adminTier(w http.ResponseWriter, r *http.Request) {
 		s.log.Info("account tier set", "account", result.AccountID, "tier", result.Tier)
 	}
 
+	// Null for a limit that does not exist, rather than a number standing in
+	// for its absence. A figure shown where there is no limit is a figure
+	// somebody eventually compares against.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"account":     result.AccountID,
-		"tier":        result.Tier,
-		"max_devices": result.MaxDevices,
-		"devices":     result.Devices,
+		"account":      result.AccountID,
+		"tier":         result.Tier,
+		"max_devices":  result.MaxDevices,
+		"max_external": result.MaxExternal,
+		"devices":      result.Devices,
+		"external":     result.External,
 	})
 }
