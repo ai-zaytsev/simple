@@ -32,13 +32,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.FileProvider
 import download.simplevpn.R
-import download.simplevpn.config.TransportParams
-import download.simplevpn.config.XrayConfigBuilder
-import download.simplevpn.core.BridgeDiagnostics
 import download.simplevpn.core.SessionLog
-import download.simplevpn.core.EngineSelfTest
-import download.simplevpn.core.NodeReachTest
-import download.simplevpn.plan.PlanSource
 import android.os.SystemClock
 import download.simplevpn.vpn.TraceState
 import download.simplevpn.vpn.VpnConnectionState
@@ -106,13 +100,12 @@ fun VpnScreen(
                 style = MaterialTheme.typography.bodyLarge,
             )
 
-            if (state is VpnConnectionState.Connected) {
-                BridgeCounters()
-            }
-
             // Outside the connected branch on purpose: the interesting log is
-            // usually the one from a session that has just ended.
-            ShareSessionLog()
+            // usually the one from a session that has just ended. Shown only
+            // when there has been a session at all - on a fresh install this
+            // button offered to send an empty file, from a screen where
+            // nothing had happened yet.
+            ShareSessionLog(state)
         }
 
         // In the corner rather than beside the ordinary log button, because
@@ -181,6 +174,17 @@ private fun TraceControls(connected: Boolean, modifier: Modifier = Modifier) {
                     enabled = connected,
                 ) {
                     Text(text = stringResource(R.string.trace_start))
+                }
+                // A greyed-out control with no reason reads as broken. There
+                // is a reason and it is short: with no tunnel there is no
+                // engine, so there would be nothing to record.
+                if (!connected) {
+                    Text(
+                        text = stringResource(R.string.trace_needs_vpn),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.padding(start = 12.dp),
+                    )
                 }
             }
         }
@@ -304,10 +308,18 @@ private fun shareFile(context: android.content.Context, file: java.io.File, titl
  * fills it go together when the slice does.
  */
 @Composable
-private fun ShareSessionLog() {
+private fun ShareSessionLog(state: VpnConnectionState) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val title = stringResource(R.string.share_log_title)
+
+    // Re-asked whenever the connection state moves, which is every moment this
+    // file can come into existence or be cleared.
+    var haveSomething by remember { mutableStateOf(false) }
+    LaunchedEffect(state) {
+        haveSomething = withContext(Dispatchers.IO) { SessionLog.hasSession(context) }
+    }
+    if (!haveSomething) return
 
     TextButton(
         onClick = {
@@ -333,99 +345,6 @@ private fun ShareSessionLog() {
         Text(text = stringResource(R.string.action_share_log))
     }
 }
-
-/**
- * What the packet bridge has actually seen, refreshed while the screen is open.
- *
- * A tunnel that reports success and carries nothing looks the same from the
- * outside whatever the cause. These numbers separate the causes: no packets in
- * means the interface is not feeding the bridge, packets in with no connections
- * means they arrive and go nowhere. It is small and unexplained on purpose -
- * it is meant to be read out, not interpreted, and it disappears with the
- * slice.
- */
-@Composable
-private fun BridgeCounters() {
-    val context = LocalContext.current
-    var counters by remember { mutableStateOf(BridgeDiagnostics.snapshot()) }
-    var node by remember { mutableStateOf("node: checking") }
-    var engine by remember { mutableStateOf("engine: checking") }
-    var engineLog by remember { mutableStateOf("log: waiting") }
-
-    LaunchedEffect(Unit) {
-        // The node first, and without the engine. A browser reaching the node
-        // with the tunnel switched off proves the network allows it, not that
-        // this application's own traffic escapes the tunnel it is running.
-        node = withContext(Dispatchers.IO) {
-            when (val known = PlanSource(context).currentProfile()) {
-                is PlanSource.Result.Missing -> "node: ${known.reason}"
-                is PlanSource.Result.Revoked -> "node: this installation is not recognised"
-                is PlanSource.Result.Available -> {
-                    val serverName = when (val transport = known.profile.transport) {
-                        is TransportParams.VlessWsTls -> transport.serverName
-                        is TransportParams.VlessReality -> transport.serverName
-                    }
-                    when (
-                        val reach = NodeReachTest.run(
-                            host = known.profile.host,
-                            port = known.profile.port,
-                            serverName = serverName,
-                        )
-                    ) {
-                        is NodeReachTest.Result.Reached -> "node: reachable, ${reach.certificateName}"
-                        is NodeReachTest.Result.Failed -> "node: unreachable, ${reach.reason}"
-                    }
-                }
-            }
-        }
-
-        // Then the same question through the engine. Off the main thread: both
-        // open sockets and wait.
-        engine = when (val result = withContext(Dispatchers.IO) { EngineSelfTest.run(SOCKS_PORT) }) {
-            is EngineSelfTest.Result.Reached -> "engine: reaches node, exit ${result.exitAddress}"
-            is EngineSelfTest.Result.Failed -> "engine: cannot reach node, ${result.reason}"
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            counters = BridgeDiagnostics.snapshot()
-            engineLog = withContext(Dispatchers.IO) { SessionLog.lastFailure(context) }
-            delay(1500)
-        }
-    }
-
-    Text(
-        text = counters,
-        modifier = Modifier.padding(top = 24.dp),
-        textAlign = TextAlign.Center,
-        style = MaterialTheme.typography.bodySmall,
-    )
-
-    Text(
-        text = node,
-        modifier = Modifier.padding(top = 12.dp),
-        textAlign = TextAlign.Center,
-        style = MaterialTheme.typography.bodySmall,
-    )
-
-    Text(
-        text = engine,
-        modifier = Modifier.padding(top = 12.dp),
-        textAlign = TextAlign.Center,
-        style = MaterialTheme.typography.bodySmall,
-    )
-
-    Text(
-        text = engineLog,
-        modifier = Modifier.padding(top = 12.dp),
-        textAlign = TextAlign.Center,
-        style = MaterialTheme.typography.bodySmall,
-    )
-}
-
-/** Where the engine listens; kept beside the builder that puts it there. */
-private const val SOCKS_PORT = XrayConfigBuilder.SOCKS_PORT
 
 @Composable
 private fun statusText(state: VpnConnectionState): String = when (state) {
