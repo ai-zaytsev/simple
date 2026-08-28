@@ -92,32 +92,32 @@ func (w *CapacityWatch) once(ctx context.Context) {
 func headline(v capacity.Verdict, r capacity.Reading) string {
 	switch v.State {
 	case capacity.Critical:
-		return "the service is out of room"
+		return "мощности не осталось"
 	case capacity.ScaleRequired:
-		return "add a server"
+		return "нужен сервер"
 	case capacity.Watch:
-		return "capacity is trending towards a decision"
+		return "мощность идёт к решению"
 	default:
-		return fmt.Sprintf("capacity is comfortable on %d node(s)", r.NodesUsable)
+		return fmt.Sprintf("запас есть, серверов в работе: %d", r.NodesUsable)
 	}
 }
 
 func facts(v capacity.Verdict, r capacity.Reading) []string {
 	lines := []string{
-		fmt.Sprintf("now:      %d connection(s) of %d, %.0f%%",
+		fmt.Sprintf("сейчас:  %d соединений из %d, %.0f%%",
 			r.SessionsNow, r.CapacityTotal, v.Utilisation*100),
-		fmt.Sprintf("peaks:    %d today, %d this week (%.0f%% of capacity)",
+		fmt.Sprintf("пики:    %d за сутки, %d за неделю (%.0f%% мощности)",
 			r.PeakToday, r.PeakWeek, v.PeakUsed*100),
-		fmt.Sprintf("busy:     %.0f%% at the ninety-fifth percentile", r.P95Utilisation*100),
-		fmt.Sprintf("servers:  %d usable, %d spare, %d blocked, %d faulty",
+		fmt.Sprintf("занято:  %.0f%% на девяносто пятом процентиле", r.P95Utilisation*100),
+		fmt.Sprintf("серверы: %d в работе, %d в запасе, %d заблокировано, %d неисправно",
 			r.NodesUsable, r.NodesSpare, r.NodesBlocked, r.NodesFaulty),
-		fmt.Sprintf("domains:  %d spare", r.DomainsSpare),
+		fmt.Sprintf("домены:  %d свободных", r.DomainsSpare),
 	}
 
 	if r.GrowthWeekOnWeek != nil {
-		lines = append(lines, fmt.Sprintf("growth:   %+.0f%% on last week", *r.GrowthWeekOnWeek*100))
+		lines = append(lines, fmt.Sprintf("рост:    %+.0f%% к прошлой неделе", *r.GrowthWeekOnWeek*100))
 	} else {
-		lines = append(lines, "growth:   not enough history to say")
+		lines = append(lines, "рост:    истории пока не хватает")
 	}
 	return lines
 }

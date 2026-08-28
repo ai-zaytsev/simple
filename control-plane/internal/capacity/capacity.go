@@ -125,30 +125,30 @@ func Assess(r Reading) Verdict {
 	// Nowhere to send anybody is the worst thing this can say, and it does not
 	// depend on any threshold.
 	if r.NodesUsable == 0 {
-		raise(Critical, "no node can be handed out")
+		raise(Critical, "выдавать нечего: ни один сервер не годится")
 	}
 
 	switch {
 	case v.PeakUsed >= criticalAbove:
-		raise(Critical, fmt.Sprintf("the week's peak used %.0f%% of capacity", v.PeakUsed*100))
+		raise(Critical, fmt.Sprintf("пик за неделю занял %.0f%% мощности", v.PeakUsed*100))
 	case v.PeakUsed >= scaleAbove:
-		raise(ScaleRequired, fmt.Sprintf("the week's peak used %.0f%% of capacity", v.PeakUsed*100))
+		raise(ScaleRequired, fmt.Sprintf("пик за неделю занял %.0f%% мощности", v.PeakUsed*100))
 	case v.PeakUsed >= watchAbove:
-		raise(Watch, fmt.Sprintf("the week's peak used %.0f%% of capacity", v.PeakUsed*100))
+		raise(Watch, fmt.Sprintf("пик за неделю занял %.0f%% мощности", v.PeakUsed*100))
 	}
 
 	if r.P95Utilisation >= scaleAbove {
 		raise(ScaleRequired, fmt.Sprintf(
-			"nineteen minutes in twenty are above %.0f%% of capacity", r.P95Utilisation*100))
+			"девятнадцать минут из двадцати выше %.0f%% мощности", r.P95Utilisation*100))
 	} else if r.P95Utilisation >= watchAbove {
 		raise(Watch, fmt.Sprintf(
-			"nineteen minutes in twenty are above %.0f%% of capacity", r.P95Utilisation*100))
+			"девятнадцать минут из двадцати выше %.0f%% мощности", r.P95Utilisation*100))
 	}
 
 	// A fleet with no spare is a fleet where one machine failing is an outage,
 	// however much room the rest has.
 	if r.NodesUsable > 0 && r.NodesSpare == 0 {
-		raise(ScaleRequired, "no working spare: one node failing takes its people with it")
+		raise(ScaleRequired, "нет запасного сервера: отказ одного унесёт с собой своих людей")
 	}
 
 	// Growth, only where there is a week to compare with. Doubling from a
@@ -156,30 +156,30 @@ func Assess(r Reading) Verdict {
 	// there is also something to fill.
 	if r.GrowthWeekOnWeek != nil && *r.GrowthWeekOnWeek > 0.5 && v.PeakUsed >= watchAbove/2 {
 		raise(ScaleRequired, fmt.Sprintf(
-			"the peak grew %.0f%% on last week", *r.GrowthWeekOnWeek*100))
+			"пик вырос на %.0f%% к прошлой неделе", *r.GrowthWeekOnWeek*100))
 	} else if r.GrowthWeekOnWeek != nil && *r.GrowthWeekOnWeek > 0.25 {
-		raise(Watch, fmt.Sprintf("the peak grew %.0f%% on last week", *r.GrowthWeekOnWeek*100))
+		raise(Watch, fmt.Sprintf("пик вырос на %.0f%% к прошлой неделе", *r.GrowthWeekOnWeek*100))
 	}
 
 	// Domains are the slow part of adding a node, so they are warned about
 	// before they run out rather than when they do.
 	switch {
 	case r.DomainsSpare == 0:
-		raise(ScaleRequired, "no consumable domain is spare: a new node cannot be raised")
+		raise(ScaleRequired, "нет свободного расходного домена: новый сервер не поднять")
 	case r.DomainsSpare < domainsLow:
-		raise(Watch, fmt.Sprintf("%d consumable domain spare", r.DomainsSpare))
+		raise(Watch, fmt.Sprintf("свободных расходных доменов: %d", r.DomainsSpare))
 	}
 
 	if r.NodesBlocked > 0 {
 		raise(ScaleRequired, fmt.Sprintf(
-			"%d node reachable by us and not by devices: replace rather than repair", r.NodesBlocked))
+			"серверов достижимых нами и недостижимых с устройств: %d — заменять, а не чинить", r.NodesBlocked))
 	}
 	if r.NodesFaulty > 0 {
-		raise(Watch, fmt.Sprintf("%d node nobody can reach", r.NodesFaulty))
+		raise(Watch, fmt.Sprintf("серверов, до которых не достаёт никто: %d", r.NodesFaulty))
 	}
 
 	if len(v.Reasons) == 0 {
-		v.Reasons = append(v.Reasons, "room to spare, nothing trending")
+		v.Reasons = append(v.Reasons, "запас есть, тревожных трендов нет")
 	}
 	return v
 }

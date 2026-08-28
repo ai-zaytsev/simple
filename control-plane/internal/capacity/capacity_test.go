@@ -148,7 +148,7 @@ func TestNoHistoryIsNotNoGrowth(t *testing.T) {
 		t.Errorf("a service with no history was judged %s", v.State)
 	}
 	for _, reason := range v.Reasons {
-		if strings.Contains(reason, "grew") {
+		if strings.Contains(reason, "вырос") {
 			t.Errorf("growth was reported with no history to compute it from: %q", reason)
 		}
 	}

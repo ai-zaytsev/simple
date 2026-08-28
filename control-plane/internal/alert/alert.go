@@ -47,13 +47,13 @@ func (a Alert) Text() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s: %s\n", a.State, a.Headline)
 	if len(a.Reasons) > 0 {
-		b.WriteString("\nWhy:\n")
+		b.WriteString("\nПочему:\n")
 		for _, line := range a.Reasons {
 			fmt.Fprintf(&b, "  - %s\n", line)
 		}
 	}
 	if len(a.Facts) > 0 {
-		b.WriteString("\nAs it stands:\n")
+		b.WriteString("\nКак сейчас:\n")
 		for _, line := range a.Facts {
 			fmt.Fprintf(&b, "  %s\n", line)
 		}
