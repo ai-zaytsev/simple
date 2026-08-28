@@ -63,33 +63,26 @@ jobs:
       - name: Find the machine
         id: machine
         env:
-          CLIENT: ${{ secrets.KAMATERA_ACCESS_KEY }}
-          SECRET: ${{ secrets.KAMATERA_SECRET_KEY }}
+          KAMATERA_ACCESS_KEY: ${{ secrets.KAMATERA_ACCESS_KEY }}
+          KAMATERA_SECRET_KEY: ${{ secrets.KAMATERA_SECRET_KEY }}
           MACHINE: ${{ inputs.machine }}
         run: |
           set -euo pipefail
-          client=$(printf '%s' "${CLIENT}" | tr -d '[:space:]')
-          secret=$(printf '%s' "${SECRET}" | tr -d '[:space:]')
+          # Through the shared file rather than by writing the calls again.
+          # The first version of this step wrote them again and got the details
+          # lookup wrong: a path that exists in no documentation, against a
+          # provider that takes identifiers in the body throughout.
+          . infra/kamatera.sh
 
-          curl -sS -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
-            -H "Accept: application/json" \
-            "${KAMATERA_API}/service/servers" > /tmp/servers.json
-
-          id=$(jq -r --arg n "${MACHINE}" \
-            'if type == "array" then (.[] | select(.name == $n) | .id) else empty end' \
-            /tmp/servers.json | head -1)
+          kamatera_servers /tmp/servers.json
+          id=$(kamatera_id_of /tmp/servers.json "${MACHINE}")
           if [ -z "${id}" ]; then
             echo "No machine called '${MACHINE}' at this provider."
             exit 1
           fi
 
-          curl -sS -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
-            -H "Accept: application/json" \
-            "${KAMATERA_API}/server/${id}" > /tmp/one.json
-
-          address=$(jq -r '.. | strings | select(test("^[0-9]+([.][0-9]+){3}$"))' /tmp/one.json \
-            | grep -vE '^(10[.]|172[.](1[6-9]|2[0-9]|3[01])[.]|192[.]168[.]|127[.])' \
-            | head -1)
+          kamatera_info "${id}" /tmp/one.json
+          address=$(kamatera_address_of /tmp/one.json)
           if [ -z "${address}" ]; then
             echo "The machine has no address this can read, so the node it serves cannot be found."
             exit 1
@@ -144,83 +137,24 @@ jobs:
 
       - name: Remove the machine
         env:
-          CLIENT: ${{ secrets.KAMATERA_ACCESS_KEY }}
-          SECRET: ${{ secrets.KAMATERA_SECRET_KEY }}
+          KAMATERA_ACCESS_KEY: ${{ secrets.KAMATERA_ACCESS_KEY }}
+          KAMATERA_SECRET_KEY: ${{ secrets.KAMATERA_SECRET_KEY }}
           MACHINE: ${{ inputs.machine }}
           ID: ${{ steps.machine.outputs.id }}
         run: |
           set -euo pipefail
-          client=$(printf '%s' "${CLIENT}" | tr -d '[:space:]')
-          secret=$(printf '%s' "${SECRET}" | tr -d '[:space:]')
+          . infra/kamatera.sh
 
-          # The two shapes kamatera-node.yml already asks in, in the order it
-          # asks them. Copied rather than reinvented: that file records that the
-          # first shape it tried was accepted and did nothing - empty body,
-          # machine still running, step reporting success - and this is the pair
-          # that came out of finding that.
-          removed=false
-          for shape in body path; do
-            case "${shape}" in
-              body)
-                url="${KAMATERA_API}/service/server/terminate"
-                payload=$(jq -n --arg id "${ID}" '{id: $id, force: true}')
-                ;;
-              path)
-                url="${KAMATERA_API}/service/server/${ID}/terminate"
-                payload='{"force": true}'
-                ;;
-            esac
+          # Whether the call was accepted is not the question, and the shared
+          # file says so where the call lives: one of these shapes was once
+          # accepted and did nothing. What is asked next is whether the machine
+          # left.
+          kamatera_terminate "${ID}" || true
 
-            code=$(curl -sS -o /tmp/terminate.json -w '%{http_code}' -X POST \
-              -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
-              -H "Content-Type: application/json" -H "Accept: application/json" \
-              -d "${payload}" "${url}" || echo "000")
-
-            echo "  ${shape}: HTTP ${code}"
-            case "${code}" in
-              200|201|204) removed=true; break ;;
-            esac
-
-            # Field names only, never values.
-            fields=$(jq -r '(if type == "array" then .[0] else . end) | keys_unsorted | join(", ")' \
-              /tmp/terminate.json 2>/dev/null || echo "no readable fields")
-            echo "    fields in the refusal: ${fields}"
-          done
-
-          if [ "${removed}" != "true" ]; then
-            echo "The provider would not remove '${MACHINE}'. It is still costing money,"
-            echo "and the node row is already retired, so nobody is being sent there."
+          if kamatera_gone "${MACHINE}"; then
+            echo "'${MACHINE}' is gone. A provider slot is free."
+          else
+            echo "The machine is still listed. The node row is already retired,"
+            echo "so nobody is being sent there, but the slot is not free yet."
             exit 1
           fi
-          echo "Asked the provider to remove '${MACHINE}'."
-
-      - name: See that it is gone
-        env:
-          CLIENT: ${{ secrets.KAMATERA_ACCESS_KEY }}
-          SECRET: ${{ secrets.KAMATERA_SECRET_KEY }}
-          MACHINE: ${{ inputs.machine }}
-        run: |
-          set -euo pipefail
-          client=$(printf '%s' "${CLIENT}" | tr -d '[:space:]')
-          secret=$(printf '%s' "${SECRET}" | tr -d '[:space:]')
-
-          # Removal is not instant, so this waits rather than asking once and
-          # believing the answer.
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            curl -sS -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
-              -H "Accept: application/json" \
-              "${KAMATERA_API}/service/servers" > /tmp/after.json
-            still=$(jq -r --arg n "${MACHINE}" \
-              'if type == "array" then ([.[] | select(.name == $n)] | length) else 0 end' \
-              /tmp/after.json)
-            if [ "${still}" = "0" ]; then
-              echo "'${MACHINE}' is gone. A provider slot is free."
-              exit 0
-            fi
-            echo "  still there, waiting (${attempt}/10)"
-            sleep 20
-          done
-
-          echo "The machine is still listed. The node row is already retired,"
-          echo "so nobody is being sent there, but the slot is not free yet."
-          exit 1
