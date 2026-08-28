@@ -1,0 +1,140 @@
+name: Lifecycle
+
+# Moves a server or a domain from one part of its life to another.
+#
+# The declared half of stage 16. The observed half - degraded, blocked, faulty -
+# is worked out from measurements every time somebody asks and is deliberately
+# not writable from here: an operator who could declare a blocked domain
+# healthy would be hiding a live fault behind an opinion, and the fault would
+# be found later by a person who could not connect.
+#
+# So what this changes is intent, and only intent. Whether the thing is
+# actually working is not anybody's to declare.
+
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: What is being moved.
+        required: true
+        default: server
+        type: choice
+        options:
+          - server
+          - domain
+      name:
+        description: Node alias for a server, or the domain name.
+        required: true
+        type: string
+      state:
+        description: Where it should now be in its life.
+        required: true
+        default: draining
+        type: choice
+        options:
+          # Servers
+          - creating
+          - configuring
+          - awaiting-certificate
+          - verifying
+          - ready
+          - serving
+          - draining
+          - quarantined
+          - removing
+          - removed
+          # Domains
+          - retired
+      note:
+        description: Why, in a few words. Shown on the panel beside the state.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  move:
+    name: Lifecycle
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Move it
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          KIND: ${{ inputs.kind }}
+          NAME: ${{ inputs.name }}
+          STATE: ${{ inputs.state }}
+          NOTE: ${{ inputs.note }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+
+          # The name is checked here rather than trusted, because it is
+          # interpolated into a statement. An alias is ours and looks like one;
+          # a domain is a domain.
+          if ! printf '%s' "${NAME}" | grep -qE '^[a-zA-Z0-9._-]{1,253}$'; then
+            echo "That does not look like a node alias or a domain name."
+            exit 1
+          fi
+
+          note=$(printf '%s' "${NOTE}" | tr -cd 'a-zA-Z0-9 ,.:_()-' | cut -c1-200)
+          note="${note} (${ACTOR})"
+
+          if [ "${KIND}" = "server" ]; then
+            case "${STATE}" in
+              retired) echo "retired is for domains; a server is removed."; exit 1 ;;
+            esac
+            statement="update nodes set state = '${STATE}', state_since = now(), state_note = '${note}' where alias = '${NAME}';"
+            check="select alias as name, state, state_note as note from nodes where alias = '${NAME}';"
+          else
+            case "${STATE}" in
+              ready|serving|draining|retired) : ;;
+              *) echo "A domain can be ready, serving, draining or retired."; exit 1 ;;
+            esac
+            statement="update domains set lifecycle = '${STATE}', since = now(), note = '${note}' where name = lower('${NAME}');"
+            check="select name, lifecycle as state, note from domains where name = lower('${NAME}');"
+          fi
+
+          # ON_ERROR_STOP so that a state the database refuses is a failed run
+          # rather than a green one that changed nothing. The vocabulary is
+          # enforced by a constraint, and this is where a typo meets it.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -' <<SQL
+          ${statement}
+          SQL
+
+          echo "Now:"
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -P pager=off -f -' <<SQL
+          ${check}
+          SQL
+
+      - name: Say what changed
+        if: always()
+        env:
+          KIND: ${{ inputs.kind }}
+          NAME: ${{ inputs.name }}
+          STATE: ${{ inputs.state }}
+        run: |
+          {
+            echo "### Lifecycle"
+            echo
+            echo "\`${KIND}\` **${NAME}** → \`${STATE}\`"
+            echo
+            echo "What is observed about it - degraded, blocked, faulty - is not"
+            echo "set here and never will be. It is worked out from measurements"
+            echo "every time the panel is opened."
+          } >> "${GITHUB_STEP_SUMMARY}"
