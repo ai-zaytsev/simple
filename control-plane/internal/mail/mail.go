@@ -1,4 +1,4 @@
-// Package mail sends the one message this product sends.
+// Package mail sends the messages this product sends.
 package mail
 
 import (
@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Sender delivers sign-in links through the transactional provider.
+// Sender delivers messages through the transactional provider.
 //
 // Plain text only, and that is a privacy decision rather than a stylistic one:
 // an open-tracking pixel is an image in an HTML body, and a message with no
@@ -20,14 +20,24 @@ type Sender struct {
 	apiKey      string
 	fromAddress string
 	fromName    string
-	client      *http.Client
+
+	// Where a reply goes. The address messages are sent from is a no-reply
+	// subdomain that accepts nothing, so without this a person answering a
+	// message from us is writing into a hole and has no way to know it.
+	replyTo string
+
+	client *http.Client
 }
 
-func NewSender(apiKey, fromAddress, fromName string) *Sender {
+// NewSender builds a sender. An empty replyTo means messages carry no
+// Reply-To, which is the old behaviour and is still correct where nobody is
+// meant to answer.
+func NewSender(apiKey, fromAddress, fromName, replyTo string) *Sender {
 	return &Sender{
 		apiKey:      apiKey,
 		fromAddress: fromAddress,
 		fromName:    fromName,
+		replyTo:     replyTo,
 		client:      &http.Client{Timeout: 15 * time.Second},
 	}
 }
@@ -35,6 +45,7 @@ func NewSender(apiKey, fromAddress, fromName string) *Sender {
 type request struct {
 	Sender      party   `json:"sender"`
 	To          []party `json:"to"`
+	ReplyTo     *party  `json:"replyTo,omitempty"`
 	Subject     string  `json:"subject"`
 	TextContent string  `json:"textContent"`
 }
@@ -52,18 +63,45 @@ type party struct {
 func (s *Sender) SendSignInLink(to, link string, validFor time.Duration) (string, error) {
 	minutes := int(validFor.Minutes())
 
-	body := request{
-		Sender:  party{Email: s.fromAddress, Name: s.fromName},
-		To:      []party{{Email: to}},
-		Subject: "Вход в приложение",
-		TextContent: fmt.Sprintf(
-			"Откройте ссылку, чтобы завершить вход:\n\n%s\n\n"+
-				"Ссылка действует %d минут и срабатывает один раз.\n\n"+
-				"Если вы не запрашивали вход, письмо можно не открывать: "+
-				"без перехода по ссылке ничего не произойдёт.\n",
-			link, minutes),
-	}
+	return s.post(s.message(to, "Вход в приложение", fmt.Sprintf(
+		"Откройте ссылку, чтобы завершить вход:\n\n%s\n\n"+
+			"Ссылка действует %d минут и срабатывает один раз.\n\n"+
+			"Если вы не запрашивали вход, письмо можно не открывать: "+
+			"без перехода по ссылке ничего не произойдёт.\n",
+		link, minutes)))
+}
 
+// Send delivers an ordinary message to one address.
+//
+// Separate from SendSignInLink because the two have different rules about
+// their contents: a sign-in link is written once and never changes, while this
+// carries whatever the caller wants. It is used for operational alerts, which
+// go to us rather than to a user, and nothing in this package checks that -
+// the caller decides who it is talking to.
+func (s *Sender) Send(to, subject, text string) error {
+	_, err := s.post(s.message(to, subject, text))
+	return err
+}
+
+func (s *Sender) message(to, subject, text string) request {
+	body := request{
+		Sender:      party{Email: s.fromAddress, Name: s.fromName},
+		To:          []party{{Email: to}},
+		Subject:     subject,
+		TextContent: text,
+	}
+	if s.replyTo != "" {
+		body.ReplyTo = &party{Email: s.replyTo, Name: s.fromName}
+	}
+	return body
+}
+
+// post is the one place that talks to the provider.
+//
+// One place rather than two, because the rules that matter here - never log
+// the body, treat a missing message id as success - are easy to get right once
+// and easy to let drift when they are written twice.
+func (s *Sender) post(body request) (string, error) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return "", fmt.Errorf("cannot build the message: %w", err)
@@ -85,8 +123,9 @@ func (s *Sender) SendSignInLink(to, link string, validFor time.Duration) (string
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		// The body is not included. It echoes the recipient, and an address in
-		// a log is the one thing this system must never write down casually.
+		// The status and nothing else. The body echoes the recipient, and an
+		// address in a log is the one thing this system must never write down
+		// casually.
 		return "", fmt.Errorf("provider refused the message: HTTP %d", resp.StatusCode)
 	}
 
@@ -99,48 +138,4 @@ func (s *Sender) SendSignInLink(to, link string, validFor time.Duration) (string
 		return "", nil
 	}
 	return answer.MessageID, nil
-}
-
-// Send delivers an ordinary message to one address.
-//
-// Separate from SendSignInLink because the two have different rules about
-// their contents: a sign-in link is written once and never changes, while this
-// carries whatever the sender wants. It is used for operational alerts, which
-// go to us rather than to a user, and nothing in this package checks that -
-// the caller decides who it is talking to.
-func (s *Sender) Send(to, subject, text string) error {
-	body := request{
-		Sender:      party{Email: s.fromAddress, Name: s.fromName},
-		To:          []party{{Email: to}},
-		Subject:     subject,
-		TextContent: text,
-	}
-
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("cannot build the message: %w", err)
-	}
-
-	req, err := http.NewRequest(http.MethodPost,
-		"https://api.brevo.com/v3/smtp/email", bytes.NewReader(encoded))
-	if err != nil {
-		return fmt.Errorf("cannot build the request: %w", err)
-	}
-	req.Header.Set("api-key", s.apiKey)
-	req.Header.Set("content-type", "application/json")
-	req.Header.Set("accept", "application/json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("provider unreachable: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		// The status and nothing else. The body echoes the recipient, and an
-		// address in a log is the one thing this system must never write down
-		// casually.
-		return fmt.Errorf("provider refused the message: HTTP %d", resp.StatusCode)
-	}
-	return nil
 }

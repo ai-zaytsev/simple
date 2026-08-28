@@ -109,7 +109,11 @@ func run(log *slog.Logger) error {
 	if brevoKey == "" || senderAddress == "" {
 		return errors.New("CP_BREVO_API_KEY and CP_MAIL_FROM are required")
 	}
-	sender := mail.NewSender(brevoKey, senderAddress, "Simple VPN")
+	// Where a reply goes. The address we send from is a no-reply subdomain
+	// that accepts nothing; without this a person answering us is writing into
+	// a hole and has no way to know it. Optional, because a deployment with no
+	// mailbox to answer into should carry no Reply-To rather than a false one.
+	sender := mail.NewSender(brevoKey, senderAddress, "Simple VPN", os.Getenv("CP_REPLY_TO"))
 
 	baseURL := os.Getenv("CP_BASE_URL")
 	if baseURL == "" {
