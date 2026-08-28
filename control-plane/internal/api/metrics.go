@@ -140,16 +140,16 @@ func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {
 
 	// And which are held to a speed, with the figure. Same arrangement: a list
 	// and a number, with nothing said about tiers, prices or people.
-	limited, speed, err := s.store.LimitedCredentials(r.Context())
+	capped, speed, err := s.store.LimitedCredentials(r.Context())
 	if err != nil {
-		s.log.Error("cannot work out the limited set", "error", err)
-		limited, speed = []string{}, 0
+		s.log.Error("cannot work out the capped set", "error", err)
+		capped, speed = []string{}, 0
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":     "ok",
 		"heavy":      heavy,
-		"limited":    limited,
+		"limited":    capped,
 		"speed_mbit": speed,
 	})
 }
