@@ -53,4 +53,10 @@
     <string name="trace_send_confirm">Отправить</string>
     <string name="trace_send_delete">Удалить запись</string>
     <string name="trace_share_title">Подробный лог</string>
+
+    <string name="support">Поддержка</string>
+    <string name="support_email">support@simple-vpn.download</string>
+    <string name="support_no_mail_title">Нет почтового приложения</string>
+    <string name="support_no_mail_body">На этом устройстве не нашлось приложения для почты. Напишите нам с любого другого: %1$s</string>
+    <string name="support_no_mail_close">Понятно</string>
 </resources>

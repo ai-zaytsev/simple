@@ -8,6 +8,23 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!--
+        From Android 11 an application cannot see what else is installed unless
+        it says what it is looking for. Without this the support letter has
+        nowhere to open: the system answers "nothing can handle this" even
+        when three mail applications are installed.
+
+        Narrow on purpose. This asks about applications that can send mail and
+        about nothing else, which is the whole of what the support button
+        needs to know.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="mailto" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"

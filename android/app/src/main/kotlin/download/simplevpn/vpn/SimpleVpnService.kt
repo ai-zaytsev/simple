@@ -24,6 +24,7 @@ import download.simplevpn.core.SessionLog
 import download.simplevpn.core.TunBridge
 import download.simplevpn.core.XrayEngine
 import download.simplevpn.metrics.ServiceReport
+import download.simplevpn.support.LastError
 import download.simplevpn.net.NetworkMonitor
 import download.simplevpn.config.ConnectionProfile
 import download.simplevpn.config.TransportParams
@@ -911,6 +912,9 @@ class SimpleVpnService : VpnService() {
     private fun failAndStop(reason: String) {
         rebuilding = false
         SessionLog.record(this, "stopping after failure: " + reason)
+        // Kept past the end of this attempt so a support message written an
+        // hour later can still say what happened. One value, overwritten.
+        LastError.record(this, reason)
         VpnController.update(VpnConnectionState.Failed(reason))
         teardown()
         stopSelf()

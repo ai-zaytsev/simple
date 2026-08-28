@@ -15,6 +15,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import download.simplevpn.auth.AccountStore
 import download.simplevpn.core.SessionLog
+import download.simplevpn.support.LastError
 import download.simplevpn.auth.SignInScreen
 import download.simplevpn.ui.VpnScreen
 import download.simplevpn.vpn.TraceState
@@ -36,9 +37,9 @@ class MainActivity : ComponentActivity() {
         if (result.resultCode == Activity.RESULT_OK) {
             VpnController.start(this)
         } else {
-            VpnController.update(
-                VpnConnectionState.Failed(getString(R.string.error_consent_denied)),
-            )
+            val reason = getString(R.string.error_consent_denied)
+            LastError.record(this, reason)
+            VpnController.update(VpnConnectionState.Failed(reason))
         }
     }
 

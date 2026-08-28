@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.FileProvider
 import download.simplevpn.R
 import download.simplevpn.core.SessionLog
+import download.simplevpn.support.SupportMail
 import android.os.SystemClock
 import download.simplevpn.vpn.TraceState
 import download.simplevpn.vpn.VpnConnectionState
@@ -101,14 +102,65 @@ fun VpnScreen(
             )
         }
 
-        // The only thing on this screen besides the switch and the status.
         TraceControls(
             connected = state is VpnConnectionState.Connected,
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(16.dp),
         )
+
+        // Always here, and deliberately not only when something has gone
+        // wrong: the moment somebody needs to ask for help is the moment they
+        // should not have to find out how.
+        SupportButton(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(16.dp),
+        )
       }
+    }
+}
+
+/**
+ * Writing to us, in the person's own mail application.
+ *
+ * The letter is opened, not sent: it arrives in their application already
+ * addressed and filled in, and they write the rest and send it themselves.
+ * Nothing leaves the phone until they press send, and they see everything that
+ * is in it before that happens.
+ */
+@Composable
+private fun SupportButton(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var noMailApplication by remember { mutableStateOf(false) }
+
+    TextButton(
+        onClick = { if (!SupportMail.open(context)) noMailApplication = true },
+        modifier = modifier,
+    ) {
+        Text(text = stringResource(R.string.support))
+    }
+
+    // A phone with no mail application is unusual and not impossible, and the
+    // person on it still needs to be able to write to us.
+    if (noMailApplication) {
+        AlertDialog(
+            onDismissRequest = { noMailApplication = false },
+            title = { Text(text = stringResource(R.string.support_no_mail_title)) },
+            text = {
+                Text(
+                    text = stringResource(
+                        R.string.support_no_mail_body,
+                        stringResource(R.string.support_email),
+                    ),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { noMailApplication = false }) {
+                    Text(text = stringResource(R.string.support_no_mail_close))
+                }
+            },
+        )
     }
 }
 
