@@ -150,10 +150,13 @@ jobs:
         env:
           KAMATERA_KEY: ${{ secrets.KAMATERA_ACCESS_KEY }}
           KAMATERA_SECRET: ${{ secrets.KAMATERA_SECRET_KEY }}
+          KAMATERA_ACCESS_KEY: ${{ secrets.KAMATERA_ACCESS_KEY }}
+          KAMATERA_SECRET_KEY: ${{ secrets.KAMATERA_SECRET_KEY }}
           DATACENTER: ${{ inputs.datacenter }}
           ALIAS: ${{ steps.claim.outputs.alias }}
         run: |
           set -euo pipefail
+          . infra/kamatera.sh
           # The provider's own address, taken from the workflow that has been
           # talking to it successfully all along rather than from what looked
           # plausible. Three separate facts about this interface were invented
@@ -226,40 +229,20 @@ jobs:
             exit 1
           fi
 
-          echo "Following command ${command_id}."
+          echo "The provider accepted the creation (command ${command_id})."
 
-          # The queue, then the listing. Not an invented endpoint that takes a
-          # name: this is how the provider says a creation finished, and the
-          # listing is what it considers true afterwards.
-          for _ in $(seq 1 40); do
-            sleep 15
-            info=$(curl -sS "${auth[@]}" "${api}/service/queue/${command_id}")
-            status=$(printf '%s' "${info}" \
-              | jq -r '(if type == "array" then .[0] else . end) | (.status // .state // empty)' \
-              2>/dev/null || echo "")
-
-            if [ -z "${status}" ]; then
-              # The shape, never the contents: printing the body is how a
-              # password reached a public log once already.
-              shape=$(printf '%s' "${info}" \
-                | jq -r '(if type == "array" then .[0] else . end) | keys_unsorted | join(", ")' \
-                2>/dev/null || echo "unreadable")
-              echo "  status field not found; fields present: ${shape}"
-            else
-              echo "  status: ${status}"
-            fi
-
-            case "${status}" in
-              complete|completed|done) break ;;
-              error|cancelled|failed) echo "  the provider reported ${status}"; exit 1 ;;
-            esac
-          done
-
-          curl -sS "${auth[@]}" "${api}/service/servers" > /tmp/servers.json
-          address=$(jq -r --arg n "simple-vpn-${ALIAS}" \
-            'if type == "array" then (.[] | select(.name == $n) | .networks[]?.ips[]?) else empty end' \
-            /tmp/servers.json 2>/dev/null \
-            | grep -vE '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)' | head -1 || echo "")
+          # Waiting for an address rather than following the command queue.
+          #
+          # The queue was followed here until it answered {error, message} on
+          # every poll for five minutes while the machine was being built
+          # perfectly well - it appeared at the provider, running, with an
+          # address. Two things were wrong: the queue endpoint was a guess, and
+          # what was being waited for was not what was needed.
+          #
+          # A build needs an address. Asking for that directly removes the guess
+          # and shortens the chain: the machine is ready when it can be reached,
+          # not when a queue says a word.
+          address=$(kamatera_wait_for_address "simple-vpn-${ALIAS}" 40 /tmp/one.json) || true
 
           if [ -z "${address}" ]; then
             echo "The machine did not report an address."
