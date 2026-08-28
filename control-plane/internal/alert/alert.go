@@ -78,7 +78,7 @@ type Channel interface {
 // in what state.
 type Memory interface {
 	LastSaid(ctx context.Context, subject string) (state string, at time.Time, err error)
-	Record(ctx context.Context, subject, state, channel string, ok bool, detail string) error
+	RecordAlert(ctx context.Context, subject, state, channel string, ok bool, detail string) error
 }
 
 // Notifier decides whether to speak, and then speaks everywhere at once.
@@ -134,7 +134,7 @@ func (n *Notifier) Consider(ctx context.Context, a Alert, calm string) (bool, er
 	// Nothing has been said before and everything is fine: the first thing a
 	// new deployment does should not be to announce that it is well.
 	if previous == "" && a.State == calm {
-		return false, n.memory.Record(ctx, a.Subject, a.State, "none", true, "first look, nothing wrong")
+		return false, n.memory.RecordAlert(ctx, a.Subject, a.State, "none", true, "first look, nothing wrong")
 	}
 
 	sent := false
@@ -148,7 +148,7 @@ func (n *Notifier) Consider(ctx context.Context, a Alert, calm string) (bool, er
 		} else {
 			sent = true
 		}
-		if recordErr := n.memory.Record(ctx, a.Subject, a.State, channel.Name(), err == nil, detail); recordErr != nil {
+		if recordErr := n.memory.RecordAlert(ctx, a.Subject, a.State, channel.Name(), err == nil, detail); recordErr != nil {
 			n.log.Error("could not record an alert", "error", recordErr)
 		}
 	}

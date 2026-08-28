@@ -130,8 +130,8 @@ func (s *Store) LastSaid(ctx context.Context, subject string) (string, time.Time
 	return state, at, nil
 }
 
-// Record writes down that something was said, and whether it arrived.
-func (s *Store) Record(ctx context.Context, subject, state, channel string, ok bool, detail string) error {
+// RecordAlert writes down that something was said, and whether it arrived.
+func (s *Store) RecordAlert(ctx context.Context, subject, state, channel string, ok bool, detail string) error {
 	_, err := s.pool.Exec(ctx, `
 		insert into metrics.capacity_alerts (at, state, subject, channel, ok, detail)
 		values (now(), $1, $2, $3, $4, $5)
