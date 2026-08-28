@@ -267,8 +267,22 @@ jobs:
             exit 1
           fi
 
+          # Registered for masking before it is written anywhere.
+          #
+          # A step output is not a secret, and every later step that takes it
+          # through `env:` prints it in that step's environment block. So the
+          # address would have appeared a dozen times in a public log without
+          # anybody echoing it once. Masking it here covers every one of those,
+          # because it applies to everything this job prints afterwards.
+          #
+          # The address of a node is the single fact somebody intending to
+          # block this service would most like to be handed. The cover domain
+          # in front of the machine exists so that the address is not the
+          # obvious thing about it.
+          echo "::add-mask::${address}"
+
           echo "address=${address}" >> "${GITHUB_OUTPUT}"
-          echo "simple-vpn-${ALIAS} is at ${address}"
+          echo "simple-vpn-${ALIAS} has an address."
 
       - name: Point the domain at it
         env:
@@ -293,7 +307,12 @@ jobs:
           SSH_STDIN=/tmp/statement.sql bash infra/ssh-retry.sh \
             -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
             'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -'
-          echo "${ALIAS} is at ${ADDRESS} and is being configured."
+          # The alias, never the address. The repository is public, so this log
+          # is public, and a node address in it is the one fact somebody
+          # intending to block this service would most like to be given. The
+          # cover domain in front of the machine exists precisely so that the
+          # address is not the obvious thing about it.
+          echo "${ALIAS} has an address recorded and is being configured."
 
           # The endpoints only nodes use are closed to everybody else, and this
           # machine has just become one of the nodes. Without this it would
