@@ -76,6 +76,17 @@ func (s *Server) addExternal(w http.ResponseWriter, r *http.Request) {
 // through a node being retired, and third-party clients import several without
 // complaint.
 func (s *Server) linksFor(r *http.Request, device store.DeviceSummary) ([]string, error) {
+	// A link is built for an external device and for nothing else.
+	//
+	// Checked here rather than left to the callers, because it is the rule the
+	// whole tier arrangement rests on: a link is a way to connect from
+	// somewhere we did not build, and only VIP may have one. An account with
+	// no external allowance can own no external device, so it can reach no
+	// link - but that is a chain of three facts, and a chain is worth one
+	// explicit link at the end of it.
+	if device.Kind != "external" {
+		return nil, errors.New("only an external device has a link")
+	}
 	if device.Credential == nil {
 		return nil, errors.New("the device has no credential")
 	}

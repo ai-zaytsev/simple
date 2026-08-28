@@ -464,3 +464,51 @@ func (s *Store) AddExternalDevice(
 		Label:      label,
 	}, nil
 }
+
+// LimitedCredentials is every credential whose account is capped, with the cap.
+//
+// Returned as a list rather than a rate per credential, because the node needs
+// a set to route on and one number to shape with. A rate per credential would
+// mean a shaping class per person, which is a great many classes and no more
+// truth: everybody on a tier is held to the same figure.
+//
+// The node learns which credentials are slowed and how slow. It does not learn
+// what tier means, who is on one, or why - the same arrangement as the heavier
+// group, and for the same reason.
+func (s *Store) LimitedCredentials(ctx context.Context) ([]string, int, error) {
+	// The lowest cap in force. One number because there is one shaping class;
+	// with two paid speeds this becomes a class each, and that is a change to
+	// the node rather than to this query.
+	var speed *int
+	if err := s.pool.QueryRow(ctx, `
+		select min(speed_mbit) from tier_limits where speed_mbit is not null`).
+		Scan(&speed); err != nil {
+		return nil, 0, fmt.Errorf("cannot read the speed limits: %w", err)
+	}
+	if speed == nil {
+		return []string{}, 0, nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		select c.credential_uuid::text
+		from device_credentials c
+		join devices d on d.id = c.device_id
+		join accounts a on a.id = d.account_id
+		join tier_limits l on l.tier = a.tier
+		where c.state = 'ACTIVE' and l.speed_mbit is not null
+		order by c.credential_uuid`)
+	if err != nil {
+		return nil, 0, fmt.Errorf("cannot list limited credentials: %w", err)
+	}
+	defer rows.Close()
+
+	limited := []string{}
+	for rows.Next() {
+		var credential string
+		if err := rows.Scan(&credential); err != nil {
+			return nil, 0, fmt.Errorf("cannot read a limited credential: %w", err)
+		}
+		limited = append(limited, credential)
+	}
+	return limited, *speed, rows.Err()
+}

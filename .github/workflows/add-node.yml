@@ -373,7 +373,8 @@ jobs:
           set -euo pipefail
           SSH_PROGRAM=scp bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes \
             node/metrics-agent.py node/xray-observability.py \
-            node/check-privacy.sh node/install-metrics-agent.sh "root@${ADDRESS}:/tmp/"
+            node/check-privacy.sh node/speed-limit.sh \
+            node/install-metrics-agent.sh "root@${ADDRESS}:/tmp/"
           bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" 'bash /tmp/install-metrics-agent.sh'
 
       - name: Check it from outside

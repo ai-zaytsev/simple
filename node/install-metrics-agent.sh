@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-for file in xray-observability.py metrics-agent.py check-privacy.sh; do
+for file in xray-observability.py metrics-agent.py check-privacy.sh speed-limit.sh; do
   if [ ! -s "/tmp/${file}" ]; then
     echo "/tmp/${file} is missing. Copy it over first."
     exit 1
@@ -27,6 +27,11 @@ echo "=== Counting ==="
 install -d -m 0755 /usr/local/lib/simple-vpn
 install -m 0644 /tmp/xray-observability.py /usr/local/lib/simple-vpn/xray_observability.py
 python3 /usr/local/lib/simple-vpn/xray_observability.py
+
+# The shaper, which the metrics agent runs every round. Installed here rather
+# than left to be applied by hand, because it lives in the kernel: a reboot
+# takes it away, and only something that runs regularly puts it back.
+install -m 0755 /tmp/speed-limit.sh /usr/local/lib/simple-vpn/speed-limit.sh
 
 echo
 echo "=== Logs ==="
@@ -75,7 +80,7 @@ echo
 echo "=== Agent ==="
 install -m 0755 /tmp/metrics-agent.py /usr/local/bin/simple-vpn-metrics
 install -m 0755 /tmp/check-privacy.sh /usr/local/bin/simple-vpn-check-privacy
-rm -f /tmp/metrics-agent.py /tmp/check-privacy.sh /tmp/xray-observability.py
+rm -f /tmp/metrics-agent.py /tmp/check-privacy.sh /tmp/xray-observability.py /tmp/speed-limit.sh
 
 cat > /etc/systemd/system/simple-vpn-metrics.service <<'UNIT'
 [Unit]
