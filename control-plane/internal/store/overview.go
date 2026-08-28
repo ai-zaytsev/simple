@@ -23,8 +23,14 @@ type Overview struct {
 		DownlinkBps     float64 `json:"downlink_bps"`
 	} `json:"now"`
 
-	Nodes     []NodeHealth     `json:"nodes"`
-	Classes   []ClassShare     `json:"classes"`
+	Nodes   []NodeHealth `json:"nodes"`
+	Classes []ClassShare `json:"classes"`
+
+	// The same picture split in two: what the heaviest accounts spend the
+	// service on, against what everybody else does. Withheld until each group
+	// is large enough that describing it is not describing people.
+	LoadShape LoadShape `json:"load_shape"`
+
 	Usage     UsageShape       `json:"usage"`
 	Connect   ConnectSummary   `json:"connect"`
 	Endpoints []EndpointHealth `json:"endpoints"`
@@ -132,6 +138,9 @@ func (s *Store) Overview(ctx context.Context, now time.Time) (Overview, error) {
 		return o, err
 	}
 	if o.Usage, err = s.usageShape(ctx, now); err != nil {
+		return o, err
+	}
+	if o.LoadShape, err = s.loadShape(ctx, now); err != nil {
 		return o, err
 	}
 	if o.Connect, err = s.connectSummary(ctx, now); err != nil {
@@ -393,4 +402,94 @@ func endpointVerdict(e EndpointHealth) string {
 		return "slower"
 	}
 	return "works"
+}
+
+// LoadShape is how the heaviest users differ from everybody else.
+//
+// Two mixes rather than one, and both withheld until each group has enough
+// people in it. A share computed over three accounts is not a share: it is
+// what those three did, told to somebody who knows who they are.
+type LoadShape struct {
+	HeavyAccounts    int          `json:"heavy_accounts"`
+	OrdinaryAccounts int          `json:"ordinary_accounts"`
+	HeavyBytes       int64        `json:"heavy_bytes"`
+	OrdinaryBytes    int64        `json:"ordinary_bytes"`
+	Heavy            []ClassShare `json:"heavy"`
+	Ordinary         []ClassShare `json:"ordinary"`
+
+	// Why there is nothing to show, when there is nothing to show. Empty when
+	// the two mixes above are worth reading.
+	Withheld string `json:"withheld"`
+}
+
+// loadShape reads the two mixes and decides whether they may be shown.
+func (s *Store) loadShape(ctx context.Context, now time.Time) (LoadShape, error) {
+	var shape LoadShape
+	since := now.Add(-24 * time.Hour)
+
+	err := s.pool.QueryRow(ctx, `
+		select
+			coalesce(max(accounts) filter (where cohort = 'heavy'), 0),
+			coalesce(max(accounts) filter (where cohort = 'ordinary'), 0)
+		from metrics.cohort_sizes where at >= $1`, since).
+		Scan(&shape.HeavyAccounts, &shape.OrdinaryAccounts)
+	if err != nil {
+		return shape, fmt.Errorf("cannot read cohort sizes: %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		select cohort, class, sum(uplink_bytes + downlink_bytes)::bigint as bytes
+		from metrics.traffic_classes
+		where at >= $1
+		group by cohort, class
+		order by bytes desc`, since)
+	if err != nil {
+		return shape, fmt.Errorf("cannot read the load shape: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cohort string
+		var share ClassShare
+		if err := rows.Scan(&cohort, &share.Class, &share.Bytes); err != nil {
+			return shape, fmt.Errorf("cannot read a load shape row: %w", err)
+		}
+		if cohort == "heavy" {
+			shape.HeavyBytes += share.Bytes
+			shape.Heavy = append(shape.Heavy, share)
+		} else {
+			shape.OrdinaryBytes += share.Bytes
+			shape.Ordinary = append(shape.Ordinary, share)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return shape, err
+	}
+
+	for i := range shape.Heavy {
+		if shape.HeavyBytes > 0 {
+			shape.Heavy[i].Percent = float64(shape.Heavy[i].Bytes) * 100 / float64(shape.HeavyBytes)
+		}
+	}
+	for i := range shape.Ordinary {
+		if shape.OrdinaryBytes > 0 {
+			shape.Ordinary[i].Percent = float64(shape.Ordinary[i].Bytes) * 100 / float64(shape.OrdinaryBytes)
+		}
+	}
+
+	// The guard, and the reason. Said out loud rather than shown as an empty
+	// chart, because an empty chart reads as "nobody does anything" and this
+	// reads as what it is.
+	switch {
+	case shape.HeavyAccounts == 0 && shape.OrdinaryAccounts == 0:
+		shape.Withheld = "not measured yet"
+	case shape.HeavyAccounts+shape.OrdinaryAccounts < MinAccountsForCohorts:
+		shape.Withheld = "too few accounts to speak of groups"
+	case shape.HeavyAccounts < 5 || shape.OrdinaryAccounts < 5:
+		shape.Withheld = "one of the groups is too small to describe without describing people"
+	}
+	if shape.Withheld != "" {
+		shape.Heavy, shape.Ordinary = nil, nil
+	}
+	return shape, nil
 }

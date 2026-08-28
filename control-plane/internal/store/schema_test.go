@@ -157,3 +157,36 @@ func tableBody(sql, name string) string {
 	}
 	return sql[start : start+end]
 }
+
+// TestCohortCannotBecomeAUserKey checks the one column stage 13 added.
+//
+// Comparing two groups is allowed; describing a person is not, and the
+// difference between them is entirely a matter of how many values the column
+// can hold. Two is a comparison. Anything more is a key, and a key is one
+// migration away from being a profile: traffic by kind, keyed by somebody.
+//
+// So the database refuses a third value, and this refuses a migration that
+// would let it accept one.
+func TestCohortCannotBecomeAUserKey(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("migrations", "0011_load_shape.sql"))
+	if err != nil {
+		t.Fatalf("cannot read the load shape migration: %v", err)
+	}
+	sql := string(body)
+
+	for _, table := range []string{"traffic_classes", "traffic_class_days"} {
+		want := "check (cohort in ('ordinary', 'heavy'))"
+		if !strings.Contains(sql, want) {
+			t.Errorf("%s gains a cohort column with no constraint limiting it to two groups", table)
+		}
+	}
+
+	// Counted per group, one number each. If this ever became a per-person
+	// count it would be a list of people with a label attached.
+	if !strings.Contains(sql, "cohort_sizes") {
+		t.Error("group sizes are not recorded; a share with no group size cannot be checked for being one person")
+	}
+	if strings.Contains(sql, "analytics_id") || strings.Contains(sql, "account_id") {
+		t.Error("the load shape migration names a user key; the two halves must stay apart")
+	}
+}

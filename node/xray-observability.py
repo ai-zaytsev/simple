@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Teaches this node's Xray to count, without teaching it to remember.
 
-Adds three things to the configuration: counters, a management service allowed
-to read them, and a set of outbounds that exist only so that traffic can be
-counted separately by kind.
+Adds counters, a management service allowed to read them, and a set of
+outbounds that exist only so traffic can be counted separately by kind.
 
-The last one is worth explaining. Every outbound added here is the same freedom
-outbound doing the same thing; they differ only in name. Routing sends a
-connection to one of them, and the only trace that survives is a number of
-bytes against a class. There is no user in that number, because Xray counts
-users and outbounds separately and offers no way to ask for the pair. The
-question "which user watched video" has no answer here, and not because we
-decline to answer it.
+Every outbound here is the same freedom outbound doing the same thing; they
+differ only in name. Routing sends a connection to one of them, and the only
+trace that survives is a number of bytes against a class. There is no user in
+that number, because Xray counts users and outbounds separately and offers no
+way to ask for the pair. The question "which user watched video" has no answer
+here, and not because we decline to answer it.
 
-Run it twice and the second run changes nothing.
+There is a second set of the same outbounds, prefixed `heavy-`, used for a
+list of credentials the Control Plane names. That is how the two groups can be
+compared without anybody being described: the node is handed a list and told
+nothing about what it means, and what it reports is two sets of totals.
+
+Run twice and the second run changes nothing.
 """
 
 import json
@@ -24,6 +27,11 @@ from pathlib import Path
 
 CONFIG = Path("/usr/local/etc/xray/config.json")
 BACKUP = Path("/root/xray-config.before-observability.json")
+
+# Where the list of heavier credentials is kept between runs, so that a change
+# can be recognised as a change. It holds credential identifiers and nothing
+# else; the node never learns why they are on it.
+HEAVY_LIST = Path("/etc/simple-vpn-heavy.json")
 
 # The classes the Business Owner asked to see. Names are short because they end
 # up as counter names, and a counter name is not a place for prose.
@@ -37,8 +45,8 @@ CLASSES = [
 # Written out here rather than pulled from a published category file, because
 # that file would have to be fetched onto every node and kept current, and a
 # stale one misclassifies quietly. These lists are short, ours, and honest
-# about their reach: a lot of traffic will land in `web` and `other`. That is a
-# limit of the method, stated rather than hidden.
+# about their reach: a lot of traffic still lands in `web` and `other`. That is
+# a limit of the method, stated rather than hidden.
 DOMAINS = {
     "video": [
         "domain:youtube.com", "domain:googlevideo.com", "domain:ytimg.com",
@@ -81,55 +89,90 @@ DOMAINS = {
 }
 
 
-def classification_rules(api_rules):
-    """The rules, in the order they are asked.
+def matchers():
+    """Every rule this node classifies by, in the order it asks them.
 
     Order is the whole meaning of a routing table: the first match wins, so a
-    broad rule placed early makes every rule after it dead. The catch-all is
-    last for that reason, and the protocol rule is first because a torrent that
-    also matches a port rule is still a torrent.
-    """
-    rules = list(api_rules)
+    broad rule placed early makes every rule after it dead. The protocol rule
+    is first because a torrent that also matches a port rule is still a
+    torrent, and the catch-all is last for the same reason in reverse.
 
-    rules.append({
-        "type": "field",
-        "protocol": ["bittorrent"],
-        "outboundTag": "class-p2p",
-    })
+    Returned as (matcher, class) pairs so that each one can be emitted twice -
+    once for the heavier group, once for everybody else - without the order
+    being written down in two places and drifting apart.
+    """
+    rules = []
+
+    # Recognised by what it says rather than where it goes. Proven on a live
+    # node with a real handshake: the twenty kilobytes landed in p2p and
+    # nowhere else.
+    rules.append(({"protocol": ["bittorrent"]}, "p2p"))
 
     for name in ("video", "audio", "calls", "games", "download", "background"):
-        rules.append({
-            "type": "field",
-            "domain": DOMAINS[name],
-            "outboundTag": "class-" + name,
-        })
+        rules.append(({"domain": DOMAINS[name]}, name))
+
+    # The classic BitTorrent range, as a backstop for what the sniffer cannot
+    # see. Xray recognises the TCP handshake; a torrent running over uTP is
+    # UDP and goes unrecognised, and this stage requires P2P to be separated
+    # rather than mostly separated.
+    rules.append(({"network": "tcp,udp", "port": "6881-6999"}, "p2p"))
 
     # Calls that announce no name: the standard rendezvous ports are the only
     # thing they have in common.
-    rules.append({
-        "type": "field",
-        "network": "udp",
-        "port": "3478,5349,19302-19309",
-        "outboundTag": "class-calls",
-    })
+    rules.append(({"network": "udp", "port": "3478,5349,19302-19309"}, "calls"))
 
-    rules.append({
-        "type": "field",
-        "network": "tcp,udp",
-        "port": "80,443,8080,8443",
-        "outboundTag": "class-web",
-    })
+    # Game traffic that announces no name either. These are the ports the
+    # large platforms publish for their own clients.
+    rules.append((
+        {"network": "udp", "port": "3074,3658-3659,6672,9305-9308,10070-10080,27000-27100"},
+        "games",
+    ))
 
-    rules.append({
-        "type": "field",
-        "network": "tcp,udp",
-        "outboundTag": "class-other",
-    })
+    rules.append(({"network": "tcp,udp", "port": "80,443,8080,8443"}, "web"))
+    rules.append(({"network": "tcp,udp"}, "other"))
+    return rules
+
+
+def classification_rules(api_rules, heavy):
+    """The routing table, with the heavier group split off where asked.
+
+    Each matcher is emitted twice when there is a heavy list: once narrowed to
+    those credentials and pointing at `heavy-<class>`, then unchanged pointing
+    at `class-<class>`. With no heavy list the second half is the whole table
+    and the node behaves exactly as it did before this existed.
+    """
+    rules = list(api_rules)
+
+    for matcher, name in matchers():
+        if heavy:
+            narrowed = dict(matcher)
+            narrowed["type"] = "field"
+            narrowed["user"] = heavy
+            narrowed["outboundTag"] = "heavy-" + name
+            rules.append(narrowed)
+
+        ordinary = dict(matcher)
+        ordinary["type"] = "field"
+        ordinary["outboundTag"] = "class-" + name
+        rules.append(ordinary)
 
     return rules
 
 
-def patch(config):
+def read_heavy():
+    """The list as it was last applied, or empty if it never has been."""
+    try:
+        return sorted(json.loads(HEAVY_LIST.read_text()))
+    except Exception:  # noqa: BLE001 - a missing or broken list means none
+        return []
+
+
+def write_heavy(heavy):
+    HEAVY_LIST.write_text(json.dumps(sorted(heavy)))
+    HEAVY_LIST.chmod(0o600)
+
+
+def patch(config, heavy):
     changed = []
 
     # Counting has to be switched on in three places that do not know about one
@@ -145,20 +188,6 @@ def patch(config):
         level0["statsUserUplink"] = True
         level0["statsUserDownlink"] = True
         changed.append("per-user totals enabled")
-
-    # Set because it is the documented way to count live sessions, and left
-    # here so nobody spends the afternoon discovering what this one cost:
-    # `xray api statsonline` answers NotFound with it on, with it off, for a
-    # user declared in the file and for a user added at runtime, while somebody
-    # is watching video through the node. The panel reported nobody connected
-    # for exactly that reason.
-    #
-    # Live connections are counted by the agent instead, from the sockets
-    # nginx has open into this inbound. That number is checkable in a second
-    # from a shell, which this one never was.
-    if not level0.get("statsUserOnline"):
-        level0["statsUserOnline"] = True
-        changed.append("live session count enabled")
 
     system = policy.setdefault("system", {})
     for key in ("statsInboundUplink", "statsInboundDownlink",
@@ -191,10 +220,11 @@ def patch(config):
     outbounds = config.setdefault("outbounds", [])
     have = {o.get("tag") for o in outbounds}
     for name in CLASSES:
-        if "class-" + name not in have:
-            outbounds.append({"tag": "class-" + name, "protocol": "freedom"})
-            if "class outbounds added" not in changed:
-                changed.append("class outbounds added")
+        for tag in ("class-" + name, "heavy-" + name):
+            if tag not in have:
+                outbounds.append({"tag": tag, "protocol": "freedom"})
+                if "class outbounds added" not in changed:
+                    changed.append("class outbounds added")
 
     routing = config.setdefault("routing", {})
     rules = routing.get("rules", [])
@@ -203,7 +233,7 @@ def patch(config):
         print("The management interface has no routing rule. Refusing to touch this.")
         sys.exit(1)
 
-    wanted = classification_rules(api_rules)
+    wanted = classification_rules(api_rules, heavy)
     if rules != wanted:
         routing["rules"] = wanted
         if "classification rules written" not in changed:
@@ -233,14 +263,27 @@ def refuse_if_logging(config):
     log["dnsLog"] = False
 
 
-def main():
+def apply(heavy=None, restart=True):
+    """Writes the configuration and, if anything changed, restarts the engine.
+
+    Returns True when the engine was restarted.
+
+    The restart is not avoidable. Xray reads its routing table once, at start,
+    and `xray api adrules` - the documented way to replace it on a running
+    engine - crashes in this version: tested on a live pair, the call panicked
+    and the rules were not replaced. So a change of the heavy list costs a
+    reconnect, and the caller chooses the moment.
+    """
+    if heavy is None:
+        heavy = read_heavy()
+
     config = json.loads(CONFIG.read_text())
     refuse_if_logging(config)
-    changed = patch(config)
+    changed = patch(config, heavy)
 
     if not changed:
-        print("Already counting. Nothing to change.")
-        return
+        write_heavy(heavy)
+        return False
 
     candidate = Path("/tmp/xray-observability-candidate.json")
     candidate.write_text(json.dumps(config, indent=2))
@@ -255,17 +298,27 @@ def main():
         candidate.unlink(missing_ok=True)
         print("Xray refuses the new configuration. Nothing changed.")
         print((test.stdout or test.stderr).strip()[-500:])
-        sys.exit(1)
+        return False
 
     if not BACKUP.exists():
         shutil.copy2(CONFIG, BACKUP)
     shutil.copy2(candidate, CONFIG)
     candidate.unlink(missing_ok=True)
+    write_heavy(heavy)
 
     for line in changed:
         print("  " + line)
+
+    if not restart:
+        return False
     print("Restarting Xray. Connected devices reconnect on their own.")
     subprocess.run(["systemctl", "restart", "xray"], check=True)
+    return True
+
+
+def main():
+    if not apply():
+        print("Already counting. Nothing to change.")
 
 
 if __name__ == "__main__":

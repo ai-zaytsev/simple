@@ -77,9 +77,9 @@ def counters():
     """
     answer = xray("statsquery", "-reset")
     if not answer:
-        return {}, {}, {}
+        return {}, {}, {}, {}
 
-    per_user, per_class, per_inbound = {}, {}, {}
+    per_user, per_class, per_heavy, per_inbound = {}, {}, {}, {}
     for stat in answer.get("stat", []):
         name = stat.get("name", "")
         value = int(stat.get("value", 0) or 0)
@@ -89,18 +89,26 @@ def counters():
         if len(parts) != 4:
             continue
         kind, who, _, direction = parts
+        side = "up" if direction == "uplink" else "down"
         if kind == "user":
             per_user.setdefault(who, {"up": 0, "down": 0})
-            per_user[who]["up" if direction == "uplink" else "down"] += value
+            per_user[who][side] += value
         elif kind == "outbound" and who.startswith("class-"):
             cls = who[len("class-"):]
             per_class.setdefault(cls, {"up": 0, "down": 0})
-            per_class[cls]["up" if direction == "uplink" else "down"] += value
+            per_class[cls][side] += value
+        elif kind == "outbound" and who.startswith("heavy-"):
+            # The same nine classes, for the credentials the Control Plane
+            # named. Which credentials those are is not reported and not
+            # remembered here: the list arrived as a list.
+            cls = who[len("heavy-"):]
+            per_heavy.setdefault(cls, {"up": 0, "down": 0})
+            per_heavy[cls][side] += value
         elif kind == "inbound":
             per_inbound.setdefault(who, {"up": 0, "down": 0})
-            per_inbound[who]["up" if direction == "uplink" else "down"] += value
+            per_inbound[who][side] += value
 
-    return per_user, per_class, per_inbound
+    return per_user, per_class, per_heavy, per_inbound
 
 
 def tunnel_connections():
@@ -211,7 +219,7 @@ def system_stats():
 
 
 def sample(cpu_prev):
-    per_user, per_class, per_inbound = counters()
+    per_user, per_class, per_heavy, per_inbound = counters()
     emails = configured_users()
     cpu, cpu_prev = cpu_percent(cpu_prev)
     latency, loss = upstream_quality()
@@ -238,15 +246,26 @@ def sample(cpu_prev):
         # account. The node cannot do that itself: it has never been told which
         # credential belongs to whom, and this is one of the reasons.
         "credential_bytes": {k: v["up"] + v["down"] for k, v in per_user.items()},
-        # Per class, with no user in it at all. The two dictionaries above and
-        # below cannot be joined, here or anywhere downstream.
-        "class_bytes": {k: v for k, v in per_class.items()},
+        # Per class, with no user in it at all. This dictionary and the one
+        # above cannot be joined, here or anywhere downstream.
+        "class_bytes": dict(per_class),
+        # The same nine classes for the credentials the Control Plane named.
+        # Two groups and no people: the node was handed a list and told nothing
+        # about what put anybody on it.
+        "heavy_class_bytes": dict(per_heavy),
     }
     body.update(system_stats())
     return body, cpu_prev
 
 
 def deliver(pending):
+    """Sends what has been gathered and returns what came back.
+
+    The answer carries the credentials this node should route the other way.
+    It arrives on the reply to a report rather than through a channel of its
+    own, because it changes about once a day and the report already runs every
+    minute.
+    """
     payload = json.dumps({"samples": pending}).encode()
     request = urllib.request.Request(
         CP_URL + "/v1/node/metrics",
@@ -258,12 +277,65 @@ def deliver(pending):
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=30) as answer:
-        return answer.status == 200
+        if answer.status != 200:
+            return None
+        try:
+            return json.loads(answer.read().decode())
+        except (ValueError, UnicodeDecodeError):
+            return {}
+
+
+# How long a changed list may wait for a quiet moment before it is applied
+# anyway. Six hours: long enough that most nodes will find a moment with
+# nobody connected, short enough that a busy node still gets there within a
+# working day.
+HEAVY_PATIENCE_S = 6 * 3600
+
+
+def apply_heavy(heavy, waiting_since):
+    """Puts a changed list into effect, preferring a moment nobody will notice.
+
+    Applying it restarts the engine, and there is no way around that: Xray
+    reads its routing table once at start, and the API call documented for
+    replacing it crashes in this version - tested, not assumed. So the moment
+    is chosen instead of the mechanism. A node with nobody connected can be
+    restarted for free; a node that never goes quiet is restarted anyway
+    eventually, because reporting stale groups indefinitely is worse.
+
+    Returns the time the wait started, or None once it has been applied.
+    """
+    try:
+        sys.path.insert(0, "/usr/local/lib/simple-vpn")
+        import xray_observability
+    except ImportError:
+        print("cannot reach the configuration builder", file=sys.stderr)
+        return waiting_since
+
+    if sorted(heavy) == xray_observability.read_heavy():
+        return None
+
+    live = tunnel_connections()
+    waited = time.time() - (waiting_since or time.time())
+    if live and waited < HEAVY_PATIENCE_S:
+        return waiting_since or time.time()
+
+    print(
+        "applying a new group list (%d credentials, %d connections open)"
+        % (len(heavy), live or 0),
+        file=sys.stderr,
+    )
+    try:
+        xray_observability.apply(heavy=sorted(heavy))
+    except Exception as problem:  # noqa: BLE001 - never take the node down for this
+        print("could not apply the group list:", type(problem).__name__, file=sys.stderr)
+        return waiting_since
+    return None
 
 
 def main():
     pending = []
     cpu_prev = None
+    waiting_since = None
 
     # A first reading only establishes the baseline for the CPU delta, and its
     # counters cover an unknown stretch of time since the last restart. Taken
@@ -283,8 +355,10 @@ def main():
 
         pending = pending[-MAX_PENDING:]
         try:
-            if deliver(pending):
+            answer = deliver(pending)
+            if answer is not None:
                 pending = []
+                waiting_since = apply_heavy(answer.get("heavy", []), waiting_since)
         except (urllib.error.URLError, OSError) as problem:
             print("could not deliver:", type(problem).__name__, file=sys.stderr)
 

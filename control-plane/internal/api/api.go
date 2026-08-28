@@ -63,6 +63,13 @@ type Server struct {
 	names     map[string]bool
 	namesAt   time.Time
 	namesOnce namesGuard
+
+	// Which credentials the nodes should route through their heavy outbounds,
+	// recomputed at most once a minute. Cached because every node asks on
+	// every report and the answer changes about once a day.
+	heavySet  []string
+	heavyAt   time.Time
+	heavyOnce namesGuard
 }
 
 func New(

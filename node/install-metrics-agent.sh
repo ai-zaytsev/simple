@@ -21,7 +21,12 @@ for file in xray-observability.py metrics-agent.py check-privacy.sh; do
 done
 
 echo "=== Counting ==="
-python3 /tmp/xray-observability.py
+# Installed as a module, not run and thrown away: the metrics agent imports it
+# to rebuild the routing table when the group list changes, and two copies of
+# the rule order would be two copies to drift apart.
+install -d -m 0755 /usr/local/lib/simple-vpn
+install -m 0644 /tmp/xray-observability.py /usr/local/lib/simple-vpn/xray_observability.py
+python3 /usr/local/lib/simple-vpn/xray_observability.py
 
 echo
 echo "=== Logs ==="
