@@ -324,7 +324,8 @@ jobs:
           set -euo pipefail
           SSH_PROGRAM=scp bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes -r "sites/${SITE}" "root@${ADDRESS}:/tmp/site"
           SSH_PROGRAM=scp bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes \
-            node/provision.sh node/users-agent.py node/install-users-agent.sh \
+            node/provision.sh node/harden-ssh.sh \
+            node/users-agent.py node/install-users-agent.sh \
             "root@${ADDRESS}:/tmp/"
 
           # The secret travels here and nowhere else, over ssh, in an
@@ -434,6 +435,25 @@ jobs:
           [ "${seen}" = "1" ] && note "it is reporting" || { note "no report arrived in three minutes"; fail=1; }
 
           exit "${fail}"
+
+      - name: Close it to everything but the way in
+        env:
+          ADDRESS: ${{ steps.machine.outputs.address }}
+          CP_ADDRESS: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          # Last, because every step before it needed to reach this machine
+          # directly. Afterwards management arrives through the Control Plane
+          # and a scan of this node from the internet finds a web server and
+          # nothing else, which is what the stage asks for.
+          SSH_PROGRAM=scp bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes \
+            node/firewall.sh "root@${ADDRESS}:/tmp/"
+
+          # No revert armed: nothing after this needs the connection, and a
+          # firewall that undoes itself three minutes after a run finishes
+          # would leave the node open with nobody watching.
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" \
+            "ALLOW_SSH_FROM='${CP_ADDRESS}' REVERT_AFTER=0 bash /tmp/firewall.sh; rm -f /tmp/firewall.sh"
 
       - name: Ready
         env:
