@@ -60,6 +60,24 @@ jobs:
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
           chmod 600 ~/.ssh/deploy
+
+          # The key put where every ssh will find it, rather than handed to the
+          # ones somebody remembered to hand it to.
+          #
+          # A jump is two connections, and the inner one is started by ssh
+          # itself: it does not inherit -i from the command line. So the outer
+          # hop authenticated, the inner hop arrived carrying no key, and the
+          # log said "permission denied" about a host whose name was masked -
+          # the right complaint about the wrong machine.
+          {
+            echo "Host *"
+            echo "  IdentityFile ~/.ssh/deploy"
+            echo "  IdentitiesOnly yes"
+            echo "  BatchMode yes"
+            echo "  StrictHostKeyChecking accept-new"
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
           ssh-keyscan -H "${JUMP}" >> ~/.ssh/known_hosts 2>/dev/null
           bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${JUMP}" true
           echo "Control Plane reachable."
