@@ -153,18 +153,38 @@ jobs:
         run: |
           set -euo pipefail
           api="https://console.kamatera.com/service/server"
-          auth=(-H "AuthClientId: ${KAMATERA_KEY}" -H "AuthSecret: ${KAMATERA_SECRET}")
 
-          ssh -i ~/.ssh/deploy -o BatchMode=yes -o StrictHostKeyChecking=no \
-            -o PasswordAuthentication=no true 2>/dev/null || true
+          # Trimmed, because a credential that arrives with a trailing newline
+          # is refused in a way that reads like a wrong credential.
+          client=$(printf '%s' "${KAMATERA_KEY}" | tr -d '[:space:]')
+          secret=$(printf '%s' "${KAMATERA_SECRET}" | tr -d '[:space:]')
+          auth=(-H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" -H "Accept: application/json")
+
+          # Asked rather than assumed. Image identifiers belong to a datacenter
+          # and change; the first attempt at this used a name invented to look
+          # plausible, and the provider refused the whole creation. Looking it
+          # up means changing datacenter works, and an identifier that changes
+          # is noticed here rather than six months from now.
+          image=$(curl -sS "${auth[@]}" \
+            "${api}?images=1&datacenter=${DATACENTER}" \
+            | jq -r '[.[]? | select((.os // "") == "Ubuntu" and ((.code // "") | startswith("24.04")))] | .[0].id // empty')
+
+          if [ -z "${image}" ]; then
+            echo "No Ubuntu 24.04 image is offered in ${DATACENTER}."
+            echo "Run the Kamatera Node workflow with action=options to see what is."
+            exit 1
+          fi
+          echo "Using image ${image}"
+
           pubkey=$(ssh-keygen -y -f ~/.ssh/deploy)
 
-          body=$(jq -n --arg name "simple-vpn-${ALIAS}" --arg dc "${DATACENTER}" --arg key "${pubkey}" \
+          body=$(jq -n --arg name "simple-vpn-${ALIAS}" --arg dc "${DATACENTER}" \
+            --arg key "${pubkey}" --arg image "${image}" \
             '{name: $name, password: "__generate__", passwordValidate: "__generate__",
-              "ssh-key": $key, datacenter: $dc, image: "ubuntu_server_24.04_64-bit",
+              "ssh-key": $key, datacenter: $dc, image: $image,
               cpu: "1B", ram: 1024, disk: "size=20", dailybackup: "no", managed: "no",
               network: "name=wan,ip=auto", quantity: 1, billingcycle: "hourly",
-              poweronaftercreate: "yes"}')
+              monthlypackage: "", poweronaftercreate: "yes"}')
 
           created=$(curl -sS -X POST "${auth[@]}" -H "content-type: application/json" \
             -d "${body}" "${api}" || echo '{}')
@@ -178,7 +198,12 @@ jobs:
           command_id=$(printf '%s' "${created}" | jq -r 'if type == "array" then .[0] else (.commandIds[0] // empty) end' 2>/dev/null || echo "")
           if [ -z "${command_id}" ]; then
             echo "The provider did not start the creation."
-            printf '%s' "${created}" | jq -r 'keys_unsorted | join(", ")' 2>/dev/null || true
+            # What it objected to, after the generated password has been
+            # masked. The first failure here printed only the field names,
+            # which said "errors" and nothing about what was wrong.
+            printf '%s' "${created}" \
+              | jq -r '(.errors // [])[] | "  " + ((.info // .message // .code // "") | tostring)' \
+              2>/dev/null || printf '%s' "${created}" | jq -r 'keys_unsorted | join(", ")' 2>/dev/null || true
             exit 1
           fi
 
