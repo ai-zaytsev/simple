@@ -93,6 +93,10 @@ jobs:
           # the journal and nowhere else, which is a deployment that decides
           # correctly and tells nobody.
           ALERT_EMAIL: ${{ secrets.CP_ALERT_EMAIL }}
+          # Where a reply to one of our messages goes. A variable rather than a
+          # secret: it is printed in the headers of every message we send, so
+          # hiding it from a log hides it from nobody.
+          REPLY_TO: ${{ vars.CP_REPLY_TO }}
         run: |
           set -euo pipefail
           if [ "${SLOT}" = "a" ]; then
@@ -124,6 +128,7 @@ jobs:
           CP_DNS_SPACESHIP_SECRET=${SS_SECRET}
           CP_ADMIN_TOKEN=${ADMIN_TOKEN}
           CP_ALERT_EMAIL=${ALERT_EMAIL}
+          CP_REPLY_TO=${REPLY_TO}
           ENVFILE
 
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'bash -s' <<'REMOTE'
