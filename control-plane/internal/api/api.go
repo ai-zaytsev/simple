@@ -125,6 +125,13 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/plan", s.plan)
 	mux.HandleFunc("POST /v1/devices", s.listDevices)
 	mux.HandleFunc("POST /v1/devices/revoke", s.revokeDevice)
+
+	// Routers, televisions, computers and anything else that speaks the same
+	// protocol. They are revoked through the endpoint above like everything
+	// else: one way to take access away, so there is not a second one for
+	// somebody to forget.
+	mux.HandleFunc("POST /v1/external", s.addExternal)
+	mux.HandleFunc("POST /v1/external/links", s.externalLinks)
 	mux.HandleFunc("POST /v1/whereami", s.whereFrom)
 	mux.HandleFunc("POST /v1/plan/failed", s.planFailed)
 	mux.HandleFunc("GET /v1/node/users", s.nodeUsers)

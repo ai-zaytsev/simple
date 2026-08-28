@@ -85,3 +85,29 @@ func hasColumn(schema, table, column string) bool {
 	declared := regexp.MustCompile(`(?im)^\s*` + column + `\s`)
 	return declared.MatchString(body[2])
 }
+
+// readSource returns one of this package's files, for the checks that are
+// about how something is written rather than what it computes.
+func readSource(t *testing.T, name string) string {
+	t.Helper()
+	body, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatalf("cannot read %s: %v", name, err)
+	}
+	return string(body)
+}
+
+// between returns the text from the first marker to the next occurrence of the
+// second one after it, or empty when the first is absent.
+func between(source, from, to string) string {
+	start := strings.Index(source, from)
+	if start < 0 {
+		return ""
+	}
+	rest := source[start+len(from):]
+	end := strings.Index(rest, to)
+	if end < 0 {
+		return rest
+	}
+	return rest[:end]
+}

@@ -72,6 +72,12 @@ func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
 			"state":      d.State,
 			"created_at": d.CreatedAt,
 			"this_one":   d.ID == device.ID,
+
+			// One list holds phones and televisions, so it has to say which is
+			// which and what the person called it. Revoking the right one must
+			// not mean reading identifiers and guessing.
+			"kind":  d.Kind,
+			"label": d.Label,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"devices": out})
