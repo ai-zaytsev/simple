@@ -37,4 +37,22 @@
     <string name="error_no_working_plan">Не удалось подключиться ни с текущими, ни с предыдущими настройками. Попробуйте позже.</string>
 
     <string name="notification_channel_name">Состояние VPN</string>
+
+    <string name="trace_start">Начать писать лог</string>
+    <string name="trace_stop">Прекратить писать лог</string>
+    <string name="trace_send">Отправить логи</string>
+    <string name="trace_running">Идёт запись · %1$d:%2$02d</string>
+
+    <string name="trace_warning_title">Запись содержит адреса</string>
+    <string name="trace_warning_body">Подробный лог записывает, к каким сайтам и сервисам обращается это устройство, пока идёт запись. Он нужен, когда проблему нельзя увидеть иначе — например, сайт открывается не через ту сторону.
+
+Запись остановится сама через 10 минут и при выключении VPN. Файл останется на телефоне: мы его никуда не отправляем, отправить его можете только вы.</string>
+    <string name="trace_warning_confirm">Начать запись</string>
+    <string name="trace_warning_cancel">Не надо</string>
+
+    <string name="trace_send_title">Что уедет вместе с файлом</string>
+    <string name="trace_send_body">В записи %1$d адресов, к которым обращалось устройство. Отправляйте её только тому, кому готовы это показать.</string>
+    <string name="trace_send_confirm">Отправить</string>
+    <string name="trace_send_delete">Удалить запись</string>
+    <string name="trace_share_title">Подробный лог</string>
 </resources>
