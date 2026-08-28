@@ -84,7 +84,7 @@ object XrayConfigBuilder {
         // exactly the part that must not be written; what actually diagnoses a
         // failure is the application's own narration in SessionLog, which names
         // endpoints, transports and outcomes and never names a destination.
-        put("loglevel", "warning")
+        put("loglevel", if (errorLogPath == null) "warning" else "info")
         put("error", errorLogPath ?: "")
     }
 
