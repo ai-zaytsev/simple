@@ -1,0 +1,226 @@
+name: Retire Node
+
+# Takes a machine out of service and removes it, freeing what it held.
+#
+# The half of a replacement that comes before Add Server. Kept separate on
+# purpose: destroying a machine and building one are different decisions with
+# different failure modes, and a single run that did both would leave nothing
+# to inspect between them.
+#
+# What it frees is a provider slot, a domain and a node row. The domain matters
+# most: Add Server refuses a domain already in use, so a retirement that forgot
+# it would make the replacement impossible for a reason nobody could see.
+
+on:
+  workflow_dispatch:
+    inputs:
+      machine:
+        description: The provider's name for the machine, as the Kamatera listing shows it.
+        required: true
+        type: string
+      reason:
+        description: Why. Recorded against the node, and read later by whoever asks what happened.
+        required: true
+        default: rebuilt to restore management access
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  JUMP: ${{ secrets.CP_DEPLOY_HOST }}
+  KAMATERA_API: https://cloudcli.cloudwm.com
+
+jobs:
+  retire:
+    name: Retire Node
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reach the Control Plane
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          {
+            echo "Host *"
+            echo "  IdentityFile ~/.ssh/deploy"
+            echo "  IdentitiesOnly yes"
+            echo "  BatchMode yes"
+            echo "  StrictHostKeyChecking accept-new"
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+          ssh-keyscan -H "${JUMP}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh "root@${JUMP}" true
+          echo "Control Plane reachable."
+
+      - name: Find the machine
+        id: machine
+        env:
+          CLIENT: ${{ secrets.KAMATERA_ACCESS_KEY }}
+          SECRET: ${{ secrets.KAMATERA_SECRET_KEY }}
+          MACHINE: ${{ inputs.machine }}
+        run: |
+          set -euo pipefail
+          client=$(printf '%s' "${CLIENT}" | tr -d '[:space:]')
+          secret=$(printf '%s' "${SECRET}" | tr -d '[:space:]')
+
+          curl -sS -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+            -H "Accept: application/json" \
+            "${KAMATERA_API}/service/servers" > /tmp/servers.json
+
+          id=$(jq -r --arg n "${MACHINE}" \
+            'if type == "array" then (.[] | select(.name == $n) | .id) else empty end' \
+            /tmp/servers.json | head -1)
+          if [ -z "${id}" ]; then
+            echo "No machine called '${MACHINE}' at this provider."
+            exit 1
+          fi
+
+          curl -sS -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+            -H "Accept: application/json" \
+            "${KAMATERA_API}/server/${id}" > /tmp/one.json
+
+          address=$(jq -r '.. | strings | select(test("^[0-9]+([.][0-9]+){3}$"))' /tmp/one.json \
+            | grep -vE '^(10[.]|172[.](1[6-9]|2[0-9]|3[01])[.]|192[.]168[.]|127[.])' \
+            | head -1)
+          if [ -z "${address}" ]; then
+            echo "The machine has no address this can read, so the node it serves cannot be found."
+            exit 1
+          fi
+
+          echo "::add-mask::${address}"
+          echo "id=${id}" >> "${GITHUB_OUTPUT}"
+          echo "address=${address}" >> "${GITHUB_OUTPUT}"
+          echo "Found '${MACHINE}'."
+
+      - name: Take it out of service and free what it held
+        id: retire
+        env:
+          ADDRESS: ${{ steps.machine.outputs.address }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          # Done before the machine is destroyed, not after. A row still
+          # pointing at a machine that no longer exists is a node the chooser
+          # can still hand out, and the people sent there find nothing.
+          #
+          # The domain is freed in the same statement. Add Server refuses a
+          # domain already in use, so a retirement that kept it would make the
+          # replacement impossible for a reason nobody could see from the error.
+          cat > /tmp/retire.sql <<SQL
+          update domains set lifecycle = 'ready', since = now(),
+                             note = 'freed when its node was retired'
+          where name in (
+            select lower(params->>'server_name') from nodes
+            where host = '${ADDRESS}' and state <> 'removed'
+          );
+
+          update nodes set state = 'removed', state_since = now(), state_note = '${REASON}'
+          where host = '${ADDRESS}' and state <> 'removed';
+          SQL
+
+          # The alias and the freed domain, read back so the next run has what
+          # it needs. Both are already public - the alias is opaque and the
+          # domain is one of four listed in Add Server's own choices - and the
+          # address, which is neither, stays masked.
+          cat > /tmp/say.sql <<SQL
+          select alias || ' was retired; its domain ' ||
+                 coalesce(params->>'server_name', '(none)') || ' is free again'
+          from nodes where host = '${ADDRESS}' and state = 'removed';
+          SQL
+
+          SSH_STDIN=/tmp/retire.sql bash infra/ssh-retry.sh "root@${JUMP}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -'
+
+          SSH_STDIN=/tmp/say.sql bash infra/ssh-retry.sh "root@${JUMP}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -tA -P pager=off -f -'
+
+      - name: Remove the machine
+        env:
+          CLIENT: ${{ secrets.KAMATERA_ACCESS_KEY }}
+          SECRET: ${{ secrets.KAMATERA_SECRET_KEY }}
+          MACHINE: ${{ inputs.machine }}
+          ID: ${{ steps.machine.outputs.id }}
+        run: |
+          set -euo pipefail
+          client=$(printf '%s' "${CLIENT}" | tr -d '[:space:]')
+          secret=$(printf '%s' "${SECRET}" | tr -d '[:space:]')
+
+          # The two shapes kamatera-node.yml already asks in, in the order it
+          # asks them. Copied rather than reinvented: that file records that the
+          # first shape it tried was accepted and did nothing - empty body,
+          # machine still running, step reporting success - and this is the pair
+          # that came out of finding that.
+          removed=false
+          for shape in body path; do
+            case "${shape}" in
+              body)
+                url="${KAMATERA_API}/service/server/terminate"
+                payload=$(jq -n --arg id "${ID}" '{id: $id, force: true}')
+                ;;
+              path)
+                url="${KAMATERA_API}/service/server/${ID}/terminate"
+                payload='{"force": true}'
+                ;;
+            esac
+
+            code=$(curl -sS -o /tmp/terminate.json -w '%{http_code}' -X POST \
+              -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+              -H "Content-Type: application/json" -H "Accept: application/json" \
+              -d "${payload}" "${url}" || echo "000")
+
+            echo "  ${shape}: HTTP ${code}"
+            case "${code}" in
+              200|201|204) removed=true; break ;;
+            esac
+
+            # Field names only, never values.
+            fields=$(jq -r '(if type == "array" then .[0] else . end) | keys_unsorted | join(", ")' \
+              /tmp/terminate.json 2>/dev/null || echo "no readable fields")
+            echo "    fields in the refusal: ${fields}"
+          done
+
+          if [ "${removed}" != "true" ]; then
+            echo "The provider would not remove '${MACHINE}'. It is still costing money,"
+            echo "and the node row is already retired, so nobody is being sent there."
+            exit 1
+          fi
+          echo "Asked the provider to remove '${MACHINE}'."
+
+      - name: See that it is gone
+        env:
+          CLIENT: ${{ secrets.KAMATERA_ACCESS_KEY }}
+          SECRET: ${{ secrets.KAMATERA_SECRET_KEY }}
+          MACHINE: ${{ inputs.machine }}
+        run: |
+          set -euo pipefail
+          client=$(printf '%s' "${CLIENT}" | tr -d '[:space:]')
+          secret=$(printf '%s' "${SECRET}" | tr -d '[:space:]')
+
+          # Removal is not instant, so this waits rather than asking once and
+          # believing the answer.
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            curl -sS -H "AuthClientId: ${client}" -H "AuthSecret: ${secret}" \
+              -H "Accept: application/json" \
+              "${KAMATERA_API}/service/servers" > /tmp/after.json
+            still=$(jq -r --arg n "${MACHINE}" \
+              'if type == "array" then ([.[] | select(.name == $n)] | length) else 0 end' \
+              /tmp/after.json)
+            if [ "${still}" = "0" ]; then
+              echo "'${MACHINE}' is gone. A provider slot is free."
+              exit 0
+            fi
+            echo "  still there, waiting (${attempt}/10)"
+            sleep 20
+          done
+
+          echo "The machine is still listed. The node row is already retired,"
+          echo "so nobody is being sent there, but the slot is not free yet."
+          exit 1
