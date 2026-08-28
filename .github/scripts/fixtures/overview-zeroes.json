@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-08-28T19:35:58Z",
+  "now": {"active_users_hour": 1, "active_users_day": 1, "sessions_online": 9,
+          "nodes_reporting": 2, "uplink_bps": 0.0, "downlink_bps": 0.0},
+  "nodes": [
+    {"alias": "a", "verdict": "ok", "offered": true, "room": 0.64,
+     "sessions_online": 9, "cpu_percent": 0.0, "memory_percent": 36.0,
+     "latency_ms": 1.0, "loss_percent": 0.0}
+  ],
+  "capacity": {
+    "state": "SCALE_REQUIRED", "reasons": ["нет запасного сервера"],
+    "sessions_now": 9, "capacity_total": 1000, "utilisation": 0.009, "spare_room": 991,
+    "peak_today": 55, "peak_week": 55, "peak_used": 0.055, "peak_day": 55, "peak_evening": 30,
+    "by_hour": [0,0,0,0,0,0,0,0,0,0,0,0,32,55,30,51,27,32,29,25,29,30,28,0],
+    "p95_utilisation": 0.02, "growth_week_on_week": null, "history_hours": 10.4,
+    "nodes_usable": 2, "nodes_spare": 0, "nodes_blocked": 0, "nodes_faulty": 0,
+    "domains_spare": 1, "groups": [], "domains": []
+  },
+  "lifecycles": [
+    {"kind": "domain", "name": "dead.example", "state": "serving",
+     "may_hand_out": true, "stop_handing_out": false,
+     "needs_replacing": false, "may_delete": false}
+  ],
+  "endpoints": [
+    {"target": "dead.example", "verdict": "unreachable", "ok_from_us": 0.0,
+     "ok_from_devices": 0.0, "device_checks": 0}
+  ],
+  "usage": {"users": 1, "total_bytes": 0}
+}
