@@ -167,7 +167,7 @@ jobs:
           # is noticed here rather than six months from now.
           image=$(curl -sS "${auth[@]}" \
             "${api}?images=1&datacenter=${DATACENTER}" \
-            | jq -r '[.[]? | select((.os // "") == "Ubuntu" and ((.code // "") | startswith("24.04")))] | .[0].id // empty')
+            | jq -r '[.. | objects | select((.os? // "") == "Ubuntu" and ((.code? // "") | startswith("24.04")))] | .[0].id // empty')
 
           if [ -z "${image}" ]; then
             echo "No Ubuntu 24.04 image is offered in ${DATACENTER}."
