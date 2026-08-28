@@ -99,19 +99,9 @@ fun VpnScreen(
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyLarge,
             )
-
-            // Outside the connected branch on purpose: the interesting log is
-            // usually the one from a session that has just ended. Shown only
-            // when there has been a session at all - on a fresh install this
-            // button offered to send an empty file, from a screen where
-            // nothing had happened yet.
-            ShareSessionLog(state)
         }
 
-        // In the corner rather than beside the ordinary log button, because
-        // these are different things and putting them together is how somebody
-        // sends the wrong one. The everyday log is safe and sits with the
-        // status; the recording is not, and stands apart.
+        // The only thing on this screen besides the switch and the status.
         TraceControls(
             connected = state is VpnConnectionState.Connected,
             modifier = Modifier
@@ -168,23 +158,13 @@ private fun TraceControls(connected: Boolean, modifier: Modifier = Modifier) {
                 }
             }
 
-            is TraceState.Idle -> {
-                TextButton(
-                    onClick = { askingToStart = true },
-                    enabled = connected,
-                ) {
+            // Offered only while there is a tunnel, and absent otherwise
+            // rather than greyed out: with no engine running there is nothing
+            // to record, and a control that cannot do anything is better not
+            // shown than shown and explained.
+            is TraceState.Idle -> if (connected) {
+                TextButton(onClick = { askingToStart = true }) {
                     Text(text = stringResource(R.string.trace_start))
-                }
-                // A greyed-out control with no reason reads as broken. There
-                // is a reason and it is short: with no tunnel there is no
-                // engine, so there would be nothing to record.
-                if (!connected) {
-                    Text(
-                        text = stringResource(R.string.trace_needs_vpn),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.padding(start = 12.dp),
-                    )
                 }
             }
         }
@@ -293,56 +273,6 @@ private fun shareFile(context: android.content.Context, file: java.io.File, titl
         context.startActivity(
             Intent.createChooser(send, title).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
-    }
-}
-
-/**
- * Hands the whole session log to whatever the user picks to send it with.
- *
- * Reading counters off a screen located the broken layer but never the reason,
- * and every guess cost an install. The file says what the application did, in
- * order, and what the engine said about it.
- *
- * Diagnostic, and it leaves the device only when the user taps this. The engine
- * writes at a level that names destinations, so this button and the level that
- * fills it go together when the slice does.
- */
-@Composable
-private fun ShareSessionLog(state: VpnConnectionState) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val title = stringResource(R.string.share_log_title)
-
-    // Re-asked whenever the connection state moves, which is every moment this
-    // file can come into existence or be cleared.
-    var haveSomething by remember { mutableStateOf(false) }
-    LaunchedEffect(state) {
-        haveSomething = withContext(Dispatchers.IO) { SessionLog.hasSession(context) }
-    }
-    if (!haveSomething) return
-
-    TextButton(
-        onClick = {
-            scope.launch {
-                val file = withContext(Dispatchers.IO) { SessionLog.export(context) } ?: return@launch
-                val uri = FileProvider.getUriForFile(context, "${context.packageName}.logs", file)
-                val send = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_STREAM, uri)
-                    putExtra(Intent.EXTRA_SUBJECT, title)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                runCatching {
-                    context.startActivity(
-                        Intent.createChooser(send, title)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                    )
-                }
-            }
-        },
-        modifier = Modifier.padding(top = 20.dp),
-    ) {
-        Text(text = stringResource(R.string.action_share_log))
     }
 }
 

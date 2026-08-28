@@ -74,17 +74,6 @@ object SessionLog {
     fun hasTrace(context: Context): Boolean =
         runCatching { traceFile(context).length() > 0 }.getOrDefault(false)
 
-    /**
-     * Whether there is an ordinary log worth offering to send.
-     *
-     * False on a fresh install and after a sign-out, because nothing has
-     * happened yet. Offering to send a file that does not exist is worse than
-     * offering nothing: it is a button that appears to do something, produces
-     * an empty attachment, and teaches the person that the log is useless.
-     */
-    fun hasSession(context: Context): Boolean =
-        runCatching { appFile(context).length() > 0 }.getOrDefault(false)
-
     /** Appends one timestamped line to the application's account. */
     fun record(context: Context, line: String) {
         try {
@@ -95,41 +84,6 @@ object SessionLog {
         }
     }
 
-    /**
-     * Merges both accounts into one file for sharing.
-     *
-     * The application's account comes first and whole: it is short, ordered,
-     * and says what was attempted. The engine's account follows, trimmed to its
-     * tail, because it grows for as long as the tunnel runs and the end is
-     * where a failure is.
-     */
-    fun export(context: Context): File? {
-        return try {
-            val target = File(context.cacheDir, EXPORT_NAME)
-            target.parentFile?.mkdirs()
-
-            val text = buildString {
-                appendLine("# Simple VPN session log")
-                appendLine("#")
-                appendLine("# What the application did and what the engine reported.")
-                appendLine("# Contains no record of the sites or services this device used.")
-                appendLine()
-                appendLine("## What the application did")
-                appendLine()
-                append(readAll(appFile(context)).ifBlank { "(nothing recorded)\n" })
-                appendLine()
-                appendLine("## What the engine said")
-                appendLine()
-                append(readTail(engineFile(context)).ifBlank { "(engine reported nothing)\n" })
-            }
-
-            target.writeText(text)
-            target
-        } catch (t: Throwable) {
-            Log.e(TAG, "could not export the session log", t)
-            null
-        }
-    }
 
     /**
      * Packs the detailed recording for sending, saying plainly what is in it.
@@ -221,7 +175,6 @@ object SessionLog {
     private const val APP_NAME = "session.log"
     private const val ENGINE_NAME = "engine.log"
     private const val TRACE_NAME = "trace.log"
-    private const val EXPORT_NAME = "logs/simple-vpn-session.log"
     private const val TRACE_EXPORT_NAME = "logs/simple-vpn-recording.log"
 
     /** How the engine names a destination it has recognised. */
