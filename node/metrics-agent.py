@@ -28,6 +28,7 @@ import urllib.request
 
 API = "127.0.0.1:10085"
 INBOUND_TAG = os.environ.get("INBOUND_TAG", "ws-in")
+INBOUND_PORT = int(os.environ.get("INBOUND_PORT", "10000"))
 
 # One minute. Short enough that a node going bad is visible while it matters,
 # long enough that the reporting is not itself a load worth measuring.
@@ -102,19 +103,31 @@ def counters():
     return per_user, per_class, per_inbound
 
 
-def sessions_online(emails):
-    """How many live sessions the node is carrying.
+def tunnel_connections():
+    """How many connections the node is carrying through the tunnel.
 
-    Asked per user because that is the only shape the API offers, and summed
-    immediately. The per-user number is not reported: the Business Owner asked
-    how many connections there are, not who has how many open.
+    Counted from the sockets nginx has open into the tunnel inbound, which is
+    the number the question was really about: one open connection is one thing
+    somebody is doing through the VPN right now.
+
+    Xray offers `statsonline` for this and it does not work. It answers
+    NotFound with the policy flag on and off, for a user declared in the
+    configuration file and for one added at runtime, while a phone is watching
+    video through the node - which is how the panel came to report nobody
+    connected while somebody was connected. This number can be checked from a
+    shell in one second, and that is why it is this one.
+
+    The total connection count is reported separately and is not the same
+    number: an idle node still shows a few, because anything scanning the
+    internet reaches the cover site.
     """
-    total = 0
-    for email in emails:
-        answer = xray("statsonline", "-email", email)
-        if answer:
-            total += int(answer.get("value", 0) or 0)
-    return total
+    out = subprocess.run(
+        ["ss", "-Htn", "state", "established", "( dport = :%d )" % INBOUND_PORT],
+        capture_output=True, text=True, timeout=10,
+    )
+    if out.returncode != 0:
+        return None
+    return sum(1 for line in out.stdout.splitlines() if line.strip())
 
 
 def configured_users():
@@ -212,7 +225,7 @@ def sample(cpu_prev):
         "at": int(time.time()),
         "window_s": INTERVAL_S,
         "users_configured": len(emails),
-        "sessions_online": sessions_online(emails),
+        "sessions_online": tunnel_connections(),
         "cpu_percent": cpu,
         "load1": load1,
         "memory_percent": memory_percent(),

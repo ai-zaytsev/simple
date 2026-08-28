@@ -146,6 +146,20 @@ def patch(config):
         level0["statsUserDownlink"] = True
         changed.append("per-user totals enabled")
 
+    # Set because it is the documented way to count live sessions, and left
+    # here so nobody spends the afternoon discovering what this one cost:
+    # `xray api statsonline` answers NotFound with it on, with it off, for a
+    # user declared in the file and for a user added at runtime, while somebody
+    # is watching video through the node. The panel reported nobody connected
+    # for exactly that reason.
+    #
+    # Live connections are counted by the agent instead, from the sockets
+    # nginx has open into this inbound. That number is checkable in a second
+    # from a shell, which this one never was.
+    if not level0.get("statsUserOnline"):
+        level0["statsUserOnline"] = True
+        changed.append("live session count enabled")
+
     system = policy.setdefault("system", {})
     for key in ("statsInboundUplink", "statsInboundDownlink",
                 "statsOutboundUplink", "statsOutboundDownlink"):

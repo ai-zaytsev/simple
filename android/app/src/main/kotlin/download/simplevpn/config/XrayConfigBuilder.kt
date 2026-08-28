@@ -66,22 +66,26 @@ object XrayConfigBuilder {
         // generator, so an access log cannot appear at runtime.
         put("access", "none")
 
-        if (errorLogPath == null) {
-            put("error", "")
-            put("loglevel", "warning")
-        } else {
-            // Diagnostic path, used while the slice is being brought up on a
-            // real device. The engine reports a refused or stalled outbound at
-            // info level, so warning hides exactly the line worth having.
-            //
-            // The cost is real and is why this is not the default: at info
-            // level the engine names the destinations it dials, which is the
-            // browsing history the privacy model forbids keeping. The file
-            // lives in the application's private storage, is truncated at every
-            // start, and this level goes away with the slice.
-            put("error", errorLogPath)
-            put("loglevel", "info")
-        }
+        // Never below warning, with or without a file.
+        //
+        // This used to be `info` whenever a diagnostic file was wanted, and the
+        // comment here admitted the cost and promised to remove it later. Later
+        // arrived by way of an exported session log that named every site the
+        // phone had visited - advertising endpoints, a video CDN, a telemetry
+        // host - and then travelled off the device as an attachment.
+        //
+        // A phone writing its owner's browsing history to disk is the same
+        // record the service is forbidden to keep, in the one place where
+        // nobody is auditing. It does not become acceptable for being local:
+        // it is more exportable there, not less.
+        //
+        // The diagnostic loss is real and smaller than it looks. What the
+        // engine says at info is mostly which address it dialled, which is
+        // exactly the part that must not be written; what actually diagnoses a
+        // failure is the application's own narration in SessionLog, which names
+        // endpoints, transports and outcomes and never names a destination.
+        put("loglevel", "warning")
+        put("error", errorLogPath ?: "")
     }
 
     private fun buildDns(policy: RoutingPolicy): JSONObject {
