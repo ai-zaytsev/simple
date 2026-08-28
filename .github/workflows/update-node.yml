@@ -1,0 +1,176 @@
+name: Update Node
+
+# Brings a node that is already serving people up to the current agents.
+#
+# Until now the only way a node received these files was being created, so a
+# change to them reached new machines and no others. That is a slow kind of
+# drift: the fleet stops being one thing, and the difference is invisible until
+# something behaves differently on one machine than on another.
+#
+# One node per run, named. Not a loop over the fleet: this restarts the engine
+# and changes the kernel's queues on a machine carrying live connections, and
+# the whole point of doing it one at a time is that the second one is done
+# after the first is known to be well.
+
+on:
+  workflow_dispatch:
+    inputs:
+      alias:
+        description: Which node. Its alias, as the panel shows it.
+        required: true
+        type: string
+      revert_after_minutes:
+        description: >
+          How long the shaper stays armed to remove itself. The timer is
+          cancelled once the node has been seen to be well, so this only fires
+          when something went wrong and nobody could reach the machine.
+        required: true
+        default: "10"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    name: Update Node
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reach the Control Plane
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" true
+          echo "Control Plane reachable."
+
+      - name: Find the node
+        id: node
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ALIAS: ${{ inputs.alias }}
+        run: |
+          set -euo pipefail
+          # Asked of the database rather than typed in, so that a node cannot be
+          # updated by address without the service knowing it exists.
+          address=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "psql \"\$(cat /etc/simple-vpn-cp.dsn)\" -tAc \
+             \"select host from nodes where alias = '${ALIAS}' and state <> 'removed'\"" | tr -d '[:space:]')
+
+          if [ -z "${address}" ] || [ "${address}" = "0.0.0.0" ]; then
+            echo "No node called '${ALIAS}' has an address. Nothing to update."
+            exit 1
+          fi
+          echo "address=${address}" >> "${GITHUB_OUTPUT}"
+          echo "Found it."
+
+      - name: Reach the node
+        env:
+          ADDRESS: ${{ steps.node.outputs.address }}
+        run: |
+          set -euo pipefail
+          ssh-keyscan -H "${ADDRESS}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes \
+            -o StrictHostKeyChecking=accept-new "root@${ADDRESS}" true
+          echo "Node reachable."
+
+      - name: Arm the way back before changing anything
+        env:
+          ADDRESS: ${{ steps.node.outputs.address }}
+          MINUTES: ${{ inputs.revert_after_minutes }}
+        run: |
+          set -euo pipefail
+          # The shaper redirects every inbound packet through a virtual device.
+          # If that goes wrong the machine stops answering, including to us, and
+          # a machine that cannot be reached cannot be repaired.
+          #
+          # So the undo is scheduled before the change, exactly as the firewall
+          # does it. The timer is cancelled at the end, by which point the node
+          # has been seen to be well; if it is not cancelled, it fires.
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" \
+            "systemd-run --on-active=${MINUTES}min --unit=simple-vpn-unshape \
+               /usr/local/lib/simple-vpn/speed-limit.sh none"
+          echo "The shaper will remove itself in ${MINUTES} minutes unless this run cancels it."
+
+      - name: Copy the agents and the shaper
+        env:
+          ADDRESS: ${{ steps.node.outputs.address }}
+        run: |
+          set -euo pipefail
+          SSH_PROGRAM=scp bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes \
+            node/metrics-agent.py node/xray-observability.py \
+            node/check-privacy.sh node/speed-limit.sh \
+            node/install-metrics-agent.sh "root@${ADDRESS}:/tmp/"
+          echo "Copied."
+
+      - name: Install
+        env:
+          ADDRESS: ${{ steps.node.outputs.address }}
+        run: |
+          set -euo pipefail
+          # This restarts Xray, because the routing table is read once at start
+          # and the documented way to replace it on a running engine crashes in
+          # this version. Connected devices reconnect on their own; there is no
+          # version of this that does not cost them that.
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" \
+            'bash /tmp/install-metrics-agent.sh'
+
+      - name: See that it is well
+        env:
+          ADDRESS: ${{ steps.node.outputs.address }}
+        run: |
+          set -euo pipefail
+          echo "--- services ---"
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" \
+            'systemctl is-active xray nginx simple-vpn-metrics'
+
+          echo "--- the tunnel still answers ---"
+          # Through nginx on the node's own address, which is the path a device
+          # takes. A 400 means the server spoke and refused a request that was
+          # not a tunnel, which is exactly right.
+          code=$(bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" \
+            'curl -sk -o /dev/null -w "%{http_code}" --max-time 10 https://127.0.0.1/' || echo 000)
+          echo "GET / -> ${code}"
+          if [ "${code}" = "000" ]; then
+            echo "The node did not answer its own web server."
+            exit 1
+          fi
+
+          echo "--- destinations are still not written down ---"
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" \
+            '/usr/local/bin/simple-vpn-check-privacy' || {
+              echo "The privacy check failed. Not cancelling the revert."
+              exit 1
+            }
+
+      - name: Stand the shaper down from self-removal
+        if: success()
+        env:
+          ADDRESS: ${{ steps.node.outputs.address }}
+        run: |
+          set -euo pipefail
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" \
+            'systemctl stop simple-vpn-unshape.timer 2>/dev/null; true'
+          echo "Timer cancelled. The node is up to date."
+
+      - name: Say what the shaper is doing
+        if: always()
+        env:
+          ADDRESS: ${{ steps.node.outputs.address }}
+        run: |
+          set -euo pipefail
+          # Printed rather than asserted. The shaper only appears once the
+          # Control Plane has named somebody to slow, which can be a round
+          # later than this; an empty table here is not a fault.
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" \
+            'tc -s class show dev $(ip route show default | awk "/default/ {print \$5; exit}") 2>/dev/null | head -20' \
+            || echo "(no shaping in place yet)"
