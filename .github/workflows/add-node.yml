@@ -98,7 +98,7 @@ jobs:
           # have its DNS pointed at the new machine halfway through this run,
           # and the people on the old one would stop being able to connect
           # while everything here reported success.
-          inuse=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+          inuse=$(bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
             "psql \"\$(cat /etc/simple-vpn-cp.dsn)\" -tAc \"select count(*) from nodes where params->>'server_name' = '${DOMAIN}' and state <> 'removed'\"")
           if [ "${inuse}" != "0" ]; then
             echo "${DOMAIN} is already serving a node. Pick a free one, or retire that node first."
@@ -131,8 +131,7 @@ jobs:
             '{server_name: $sn, host_header: $hh, path: $p, fingerprint: "chrome",
               certificates: $certs, capacity: $cap}')
 
-          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -' <<SQL
+          cat > /tmp/statement.sql <<SQL
           insert into nodes (id, alias, host, port, transport_kind, params, state, token_hash)
           values (gen_random_uuid(), '${alias}', '0.0.0.0', 443, 'vless-ws-tls',
                   '${params}'::jsonb, 'creating', decode('${token_hash}', 'hex'));
@@ -140,6 +139,9 @@ jobs:
           values (lower('${DOMAIN}'), 'node', 'ready')
           on conflict (name) do update set lifecycle = 'ready', since = now();
           SQL
+          SSH_STDIN=/tmp/statement.sql bash infra/ssh-retry.sh \
+            -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -'
 
           echo "Recorded ${alias} for ${DOMAIN}, state creating."
 
@@ -245,11 +247,13 @@ jobs:
           ADDRESS: ${{ steps.machine.outputs.address }}
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -' <<SQL
+          cat > /tmp/statement.sql <<SQL
           update nodes set host = '${ADDRESS}', state = 'configuring', state_since = now()
           where alias = '${ALIAS}';
           SQL
+          SSH_STDIN=/tmp/statement.sql bash infra/ssh-retry.sh \
+            -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -'
           echo "${ALIAS} is at ${ADDRESS} and is being configured."
 
       - name: Wait for the machine to answer
@@ -279,15 +283,15 @@ jobs:
           EDGE_PATH: ${{ steps.claim.outputs.edge_path }}
         run: |
           set -euo pipefail
-          scp -i ~/.ssh/deploy -o BatchMode=yes -r "sites/${SITE}" "root@${ADDRESS}:/tmp/site"
-          scp -i ~/.ssh/deploy -o BatchMode=yes \
+          SSH_PROGRAM=scp bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes -r "sites/${SITE}" "root@${ADDRESS}:/tmp/site"
+          SSH_PROGRAM=scp bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes \
             node/provision.sh node/users-agent.py node/install-users-agent.sh \
             "root@${ADDRESS}:/tmp/"
 
           # The secret travels here and nowhere else, over ssh, in an
           # environment rather than an argument: an argument list is visible to
           # every process on the machine.
-          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" \
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" \
             "NODE_DOMAIN='${DOMAIN}' CP_URL='https://simple-syncbridge.download' \
              NODE_TOKEN='${NODE_TOKEN}' WS_PATH='${WS_PATH}' EDGE_PATH='${EDGE_PATH}' \
              bash /tmp/provision.sh"
@@ -299,24 +303,26 @@ jobs:
           ALIAS: ${{ steps.claim.outputs.alias }}
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -' <<SQL
+          cat > /tmp/statement.sql <<SQL
           update nodes set state = 'awaiting-certificate', state_since = now() where alias = '${ALIAS}';
           SQL
+          SSH_STDIN=/tmp/statement.sql bash infra/ssh-retry.sh \
+            -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -'
 
-          scp -i ~/.ssh/deploy -o BatchMode=yes \
+          SSH_PROGRAM=scp bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes \
             node/certificate-agent.sh node/install-certificate-agent.sh "root@${ADDRESS}:/tmp/"
-          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" 'bash /tmp/install-certificate-agent.sh'
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" 'bash /tmp/install-certificate-agent.sh'
 
       - name: Measurement
         env:
           ADDRESS: ${{ steps.machine.outputs.address }}
         run: |
           set -euo pipefail
-          scp -i ~/.ssh/deploy -o BatchMode=yes \
+          SSH_PROGRAM=scp bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes \
             node/metrics-agent.py node/xray-observability.py \
             node/check-privacy.sh node/install-metrics-agent.sh "root@${ADDRESS}:/tmp/"
-          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" 'bash /tmp/install-metrics-agent.sh'
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" 'bash /tmp/install-metrics-agent.sh'
 
       - name: Check it from outside
         env:
@@ -328,10 +334,12 @@ jobs:
           CERTIFICATES: ${{ inputs.certificates }}
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -' <<SQL
+          cat > /tmp/statement.sql <<SQL
           update nodes set state = 'verifying', state_since = now() where alias = '${ALIAS}';
           SQL
+          SSH_STDIN=/tmp/statement.sql bash infra/ssh-retry.sh \
+            -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -'
 
           fail=0
           note() { echo "  $*"; }
@@ -372,7 +380,7 @@ jobs:
           [ "${code}" = "101" ] && note "the tunnel upgrades" || { note "the tunnel answered ${code}"; fail=1; }
 
           # It keeps no record of where anybody went.
-          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" \
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" \
             '/usr/local/bin/simple-vpn-check-privacy' | sed 's/^/  /' || fail=1
 
           # And the Control Plane has heard from it.
@@ -380,7 +388,7 @@ jobs:
           seen=0
           for _ in $(seq 1 12); do
             sleep 15
-            n=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            n=$(bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
               "psql \"\$(cat /etc/simple-vpn-cp.dsn)\" -tAc \"select count(*) from metrics.node_samples where node_alias = '${ALIAS}'\"")
             if [ "${n}" != "0" ]; then seen=1; break; fi
           done
@@ -398,8 +406,7 @@ jobs:
           set -euo pipefail
           # `ready` rather than `serving`: both are handed out, and the
           # difference records that nobody has yet chosen to lean on it.
-          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -' <<SQL
+          cat > /tmp/statement.sql <<SQL
           update nodes set state = 'ready', state_since = now(),
                  state_note = 'built by the Add Server workflow'
           where alias = '${ALIAS}';
@@ -408,6 +415,9 @@ jobs:
           values (gen_random_uuid(), 'https-edge', '${DOMAIN}', 443, '${EDGE_PATH}', 60,
                   'Node ${ALIAS} forwards the API');
           SQL
+          SSH_STDIN=/tmp/statement.sql bash infra/ssh-retry.sh \
+            -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -'
           echo "${ALIAS} is ready and will be handed out."
 
       - name: Say what was made
