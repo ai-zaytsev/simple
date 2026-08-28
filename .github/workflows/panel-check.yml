@@ -28,6 +28,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # The reader lives in the repository, and the job needs it before it can
+      # print anything. Without this the numbers arrive and there is nothing
+      # to read them with, which is how it failed the first time it ran.
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Reach the host
         env:
           DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
