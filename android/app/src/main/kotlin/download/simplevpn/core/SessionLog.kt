@@ -74,6 +74,17 @@ object SessionLog {
     fun hasTrace(context: Context): Boolean =
         runCatching { traceFile(context).length() > 0 }.getOrDefault(false)
 
+    /**
+     * Whether there is an ordinary log worth offering to send.
+     *
+     * False on a fresh install and after a sign-out, because nothing has
+     * happened yet. Offering to send a file that does not exist is worse than
+     * offering nothing: it is a button that appears to do something, produces
+     * an empty attachment, and teaches the person that the log is useless.
+     */
+    fun hasSession(context: Context): Boolean =
+        runCatching { appFile(context).length() > 0 }.getOrDefault(false)
+
     /** Appends one timestamped line to the application's account. */
     fun record(context: Context, line: String) {
         try {
@@ -182,23 +193,6 @@ object SessionLog {
         0
     }
 
-    /** The line worth showing on screen, preferring an actual error. */
-    fun lastFailure(context: Context): String {
-        val tail = readTail(engineFile(context))
-        if (tail.isBlank()) return "log: engine wrote nothing"
-
-        val lines = tail.lineSequence().filter { it.isNotBlank() }.toList()
-
-        // Background telemetry names fail to resolve on any device, all day, at
-        // info level. Showing the newest of those buries anything real.
-        val chosen = lines.lastOrNull { it.contains(ERROR_LEVEL) }
-            ?: lines.lastOrNull { line -> MARKERS.any { line.contains(it, ignoreCase = true) } }
-            ?: lines.lastOrNull()
-            ?: return "log: engine wrote nothing"
-
-        return "log: " + chosen.takeLast(MAX_LENGTH).trim()
-    }
-
     private fun readAll(file: File): String = try {
         if (file.isFile) file.readText() else ""
     } catch (t: Throwable) {
@@ -234,7 +228,4 @@ object SessionLog {
     private val SNIFFED = Regex("sniffed domain: ([a-zA-Z0-9._-]+)")
     private const val TIME_FORMAT = "HH:mm:ss.SSS"
     private const val TAIL_BYTES = 512_000L
-    private const val MAX_LENGTH = 160
-    private const val ERROR_LEVEL = "[Error]"
-    private val MARKERS = listOf("failed", "rejected", "refused", "timeout", "invalid")
 }
