@@ -284,6 +284,11 @@ func (s *Store) domainLifecycles(
 	ctx context.Context, now time.Time,
 	measured map[string]NodeStanding, domainOf map[string]string,
 ) ([]Standing, error) {
+	byName, err := s.domainConditions(ctx, now)
+	if err != nil {
+		return nil, err
+	}
+
 	rows, err := s.pool.Query(ctx, `
 		select name, purpose, lifecycle, since, note from domains order by name`)
 	if err != nil {
@@ -303,8 +308,15 @@ func (s *Store) domainLifecycles(
 		// A node's cover domain takes its condition from the node behind it:
 		// the two are reachable or blocked together, and reporting them apart
 		// would be reporting one thing twice with two different answers.
+		//
+		// A domain with no node - the way in to the Control Plane - is judged
+		// on its own checks. It has to be: it is the domain whose blocking
+		// matters most, because every recovery path depends on devices being
+		// able to ask where to go next.
 		if alias, ok := domainOf[st.Name]; ok {
 			st.Condition = ConditionOf(measured[alias], now)
+		} else if condition, ok := byName[st.Name]; ok {
+			st.Condition = condition
 		} else {
 			st.Condition = Unknown
 		}
@@ -391,4 +403,56 @@ func (s *Store) RememberServedDomains(ctx context.Context) error {
 		return fmt.Errorf("cannot remember bootstrap domains: %w", err)
 	}
 	return nil
+}
+
+// domainConditions works out what is wrong with each domain from the checks of
+// that domain alone.
+//
+// Needed because not every domain has a node behind it. The way in to the
+// Control Plane is a domain with no server of its own, and it is the one whose
+// blocking matters most: if it goes, devices cannot be told where to connect
+// next, and every recovery path this service has depends on it. Deriving its
+// condition only from a node would have left it reading "nothing measured yet"
+// for ever, while being checked every five minutes.
+func (s *Store) domainConditions(ctx context.Context, now time.Time) (map[string]Condition, error) {
+	rows, err := s.pool.Query(ctx, `
+		select target,
+			coalesce(avg(case when vantage = 'control-plane' then (ok::int) end) * 100, -1)::float8,
+			coalesce(avg(case when vantage = 'device' then (ok::int) end) * 100, -1)::float8,
+			count(*) filter (where vantage = 'device')::int
+		from metrics.endpoint_probes
+		where at >= $1
+		group by target`, now.Add(-time.Hour))
+	if err != nil {
+		return nil, fmt.Errorf("cannot read domain checks: %w", err)
+	}
+	defer rows.Close()
+
+	conditions := map[string]Condition{}
+	for rows.Next() {
+		var e EndpointHealth
+		if err := rows.Scan(&e.Target, &e.FromUs, &e.FromDevices, &e.DeviceChecks); err != nil {
+			return nil, fmt.Errorf("cannot read a domain check: %w", err)
+		}
+		conditions[e.Target] = conditionFromVerdict(endpointVerdict(e))
+	}
+	return conditions, rows.Err()
+}
+
+// conditionFromVerdict maps the words the probes speak into the words a
+// lifecycle speaks, so that one vocabulary describes a domain wherever it is
+// mentioned.
+func conditionFromVerdict(verdict string) Condition {
+	switch verdict {
+	case "likely blocked":
+		return Blocked
+	case "unreachable":
+		return Faulty
+	case "slower":
+		return Degraded
+	case "works":
+		return Healthy
+	default:
+		return Unknown
+	}
 }
