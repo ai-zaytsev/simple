@@ -87,8 +87,6 @@ object SupportRequest {
      */
     internal fun clean(value: String): String =
         value
-            .replace(NAMED_SECRET) { match -> match.groupValues[1] + " " + HIDDEN }
-            .replace(SECRET_LOOKING, HIDDEN)
             .replace(WHITESPACE, " ")
             .trim()
 
