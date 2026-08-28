@@ -46,6 +46,18 @@ XRAY_SHA256="e8e31ee3d57a5431a861b811baded3e304fc72e40c524704099e99c1d49f2c77"
 
 say() { echo "== $*"; }
 
+say "Passwords off"
+# Before anything else that takes time. A machine is born with password
+# authentication on and a password the provider generated, and the brute force
+# starts within minutes: the two existing nodes had taken 26,584 and 20,612
+# failed attempts by the time anybody looked.
+if [ -s /tmp/harden-ssh.sh ]; then
+  bash /tmp/harden-ssh.sh
+else
+  echo "  /tmp/harden-ssh.sh is missing; this machine still accepts passwords"
+  exit 1
+fi
+
 say "Packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
