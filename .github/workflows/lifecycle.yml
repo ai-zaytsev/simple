@@ -60,6 +60,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Reach the host
         env:
           DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
@@ -121,6 +124,21 @@ jobs:
             'psql "$(cat /etc/simple-vpn-cp.dsn)" -P pager=off -f -' <<SQL
           ${check}
           SQL
+
+      - name: Refresh which machines may reach the node endpoints
+        if: inputs.kind == 'server'
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          # A removed node's address goes back to the provider, who gives it to
+          # somebody else. Leaving it on the allow list would hand a stranger
+          # the endpoints that say who may connect - they would still need a
+          # token, and they should not be able to ask.
+          scp -i ~/.ssh/deploy -o BatchMode=yes \
+            control-plane/deploy/nginx-node-only.py "root@${HOST}:/tmp/"
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'python3 /tmp/nginx-node-only.py; rm -f /tmp/nginx-node-only.py'
 
       - name: Say what changed
         if: always()

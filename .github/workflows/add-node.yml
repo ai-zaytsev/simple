@@ -295,6 +295,18 @@ jobs:
             'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -'
           echo "${ALIAS} is at ${ADDRESS} and is being configured."
 
+          # The endpoints only nodes use are closed to everybody else, and this
+          # machine has just become one of the nodes. Without this it would
+          # come up unable to learn who may connect, ask for a certificate or
+          # report anything - three failures at three later steps, all of them
+          # looking like something else.
+          # Carried from the checkout rather than run from a copy installed on
+          # the host, so there is no second copy to drift from this one.
+          SSH_PROGRAM=scp bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes \
+            control-plane/deploy/nginx-node-only.py "root@${HOST}:/tmp/"
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'python3 /tmp/nginx-node-only.py; rm -f /tmp/nginx-node-only.py'
+
       - name: Wait for the machine to answer
         env:
           ADDRESS: ${{ steps.machine.outputs.address }}
