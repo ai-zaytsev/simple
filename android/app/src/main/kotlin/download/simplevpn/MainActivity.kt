@@ -14,8 +14,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import download.simplevpn.auth.AccountStore
+import download.simplevpn.core.SessionLog
 import download.simplevpn.auth.SignInScreen
 import download.simplevpn.ui.VpnScreen
+import download.simplevpn.vpn.TraceState
 import download.simplevpn.vpn.VpnConnectionState
 import download.simplevpn.vpn.VpnController
 
@@ -56,6 +58,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // A recording does not survive to a second sitting. If one is running
+        // the state says so and it is left alone - the screen can be recreated
+        // while the service keeps going - but a file left over from last time
+        // is removed before anything can offer to send it.
+        //
+        // This is what makes "there is nothing on this phone to take" true at
+        // an arbitrary moment rather than only just after a send.
+        if (VpnController.trace.value !is TraceState.Recording) {
+            SessionLog.dropTrace(this)
+            VpnController.traceCleared()
+        }
+
         setContent {
             MaterialTheme {
                 // Which screen to show is decided by whether this installation

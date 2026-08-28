@@ -8,16 +8,17 @@ import org.junit.Test
 /**
  * What the engine on somebody's phone is allowed to write down.
  *
- * This test exists because the answer was wrong in production and nothing
- * noticed. Whenever a diagnostic file was wanted the generator set the engine
- * to `info`, and at that level Xray names every address it dials. A phone was
- * therefore keeping its owner's complete browsing history in a file - which
- * then left the device as an attachment, because the application offers a
- * button to export it.
+ * This exists because the answer was wrong in production and nothing noticed.
+ * Whenever a diagnostic file was wanted the generator set the engine to `info`,
+ * and at that level Xray names every address it dials. A phone was therefore
+ * keeping its owner's complete browsing history in a file - which then left the
+ * device as an attachment, because the application offers a button to send it.
  *
- * The service is forbidden to keep that record. A copy on the phone is the same
- * record in the one place nobody audits, and it is more exportable there rather
- * than less. So the level is fixed here, and the fixing is checked.
+ * There is now a level that names destinations, and it is reachable only from
+ * [XrayConfigBuilder.EngineLog.Trace], which exists only while a recording the
+ * user started is running. These tests hold that arrangement in place: that
+ * wanting a file is not wanting a history, and that only one of the three
+ * settings can produce one.
  */
 class EngineLoggingTest {
 
@@ -34,21 +35,24 @@ class EngineLoggingTest {
         ),
     )
 
-    private fun logSection(errorLogPath: String?): JSONObject =
+    private fun logSection(engineLog: XrayConfigBuilder.EngineLog): JSONObject =
         JSONObject(
-            XrayConfigBuilder.build(profile, RoutingPolicy.UNTIL_A_PLAN_ARRIVES, errorLogPath),
+            XrayConfigBuilder.build(profile, RoutingPolicy.UNTIL_A_PLAN_ARRIVES, engineLog),
         ).getJSONObject("log")
 
     /** Levels at which Xray writes the address of every connection it makes. */
     private val namesDestinations = setOf("debug", "info")
 
     @Test
-    fun `the engine never logs at a level that names destinations`() {
-        for (path in listOf(null, "/data/data/download.simplevpn/files/engine.log")) {
-            val log = logSection(path)
-            val level = log.getString("loglevel")
+    fun `the everyday settings never log at a level that names destinations`() {
+        val everyday = listOf(
+            XrayConfigBuilder.EngineLog.Off,
+            XrayConfigBuilder.EngineLog.Errors("/data/data/download.simplevpn/files/engine.log"),
+        )
+        for (setting in everyday) {
+            val level = logSection(setting).getString("loglevel")
             assertTrue(
-                "loglevel $level names every destination the engine dials",
+                "$setting logs at $level, which names every destination the engine dials",
                 level !in namesDestinations,
             )
         }
@@ -58,17 +62,46 @@ class EngineLoggingTest {
     fun `asking for a diagnostic file does not raise the level`() {
         // The trap that was actually sprung: the file and the level were one
         // decision, so wanting diagnostics meant accepting a browsing history.
-        // They are separate now, and this is what says so.
         assertEquals(
-            logSection(null).getString("loglevel"),
-            logSection("/tmp/engine.log").getString("loglevel"),
+            logSection(XrayConfigBuilder.EngineLog.Off).getString("loglevel"),
+            logSection(XrayConfigBuilder.EngineLog.Errors("/tmp/engine.log")).getString("loglevel"),
         )
     }
 
     @Test
-    fun `the access log is off however the engine is asked for`() {
-        for (path in listOf(null, "/tmp/engine.log")) {
-            assertEquals("none", logSection(path).getString("access"))
+    fun `only a deliberate recording names destinations`() {
+        // The other half of the arrangement. If this ever stops being true the
+        // feature has become pointless: a recording that records nothing more
+        // than the everyday log cannot answer the one question it exists for.
+        val level = logSection(XrayConfigBuilder.EngineLog.Trace("/tmp/trace.log")).getString("loglevel")
+        assertTrue(
+            "a recording at $level would not name the destinations it is for",
+            level in namesDestinations,
+        )
+    }
+
+    @Test
+    fun `a recording writes to its own file, never the everyday one`() {
+        // Kept apart so that an ordinary support log sent a week later is not
+        // still carrying whatever was recorded once.
+        assertEquals("/tmp/trace.log", logSection(XrayConfigBuilder.EngineLog.Trace("/tmp/trace.log")).getString("error"))
+        assertEquals("/tmp/engine.log", logSection(XrayConfigBuilder.EngineLog.Errors("/tmp/engine.log")).getString("error"))
+        assertEquals("", logSection(XrayConfigBuilder.EngineLog.Off).getString("error"))
+    }
+
+    @Test
+    fun `the access log is off in every setting, recording included`() {
+        val all = listOf(
+            XrayConfigBuilder.EngineLog.Off,
+            XrayConfigBuilder.EngineLog.Errors("/tmp/engine.log"),
+            XrayConfigBuilder.EngineLog.Trace("/tmp/trace.log"),
+        )
+        for (setting in all) {
+            assertEquals(
+                "$setting turned the access log on; that is a second copy in a second place to forget about",
+                "none",
+                logSection(setting).getString("access"),
+            )
         }
     }
 }

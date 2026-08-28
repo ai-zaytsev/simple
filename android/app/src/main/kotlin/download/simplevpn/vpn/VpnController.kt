@@ -24,6 +24,49 @@ object VpnController {
         _state.value = next
     }
 
+    private val _trace = MutableStateFlow<TraceState>(TraceState.Idle)
+
+    /** Whether a detailed recording is running or waiting to be sent. */
+    val trace: StateFlow<TraceState> = _trace.asStateFlow()
+
+    internal fun updateTrace(next: TraceState) {
+        _trace.value = next
+    }
+
+    /**
+     * Marks the recording gone, after it has been sent or deleted.
+     *
+     * Called by the screen rather than the service, because the screen is
+     * where sending happens and the file must stop being offered the moment it
+     * is no longer there.
+     */
+    fun traceCleared() {
+        if (_trace.value is TraceState.Ready) _trace.value = TraceState.Idle
+    }
+
+    /**
+     * Starts the detailed recording.
+     *
+     * Only ever reached from a deliberate tap, after the screen has said what
+     * the recording holds. There is no other caller and there should not be
+     * one: a recording that can begin without somebody being told is the
+     * defect this whole feature replaces.
+     */
+    fun startTrace(context: Context) {
+        if (state.value !is VpnConnectionState.Connected) return
+        val intent = Intent(context, SimpleVpnService::class.java).apply {
+            action = SimpleVpnService.ACTION_TRACE_START
+        }
+        context.startService(intent)
+    }
+
+    fun stopTrace(context: Context) {
+        val intent = Intent(context, SimpleVpnService::class.java).apply {
+            action = SimpleVpnService.ACTION_TRACE_STOP
+        }
+        context.startService(intent)
+    }
+
     fun start(context: Context) {
         val intent = Intent(context, SimpleVpnService::class.java).apply {
             action = SimpleVpnService.ACTION_START

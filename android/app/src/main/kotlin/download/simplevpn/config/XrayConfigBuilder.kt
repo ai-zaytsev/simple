@@ -8,10 +8,12 @@ import org.json.JSONObject
  *
  * Two properties of the output matter beyond "it connects":
  *
- * Logging is off. `access` is set to `none` and the level never goes below
- * `warning`. The access log records every destination, which is exactly the
- * browsing history the privacy model forbids storing. It is disabled here, at
- * the only place that generates configuration, so no code path can turn it on.
+ * Logging is off unless somebody has asked for it. The access log is never
+ * written at all, and the error level stays at `warning` - which names no
+ * destinations - for every ordinary run. It rises to `info`, where every
+ * address is named, only for [EngineLog.Trace], which exists only while a
+ * recording the user started is running. This is the only place configuration
+ * is generated, so no other code path can reach that level.
  *
  * DNS resolves inside the tunnel. Proxied names are resolved remotely over
  * DoH, so the local resolver never sees which sites the user visits. Names on
@@ -47,13 +49,47 @@ object XrayConfigBuilder {
      */
     private const val LOCAL_DNS = "77.88.8.8"
 
+    /**
+     * What the engine is allowed to write, and where.
+     *
+     * A type rather than a path, because the two questions were once one and
+     * that is how a phone came to keep its owner's browsing history: asking for
+     * a diagnostic file silently asked for a log naming every address dialled.
+     * Now the level is a property of the intent, and the intent is written at
+     * the call site where somebody can read it.
+     */
+    sealed interface EngineLog {
+
+        /** Nothing kept. The engine talks to nobody. */
+        data object Off : EngineLog
+
+        /**
+         * Engine faults only, and no destinations.
+         *
+         * The everyday setting. Verified rather than assumed: at this level
+         * Xray writes nothing about where it connected, even when a dial fails.
+         */
+        data class Errors(val path: String) : EngineLog
+
+        /**
+         * Everything, including every address the engine dials.
+         *
+         * This is a browsing history while it runs. It exists because one class
+         * of fault - traffic taking the wrong route, DNS answered from the
+         * wrong side - is invisible to every other source we have, and it is
+         * reachable only from a recording the user starts, is told about, and
+         * can stop.
+         */
+        data class Trace(val path: String) : EngineLog
+    }
+
     fun build(
         profile: ConnectionProfile,
         policy: RoutingPolicy,
-        errorLogPath: String? = null,
+        engineLog: EngineLog = EngineLog.Off,
     ): String {
         return JSONObject().apply {
-            put("log", buildLog(errorLogPath))
+            put("log", buildLog(engineLog))
             put("dns", buildDns(policy))
             put("inbounds", buildInbounds())
             put("outbounds", buildOutbounds(profile))
@@ -61,31 +97,39 @@ object XrayConfigBuilder {
         }.toString()
     }
 
-    private fun buildLog(errorLogPath: String?): JSONObject = JSONObject().apply {
+    private fun buildLog(engineLog: EngineLog): JSONObject = JSONObject().apply {
         // Not a default that can be overridden elsewhere: this is the only
-        // generator, so an access log cannot appear at runtime.
+        // generator, so an access log cannot appear at runtime. Even a
+        // recording does not turn it on - `info` on the error log already
+        // names destinations, and the access log would add nothing but a
+        // second copy in a second place to forget about.
         put("access", "none")
 
-        // Never below warning, with or without a file.
+        // The level follows the intent and nothing else.
         //
-        // This used to be `info` whenever a diagnostic file was wanted, and the
-        // comment here admitted the cost and promised to remove it later. Later
-        // arrived by way of an exported session log that named every site the
-        // phone had visited - advertising endpoints, a video CDN, a telemetry
-        // host - and then travelled off the device as an attachment.
+        // It used to follow the presence of a file, which is how this phone
+        // came to keep a list of every site its owner visited: whoever wanted
+        // diagnostics got a browsing history without asking for one, and the
+        // file then left the device as an attachment.
         //
-        // A phone writing its owner's browsing history to disk is the same
-        // record the service is forbidden to keep, in the one place where
-        // nobody is auditing. It does not become acceptable for being local:
-        // it is more exportable there, not less.
-        //
-        // The diagnostic loss is real and smaller than it looks. What the
-        // engine says at info is mostly which address it dialled, which is
-        // exactly the part that must not be written; what actually diagnoses a
-        // failure is the application's own narration in SessionLog, which names
-        // endpoints, transports and outcomes and never names a destination.
-        put("loglevel", "warning")
-        put("error", errorLogPath ?: "")
+        // Only Trace names destinations, and Trace exists only while somebody
+        // has deliberately started a recording after being told what it holds.
+        when (engineLog) {
+            is EngineLog.Off -> {
+                put("loglevel", "warning")
+                put("error", "")
+            }
+
+            is EngineLog.Errors -> {
+                put("loglevel", "warning")
+                put("error", engineLog.path)
+            }
+
+            is EngineLog.Trace -> {
+                put("loglevel", "info")
+                put("error", engineLog.path)
+            }
+        }
     }
 
     private fun buildDns(policy: RoutingPolicy): JSONObject {

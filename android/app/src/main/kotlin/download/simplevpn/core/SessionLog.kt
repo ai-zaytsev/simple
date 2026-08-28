@@ -9,39 +9,70 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Everything one connection attempt produced, in one file the user can send.
+ * What a session produced, kept as three files with three different rules.
  *
- * Reading numbers off a screen answered the question of which layer was broken
- * but never why, and each round of guessing cost an install. This keeps the
- * whole account of a session instead: what the application did, in order, and
- * what the engine said about it, from the moment ON is pressed until the tunnel
- * is stopped.
+ * The split is the whole design, because the three differ in what they can
+ * reveal about the person holding the phone:
  *
- * Two files rather than one, because the engine holds its own open and writes
- * to it directly; interleaving our own writes into the same handle would
- * produce torn lines exactly when the file matters most. They are merged when
- * the log is exported.
+ * [appFile] is the application's own account - which endpoint, which
+ * transport, what happened. It names no destination, so it is always kept and
+ * always safe to send. Nearly every fault found in this product was found
+ * here.
  *
- * Diagnostic only, and deliberately short-lived. The engine writes at a level
- * that names every destination it dials, which is the browsing history the
- * privacy model forbids keeping, so the file lives in private storage, is
- * truncated at the start of every session, and leaves the device only when the
- * user explicitly shares it. This whole class goes when the slice does.
+ * [engineFile] is the engine at `warning`. Also kept always, also safe:
+ * verified on a live node that at this level Xray writes nothing about where
+ * it connected, even when a dial fails.
+ *
+ * [traceFile] is the engine at `info`, which names every address it dials. It
+ * is a browsing history, and it exists only while somebody has deliberately
+ * started a recording, having been told what it holds. It is removed when it
+ * is sent and when the application starts, so that at an arbitrary moment
+ * there is nothing on the device to take.
+ *
+ * Separate files rather than one, for a second reason too: the engine holds
+ * its own handle and writes directly, so interleaving our lines into it would
+ * tear them exactly when the file matters.
  */
 object SessionLog {
 
-    /** The application's own account of the session. */
+    /** The application's own account of the session. Never names a destination. */
     fun appFile(context: Context): File = File(context.filesDir, APP_NAME)
 
-    /** The engine's account, written by the engine itself. */
+    /** The engine's faults. Never names a destination. */
     fun engineFile(context: Context): File = File(context.filesDir, ENGINE_NAME)
 
-    /** Starts a session. Both accounts are cleared so the file is one attempt. */
+    /**
+     * The detailed recording, which does name destinations.
+     *
+     * Deliberately not merged into [engineFile]: if it were, an ordinary
+     * support log sent a week later would still be carrying the history of
+     * whatever was recorded once.
+     */
+    fun traceFile(context: Context): File = File(context.filesDir, TRACE_NAME)
+
+    /** Starts a session. Both ordinary accounts are cleared so the file is one attempt. */
     fun reset(context: Context) {
         runCatching { appFile(context).delete() }
         runCatching { engineFile(context).delete() }
         record(context, "session start")
     }
+
+    /**
+     * Removes the detailed recording.
+     *
+     * Called when it has been sent and when the application starts. Not on
+     * every session start: a recording is meant to survive the reconnect that
+     * starting it causes, and a user who records a fault, sees it, and then
+     * reconnects should still have the file.
+     */
+    fun dropTrace(context: Context) {
+        runCatching { traceFile(context).delete() }
+        runCatching { File(context.cacheDir, TRACE_EXPORT_NAME).delete() }
+    }
+
+    /** Whether a recording is sitting on the device waiting to be sent. */
+    fun hasTrace(context: Context): Boolean =
+        runCatching { traceFile(context).length() > 0 }.getOrDefault(false)
 
     /** Appends one timestamped line to the application's account. */
     fun record(context: Context, line: String) {
@@ -68,7 +99,9 @@ object SessionLog {
 
             val text = buildString {
                 appendLine("# Simple VPN session log")
-                appendLine("# Diagnostic build. Contains the addresses this device connected to.")
+                appendLine("#")
+                appendLine("# What the application did and what the engine reported.")
+                appendLine("# Contains no record of the sites or services this device used.")
                 appendLine()
                 appendLine("## What the application did")
                 appendLine()
@@ -76,7 +109,7 @@ object SessionLog {
                 appendLine()
                 appendLine("## What the engine said")
                 appendLine()
-                append(readTail(engineFile(context)).ifBlank { "(engine wrote nothing)\n" })
+                append(readTail(engineFile(context)).ifBlank { "(engine reported nothing)\n" })
             }
 
             target.writeText(text)
@@ -85,6 +118,68 @@ object SessionLog {
             Log.e(TAG, "could not export the session log", t)
             null
         }
+    }
+
+    /**
+     * Packs the detailed recording for sending, saying plainly what is in it.
+     *
+     * The header is not decoration. Somebody about to attach this to a message
+     * has usually never looked inside one, and the last person to send one had
+     * no idea it listed seventy-four sites they had visited in under four
+     * minutes.
+     */
+    fun exportTrace(context: Context): File? {
+        return try {
+            val trace = traceFile(context)
+            if (!trace.isFile || trace.length() == 0L) return null
+
+            val target = File(context.cacheDir, TRACE_EXPORT_NAME)
+            target.parentFile?.mkdirs()
+
+            val text = buildString {
+                appendLine("# Simple VPN detailed recording")
+                appendLine("#")
+                appendLine("# THIS FILE LISTS THE SITES AND SERVICES THIS DEVICE CONNECTED TO")
+                appendLine("# while the recording was running. Send it only to someone you")
+                appendLine("# mean to show that to.")
+                appendLine()
+                appendLine("## What the application did")
+                appendLine()
+                append(readAll(appFile(context)).ifBlank { "(nothing recorded)\n" })
+                appendLine()
+                appendLine("## What the engine saw")
+                appendLine()
+                append(readTail(trace).ifBlank { "(the recording is empty)\n" })
+            }
+
+            target.writeText(text)
+            target
+        } catch (t: Throwable) {
+            Log.e(TAG, "could not export the recording", t)
+            null
+        }
+    }
+
+    /**
+     * How many distinct destinations the recording holds.
+     *
+     * Shown to the user before they send it, because a number makes the
+     * abstract concrete: "74 sites" is understood immediately and "may contain
+     * information about services you used" is not.
+     */
+    fun traceDestinations(context: Context): Int = try {
+        val trace = traceFile(context)
+        if (!trace.isFile) {
+            0
+        } else {
+            SNIFFED.findAll(readTail(trace))
+                .map { it.groupValues[1] }
+                .toHashSet()
+                .size
+        }
+    } catch (t: Throwable) {
+        Log.w(TAG, "could not count what the recording holds", t)
+        0
     }
 
     /** The line worth showing on screen, preferring an actual error. */
@@ -131,7 +226,12 @@ object SessionLog {
     private const val TAG = "SessionLog"
     private const val APP_NAME = "session.log"
     private const val ENGINE_NAME = "engine.log"
+    private const val TRACE_NAME = "trace.log"
     private const val EXPORT_NAME = "logs/simple-vpn-session.log"
+    private const val TRACE_EXPORT_NAME = "logs/simple-vpn-recording.log"
+
+    /** How the engine names a destination it has recognised. */
+    private val SNIFFED = Regex("sniffed domain: ([a-zA-Z0-9._-]+)")
     private const val TIME_FORMAT = "HH:mm:ss.SSS"
     private const val TAIL_BYTES = 512_000L
     private const val MAX_LENGTH = 160

@@ -106,6 +106,16 @@ class SimpleVpnService : VpnService() {
     private val watchEndpoint = Runnable { checkEndpoint() }
     private val watchConfig = Runnable { checkConfig() }
     private val watchReport = Runnable { sendReport() }
+    private val stopTracing = Runnable { setTracing(false, "the ten minutes are up") }
+
+    /**
+     * Whether the engine is currently writing down where it connects.
+     *
+     * False unless somebody has deliberately turned it on, and it never
+     * survives the service: a process that comes back has no recording
+     * running, whatever was happening when it went away.
+     */
+    private var tracing = false
 
     /** When this attempt began, so that "how long to connect" is measurable. */
     private var connectStartedAt = 0L
@@ -139,6 +149,11 @@ class SimpleVpnService : VpnService() {
                 // network call on the main thread is an immediate crash.
                 starts.execute { handleStart() }
             }
+
+            // Handled on the calling thread: both are a flag and a restart,
+            // and the restart is the same one a failover does.
+            ACTION_TRACE_START -> starts.execute { setTracing(true, "asked for") }
+            ACTION_TRACE_STOP -> starts.execute { setTracing(false, "asked to stop") }
 
             // Somebody is looking at the application right now. Whatever the
             // timer would have asked in a few minutes, ask it now.
@@ -269,7 +284,7 @@ class SimpleVpnService : VpnService() {
             tunnel = descriptor
             SessionLog.record(this, "interface established, mtu ${TunConfigurator.MTU}")
 
-            val configJson = XrayConfigBuilder.build(profile, policy, SessionLog.engineFile(this).absolutePath)
+            val configJson = XrayConfigBuilder.build(profile, policy, engineLog())
 
             when (val result = engine.start(configJson, descriptor.fd)) {
                 is EngineStartResult.Started -> SessionLog.record(this, "engine started")
@@ -488,6 +503,59 @@ class SimpleVpnService : VpnService() {
         watchHandler.postDelayed(watchEndpoint, probeIntervalMs)
         watchHandler.postDelayed(watchConfig, configRefreshMs)
         watchHandler.postDelayed(watchReport, REPORT_INTERVAL_MS)
+    }
+
+    /**
+     * What the engine is allowed to write, right now.
+     *
+     * One decision in one place, consulted by every path that builds a
+     * configuration. The alternative - each call site deciding - is how the
+     * level and the file came to be the same decision, and how a phone came to
+     * keep a browsing history nobody asked for.
+     */
+    private fun engineLog(): XrayConfigBuilder.EngineLog =
+        if (tracing) {
+            XrayConfigBuilder.EngineLog.Trace(SessionLog.traceFile(this).absolutePath)
+        } else {
+            XrayConfigBuilder.EngineLog.Errors(SessionLog.engineFile(this).absolutePath)
+        }
+
+    /**
+     * Turns the detailed recording on or off.
+     *
+     * The engine reads its log level once, when it starts, and Xray offers no
+     * way to change it afterwards. So this restarts the engine - which costs a
+     * few seconds of reconnection and is the honest price of the level being a
+     * property of the running engine rather than a switch we can flip behind
+     * the user's back.
+     */
+    private fun setTracing(on: Boolean, why: String, restart: Boolean = true) {
+        watchHandler.removeCallbacks(stopTracing)
+        if (tracing == on) return
+
+        tracing = on
+        SessionLog.record(this, if (on) "detailed recording started" else "detailed recording stopped: $why")
+
+        if (on) {
+            // Not a reminder to the user, and not a timer they can extend. A
+            // recording forgotten for a day is the way this feature leaks, and
+            // "the user will remember to stop it" is not a mitigation.
+            watchHandler.postDelayed(stopTracing, TRACE_LIMIT_MS)
+            VpnController.updateTrace(
+                TraceState.Recording(stopsAtElapsedMillis = SystemClock.elapsedRealtime() + TRACE_LIMIT_MS),
+            )
+        } else {
+            VpnController.updateTrace(
+                if (SessionLog.hasTrace(this)) TraceState.Ready else TraceState.Idle,
+            )
+        }
+
+        if (restart && engine.isRunning) {
+            restartEngineOnCurrentEndpoint(
+                if (on) "recording started" else "recording stopped",
+                countAsReconnect = false,
+            )
+        }
     }
 
     /** Notes that the tunnel came up, and how long it took to get here. */
@@ -753,7 +821,7 @@ class SimpleVpnService : VpnService() {
      * a failover replaces the endpoint. Two copies of this would be two places
      * for the retry rule below to be got wrong.
      */
-    private fun restartEngineOnCurrentEndpoint(reason: String) {
+    private fun restartEngineOnCurrentEndpoint(reason: String, countAsReconnect: Boolean = true) {
         if (!engine.isRunning) return
         SessionLog.record(this, "$reason, restarting the engine")
 
@@ -761,7 +829,12 @@ class SimpleVpnService : VpnService() {
         // "Reconnecting" either lead into this one or are a different event,
         // and counting each of them would report a reconnect rate several
         // times the one people actually experience.
-        ServiceReport.reconnected()
+        //
+        // Not counted when we caused it ourselves. Starting and stopping a
+        // recording restarts the engine, and reporting those as reconnects
+        // would make the panel say the service is unstable in exactly the
+        // moment somebody is investigating why it might be.
+        if (countAsReconnect) ServiceReport.reconnected()
         VpnController.update(VpnConnectionState.Reconnecting)
         updateNotification(getString(R.string.status_reconnecting))
 
@@ -785,11 +858,7 @@ class SimpleVpnService : VpnService() {
                 return
             }
 
-            val configJson = XrayConfigBuilder.build(
-                profile,
-                routing,
-                SessionLog.engineFile(this).absolutePath,
-            )
+            val configJson = XrayConfigBuilder.build(profile, routing, engineLog())
             when (val result = engine.start(configJson, TUN_FD_OWNED_BY_BRIDGE)) {
                 is EngineStartResult.Started -> {
                     VpnController.update(VpnConnectionState.Connected(System.currentTimeMillis()))
@@ -869,6 +938,11 @@ class SimpleVpnService : VpnService() {
         noteSessionEnded()
         sendReport()
         watchHandler.removeCallbacks(watchReport)
+
+        // Pressing OFF ends the recording too. Without a restart: the engine is
+        // being stopped in a moment anyway, and rebuilding it here would take
+        // the tunnel down twice.
+        setTracing(false, "the tunnel was stopped", restart = false)
 
         probeAttempts = 0
         currentEndpoint = null
@@ -972,6 +1046,20 @@ class SimpleVpnService : VpnService() {
         const val ACTION_START = "download.simplevpn.action.START"
         const val ACTION_STOP = "download.simplevpn.action.STOP"
         const val ACTION_RECHECK = "download.simplevpn.action.RECHECK"
+        const val ACTION_TRACE_START = "download.simplevpn.action.TRACE_START"
+        const val ACTION_TRACE_STOP = "download.simplevpn.action.TRACE_STOP"
+
+        /**
+         * How long a recording runs before it stops itself.
+         *
+         * Ten minutes, and not extendable. Long enough to reproduce a fault
+         * somebody has already learned to reproduce, short enough that a
+         * recording started and forgotten holds a few minutes of somebody's
+         * life rather than a few days of it. At the rate one real device
+         * produced, ten minutes is around two hundred destinations; a day
+         * would be twenty thousand.
+         */
+        private const val TRACE_LIMIT_MS = 10 * 60_000L
 
         private const val TAG = "SimpleVpnService"
 
