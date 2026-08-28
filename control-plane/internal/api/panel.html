@@ -76,6 +76,22 @@
     <h2>Сейчас</h2>
     <div class="grid" id="now"></div>
 
+    <h2>Мощность</h2>
+    <p class="sub">Одно из четырёх состояний и то, из чего оно следует. Тот же вывод, по которому уходит предупреждение — если здесь и в письме будет разное, доверять нельзя ни тому, ни другому.</p>
+    <div class="card" id="capacity"></div>
+    <div class="grid" id="capacity-tiles" style="margin-top:10px"></div>
+
+    <h2>Как нагрузка распределена по суткам</h2>
+    <p class="sub">Пик каждого часа за неделю, по московскому времени. «Полны в девять вечера и пусты в четыре утра» — не то же самое, что «полны», и в среднем этого не видно.</p>
+    <div class="card" id="byhour"></div>
+
+    <h2>Мощность по группам и нагрузка по доменам</h2>
+    <p class="sub">Группа, которая заполнена, заполнена независимо от запаса в других — машины не взаимозаменяемы. Домен, а не сервер, потому что блокируют домен.</p>
+    <div class="two">
+      <div class="card wrap"><table id="groups"></table></div>
+      <div class="card wrap"><table id="domainload"></table></div>
+    </div>
+
     <h2>Серверы</h2>
     <div class="card wrap"><table id="nodes"></table></div>
 
@@ -179,6 +195,89 @@
     });
   }
 
+  // The four words, and how loudly each is shown. The colour is part of the
+  // meaning here: "нужен сервер" is a decision somebody has to take today,
+  // and it must not look like a number that happens to be high.
+  var CAPACITY_WORDS = {
+    "NORMAL": ["запас есть", "ok"],
+    "WATCH": ["под наблюдением", "warn"],
+    "SCALE_REQUIRED": ["нужен сервер", "bad"],
+    "CRITICAL": ["мощности не осталось", "bad"]
+  };
+
+  function capacity(c) {
+    var word = CAPACITY_WORDS[c.state] || [c.state || "—", "muted"];
+    var head = '<div style="font-size:22px;font-weight:600" class="' + word[1] + '">' +
+      esc(word[0]) + "</div>";
+    var why = "";
+    (c.reasons || []).forEach(function (r) {
+      why += '<li class="muted">' + esc(r) + "</li>";
+    });
+    document.getElementById("capacity").innerHTML =
+      head + (why ? '<ul style="margin:8px 0 0;padding-left:20px">' + why + "</ul>" : "");
+
+    var growth = c.growth_week_on_week === null || c.growth_week_on_week === undefined
+      ? "истории пока не хватает"
+      : (c.growth_week_on_week >= 0 ? "+" : "") + num(c.growth_week_on_week * 100, 0) + "% к прошлой неделе";
+
+    document.getElementById("capacity-tiles").innerHTML =
+      tile("Занято сейчас", num(c.utilisation * 100, 0) + "%",
+           c.sessions_now + " из " + c.capacity_total) +
+      tile("Свободно", c.spare_room, "соединений") +
+      tile("Пик за неделю", c.peak_week, num(c.peak_used * 100, 0) + "% мощности") +
+      tile("Пики дня и вечера", c.peak_day + " / " + c.peak_evening, "днём / вечером, МСК") +
+      tile("P95", num(c.p95_utilisation * 100, 0) + "%", "девятнадцать минут из двадцати ниже") +
+      tile("Рост", growth, "по пикам") +
+      tile("Серверов в запасе", c.nodes_spare, "готовых и проверенных") +
+      tile("Доменов в запасе", c.domains_spare, "расходных, свободных");
+
+    // The shape of a day, drawn from the numbers rather than described. A bar
+    // per hour is enough: the question it answers is when the evening starts.
+    var hours = c.by_hour || [], top = 0;
+    hours.forEach(function (h) { if (h > top) top = h; });
+    if (!top) {
+      document.getElementById("byhour").innerHTML =
+        '<p class="muted" style="margin:0">за неделю нагрузки не было</p>';
+    } else {
+      var bars = '<div style="display:flex;align-items:flex-end;gap:2px;height:90px">';
+      hours.forEach(function (h) {
+        var pct = Math.max(2, Math.round((h / top) * 100));
+        bars += '<div title="' + h + ' в этот час" style="flex:1;height:' + pct +
+          '%;background:var(--bar);border-radius:2px 2px 0 0"></div>';
+      });
+      bars += "</div><div style=\"display:flex;gap:2px;margin-top:4px\">";
+      for (var h = 0; h < 24; h++) {
+        bars += '<div class="muted" style="flex:1;text-align:center;font-size:10px">' +
+          (h % 3 === 0 ? h : "") + "</div>";
+      }
+      document.getElementById("byhour").innerHTML = bars + "</div>";
+    }
+
+    var g = "<tr><th>группа</th><th>серверов</th><th>в запасе</th><th>сессий</th>" +
+            "<th>мощность</th><th>занято</th></tr>";
+    if (!(c.groups || []).length) {
+      g += '<tr><td colspan="6" class="muted">нет серверов в работе</td></tr>';
+    }
+    (c.groups || []).forEach(function (x) {
+      g += "<tr><td>" + esc(x.group) + "</td><td>" + x.nodes + "</td><td>" + x.spare +
+        "</td><td>" + x.sessions + "</td><td>" + x.capacity + "</td><td>" +
+        num(x.utilisation * 100, 0) + "%</td></tr>";
+    });
+    document.getElementById("groups").innerHTML = g;
+
+    var dl = "<tr><th>домен</th><th>сервер</th><th>сессий</th><th>доля</th><th>вывод</th></tr>";
+    if (!(c.domains || []).length) {
+      dl += '<tr><td colspan="5" class="muted">доменов нет</td></tr>';
+    }
+    (c.domains || []).forEach(function (x) {
+      dl += "<tr><td>" + esc(x.domain) + "</td><td>" + esc(x.node) + "</td><td>" +
+        x.sessions + "</td><td>" + num(x.share * 100, 0) + "%</td><td>" +
+        (x.verdict ? tag(ENTRY_WORDS, x.verdict) : '<span class="muted">—</span>') +
+        "</td></tr>";
+    });
+    document.getElementById("domainload").innerHTML = dl;
+  }
+
   function render(d) {
     document.getElementById("stamp").textContent =
       "обновлено " + new Date(d.generated_at).toLocaleString("ru-RU");
@@ -190,6 +289,8 @@
       tile("Серверов на связи", d.now.nodes_reporting + " / " + d.nodes.length) +
       tile("Отдача", bits(d.now.downlink_bps)) +
       tile("Приём", bits(d.now.uplink_bps));
+
+    capacity(d.capacity || {});
 
     var t = "<tr><th>сервер</th><th>состояние</th><th>выдаётся</th><th>запас</th>" +
             "<th>сессий</th><th>CPU</th><th>память</th><th>соединений</th>" +

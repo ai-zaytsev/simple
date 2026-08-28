@@ -100,3 +100,47 @@ func (s *Sender) SendSignInLink(to, link string, validFor time.Duration) (string
 	}
 	return answer.MessageID, nil
 }
+
+// Send delivers an ordinary message to one address.
+//
+// Separate from SendSignInLink because the two have different rules about
+// their contents: a sign-in link is written once and never changes, while this
+// carries whatever the sender wants. It is used for operational alerts, which
+// go to us rather than to a user, and nothing in this package checks that -
+// the caller decides who it is talking to.
+func (s *Sender) Send(to, subject, text string) error {
+	body := request{
+		Sender:      party{Email: s.fromAddress, Name: s.fromName},
+		To:          []party{{Email: to}},
+		Subject:     subject,
+		TextContent: text,
+	}
+
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("cannot build the message: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost,
+		"https://api.brevo.com/v3/smtp/email", bytes.NewReader(encoded))
+	if err != nil {
+		return fmt.Errorf("cannot build the request: %w", err)
+	}
+	req.Header.Set("api-key", s.apiKey)
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("accept", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("provider unreachable: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		// The status and nothing else. The body echoes the recipient, and an
+		// address in a log is the one thing this system must never write down
+		// casually.
+		return fmt.Errorf("provider refused the message: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}

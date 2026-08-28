@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"download.simplevpn/control-plane/internal/alert"
 	"download.simplevpn/control-plane/internal/analytics"
 	"download.simplevpn/control-plane/internal/api"
 	"download.simplevpn/control-plane/internal/certs"
@@ -225,6 +226,23 @@ func run(log *slog.Logger) error {
 	if adminToken == "" {
 		log.Warn("no CP_ADMIN_TOKEN; the panel is not available")
 	}
+
+	// Where a capacity warning goes. The channel list is built here and nowhere
+	// else, so adding a messenger later is one line beside this one and no
+	// change at all to what decided to warn.
+	channels := []alert.Channel{alert.Logged{Log: log}}
+	if to := os.Getenv("CP_ALERT_EMAIL"); to != "" {
+		channels = append(channels, alert.Email{Sender: sender, To: to})
+		log.Info("capacity warnings will be emailed")
+	} else {
+		log.Warn("no CP_ALERT_EMAIL; capacity warnings will only be logged")
+	}
+
+	go probe.NewCapacityWatch(
+		st,
+		alert.New(st, 12*time.Hour, log, channels...),
+		10*time.Minute, nodeCapacity, log,
+	).Run(ctx)
 
 	server := &http.Server{
 		Addr:              addr,
