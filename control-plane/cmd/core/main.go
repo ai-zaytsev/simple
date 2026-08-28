@@ -136,7 +136,7 @@ func run(log *slog.Logger) error {
 	// our DNS. Optional rather than required: a service that cannot issue is
 	// still a service, and refusing to start would turn a missing token into
 	// an outage of everything else.
-	var issuer *certs.Issuer
+	var issuer, testIssuer *certs.Issuer
 	if accountKey := os.Getenv("CP_ACME_KEY"); accountKey != "" {
 		editor := dnsedit.New(
 			os.Getenv("CP_DNS_CLOUDFLARE_TOKEN"),
@@ -147,7 +147,22 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("CP_ACME_KEY: %w", err)
 		}
-		log.Info("certificate issuance is available")
+
+		// The same key against the authority whose certificates nobody trusts,
+		// for rehearsal nodes. One key registered at two directories becomes
+		// two separate accounts, which is exactly right: their allowances are
+		// counted separately, so proving the whole path from nothing to a
+		// working node costs none of the real one.
+		staging := os.Getenv("CP_ACME_TEST_DIRECTORY")
+		if staging == "" {
+			staging = "https://acme-staging-v02.api.letsencrypt.org/directory"
+		}
+		testIssuer, err = certs.New(accountKey, staging, editor, log)
+		if err != nil {
+			return fmt.Errorf("CP_ACME_KEY against the test authority: %w", err)
+		}
+
+		log.Info("certificate issuance is available", "test_authority", staging)
 	} else {
 		log.Warn("no ACME account key; nodes cannot be issued certificates")
 	}
@@ -213,7 +228,7 @@ func run(log *slog.Logger) error {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           api.New(st, signer, cleaned, planTTL, sender, baseURL, deriver, issuer, adminToken, nodeCapacity, log).Routes(),
+		Handler:           api.New(st, signer, cleaned, planTTL, sender, baseURL, deriver, issuer, testIssuer, adminToken, nodeCapacity, log).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

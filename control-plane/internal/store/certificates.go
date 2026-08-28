@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -71,4 +72,58 @@ func (s *Store) CertificateName(ctx context.Context, alias string) (string, erro
 		return "", fmt.Errorf("node %s has no domain", alias)
 	}
 	return name, nil
+}
+
+// NodeWantsTestCertificates says whether this node is a rehearsal.
+//
+// A property of the node rather than of the service, because both kinds exist
+// at once: a machine being tried out and the machines carrying people. Making
+// it a setting on the Control Plane would mean choosing one or the other for
+// the whole fleet, which is the same as not having the choice.
+func (s *Store) NodeWantsTestCertificates(ctx context.Context, alias string) (bool, error) {
+	var kind string
+	err := s.pool.QueryRow(ctx, `
+		select coalesce(params->>'certificates', 'real') from nodes where alias = $1`,
+		alias).Scan(&kind)
+	if err != nil {
+		return false, fmt.Errorf("cannot read what %s should be certified by: %w", alias, err)
+	}
+	return kind == "test", nil
+}
+
+// CreateNode records a machine before it exists, so that it has a name and a
+// secret to be built with.
+//
+// Written down first on purpose. A node that is built and then registered has
+// a window in which it is running and unknown, and the way that window ends is
+// somebody discovering a machine nobody can account for.
+func (s *Store) CreateNode(
+	ctx context.Context, alias, host string, port int, kind string,
+	params map[string]any, tokenHash []byte,
+) error {
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("cannot record the node parameters: %w", err)
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		insert into nodes (id, alias, host, port, transport_kind, params, state, token_hash)
+		values ($1, $2, $3, $4, $5, $6, 'creating', $7)`,
+		uuid.New(), alias, host, port, kind, encoded, tokenHash)
+	if err != nil {
+		return fmt.Errorf("cannot record the node %s: %w", alias, err)
+	}
+	return nil
+}
+
+// SetNodeAddress fills in where the machine turned out to be.
+func (s *Store) SetNodeAddress(ctx context.Context, alias, host string) error {
+	tag, err := s.pool.Exec(ctx, `update nodes set host = $2 where alias = $1`, alias, host)
+	if err != nil {
+		return fmt.Errorf("cannot record the address of %s: %w", alias, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("node %s is not there", alias)
+	}
+	return nil
 }

@@ -1,0 +1,410 @@
+name: Add Server
+
+# From nothing to a node carrying people, in one operation.
+#
+# Until this existed a node was built by following node/README.md by hand,
+# which took an afternoon and produced a machine slightly unlike the last one.
+# The differences were always found later, on the node that had them.
+#
+# The steps are the ones the Business Owner named, and each of them moves the
+# node through a state from stage 16, so that a build in progress is visible on
+# the panel rather than only in this log:
+#
+#   creating -> configuring -> awaiting-certificate -> verifying -> ready
+#
+# Nothing here decides to spend money. Creating the machine is the one
+# irreversible, billable step and it happens because a person pressed the
+# button; the run says what it made and how to remove it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      domain:
+        description: The consumable domain this node will answer on. Must not already be in use.
+        required: true
+        type: choice
+        options:
+          - 6047864.xyz
+          - 6047865.xyz
+          - 6015874.xyz
+          - 6015875.xyz
+      certificates:
+        description: Test certificates cost nothing from the real weekly allowance. Real ones are trusted by phones.
+        required: true
+        default: test
+        type: choice
+        options:
+          - test
+          - real
+      site:
+        description: Which cover site to serve. Two nodes with the same page are two nodes that look related.
+        required: true
+        default: sourdough
+        type: choice
+        options:
+          - pigeons
+          - trams
+          - sourdough
+      datacenter:
+        description: Kamatera datacenter id.
+        required: true
+        default: EU
+        type: string
+      capacity:
+        description: How many tunnel connections this machine is sized for.
+        required: true
+        default: "500"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  add:
+    name: Add Server
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reach the Control Plane
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Name it, and write it down before it exists
+        id: claim
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          DOMAIN: ${{ inputs.domain }}
+          CERTIFICATES: ${{ inputs.certificates }}
+          CAPACITY: ${{ inputs.capacity }}
+        run: |
+          set -euo pipefail
+
+          if ! printf '%s' "${CAPACITY}" | grep -qE '^[0-9]{1,6}$'; then
+            echo "Capacity must be a number of connections."
+            exit 1
+          fi
+
+          # Refused rather than reused. A domain already carrying a node would
+          # have its DNS pointed at the new machine halfway through this run,
+          # and the people on the old one would stop being able to connect
+          # while everything here reported success.
+          inuse=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "psql \"\$(cat /etc/simple-vpn-cp.dsn)\" -tAc \"select count(*) from nodes where params->>'server_name' = '${DOMAIN}' and state <> 'removed'\"")
+          if [ "${inuse}" != "0" ]; then
+            echo "${DOMAIN} is already serving a node. Pick a free one, or retire that node first."
+            exit 1
+          fi
+
+          alias="n-$(openssl rand -hex 2)"
+          token=$(openssl rand -base64 32 | tr -d '\n')
+          token_hash=$(printf '%s' "${token}" | sha256sum | cut -d' ' -f1)
+          ws_path="/$(openssl rand -hex 12)"
+          edge_path="/$(openssl rand -hex 12)"
+
+          # The secret never reaches the log or the summary. Its hash goes to
+          # the database and the value itself is carried to the machine over
+          # ssh, in one step, later in this run.
+          echo "::add-mask::${token}"
+
+          {
+            echo "alias=${alias}"
+            echo "token=${token}"
+            echo "ws_path=${ws_path}"
+            echo "edge_path=${edge_path}"
+          } >> "${GITHUB_OUTPUT}"
+
+          # Recorded before the machine exists, so that there is never a
+          # running node nobody can account for.
+          params=$(jq -n \
+            --arg sn "${DOMAIN}" --arg hh "${DOMAIN}" --arg p "${ws_path}" \
+            --arg certs "${CERTIFICATES}" --argjson cap "${CAPACITY}" \
+            '{server_name: $sn, host_header: $hh, path: $p, fingerprint: "chrome",
+              certificates: $certs, capacity: $cap}')
+
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -' <<SQL
+          insert into nodes (id, alias, host, port, transport_kind, params, state, token_hash)
+          values (gen_random_uuid(), '${alias}', '0.0.0.0', 443, 'vless-ws-tls',
+                  '${params}'::jsonb, 'creating', decode('${token_hash}', 'hex'));
+          insert into domains (name, purpose, lifecycle)
+          values (lower('${DOMAIN}'), 'node', 'ready')
+          on conflict (name) do update set lifecycle = 'ready', since = now();
+          SQL
+
+          echo "Recorded ${alias} for ${DOMAIN}, state creating."
+
+      - name: Create the machine
+        id: machine
+        env:
+          KAMATERA_KEY: ${{ secrets.KAMATERA_ACCESS_KEY }}
+          KAMATERA_SECRET: ${{ secrets.KAMATERA_SECRET_KEY }}
+          DATACENTER: ${{ inputs.datacenter }}
+          ALIAS: ${{ steps.claim.outputs.alias }}
+        run: |
+          set -euo pipefail
+          api="https://console.kamatera.com/service/server"
+          auth=(-H "AuthClientId: ${KAMATERA_KEY}" -H "AuthSecret: ${KAMATERA_SECRET}")
+
+          ssh -i ~/.ssh/deploy -o BatchMode=yes -o StrictHostKeyChecking=no \
+            -o PasswordAuthentication=no true 2>/dev/null || true
+          pubkey=$(ssh-keygen -y -f ~/.ssh/deploy)
+
+          body=$(jq -n --arg name "simple-vpn-${ALIAS}" --arg dc "${DATACENTER}" --arg key "${pubkey}" \
+            '{name: $name, password: "__generate__", passwordValidate: "__generate__",
+              "ssh-key": $key, datacenter: $dc, image: "ubuntu_server_24.04_64-bit",
+              cpu: "1B", ram: 1024, disk: "size=20", dailybackup: "no", managed: "no",
+              network: "name=wan,ip=auto", quantity: 1, billingcycle: "hourly",
+              poweronaftercreate: "yes"}')
+
+          created=$(curl -sS -X POST "${auth[@]}" -H "content-type: application/json" \
+            -d "${body}" "${api}" || echo '{}')
+
+          # The provider returns a generated root password. It is not ours to
+          # publish and we do not use it - access is by key - so it never
+          # leaves this step.
+          password=$(printf '%s' "${created}" | jq -r '.password // empty' 2>/dev/null || echo "")
+          [ -n "${password}" ] && echo "::add-mask::${password}"
+
+          command_id=$(printf '%s' "${created}" | jq -r 'if type == "array" then .[0] else (.commandIds[0] // empty) end' 2>/dev/null || echo "")
+          if [ -z "${command_id}" ]; then
+            echo "The provider did not start the creation."
+            printf '%s' "${created}" | jq -r 'keys_unsorted | join(", ")' 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Creation started, waiting for an address."
+          address=""
+          for _ in $(seq 1 60); do
+            sleep 10
+            info=$(curl -sS "${auth[@]}" "${api}/info" \
+              -H "content-type: application/json" \
+              -d "$(jq -n --arg n "simple-vpn-${ALIAS}" '{name: $n}')" || echo '[]')
+            address=$(printf '%s' "${info}" \
+              | jq -r '[.[] | .networks[]? | .ips[]?] | map(select(test("^(10\\.|172\\.|192\\.168\\.)") | not)) | .[0] // empty' 2>/dev/null || echo "")
+            [ -n "${address}" ] && break
+            echo "  still creating"
+          done
+
+          if [ -z "${address}" ]; then
+            echo "The machine did not report an address in ten minutes."
+            echo "Look for simple-vpn-${ALIAS} at the provider and remove it if it is there."
+            exit 1
+          fi
+
+          echo "address=${address}" >> "${GITHUB_OUTPUT}"
+          echo "simple-vpn-${ALIAS} is at ${address}"
+
+      - name: Point the domain at it
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SS_KEY: ${{ secrets.SPACESHIP_API_KEY }}
+          SS_SECRET: ${{ secrets.SPACESHIP_API_SECRET }}
+          DOMAIN: ${{ inputs.domain }}
+          ADDRESS: ${{ steps.machine.outputs.address }}
+        run: bash infra/point-dns.sh
+
+      - name: Configuring
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ALIAS: ${{ steps.claim.outputs.alias }}
+          ADDRESS: ${{ steps.machine.outputs.address }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -' <<SQL
+          update nodes set host = '${ADDRESS}', state = 'configuring', state_since = now()
+          where alias = '${ALIAS}';
+          SQL
+          echo "${ALIAS} is at ${ADDRESS} and is being configured."
+
+      - name: Wait for the machine to answer
+        env:
+          ADDRESS: ${{ steps.machine.outputs.address }}
+        run: |
+          set -euo pipefail
+          ssh-keyscan -H "${ADDRESS}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          for _ in $(seq 1 40); do
+            if ssh -i ~/.ssh/deploy -o BatchMode=yes -o ConnectTimeout=8 \
+                 -o StrictHostKeyChecking=accept-new "root@${ADDRESS}" true 2>/dev/null; then
+              echo "It answers."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "The machine never accepted a connection."
+          exit 1
+
+      - name: An ordinary site, then the VPN
+        env:
+          ADDRESS: ${{ steps.machine.outputs.address }}
+          DOMAIN: ${{ inputs.domain }}
+          SITE: ${{ inputs.site }}
+          NODE_TOKEN: ${{ steps.claim.outputs.token }}
+          WS_PATH: ${{ steps.claim.outputs.ws_path }}
+          EDGE_PATH: ${{ steps.claim.outputs.edge_path }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/deploy -o BatchMode=yes -r "sites/${SITE}" "root@${ADDRESS}:/tmp/site"
+          scp -i ~/.ssh/deploy -o BatchMode=yes \
+            node/provision.sh node/users-agent.py node/install-users-agent.sh \
+            "root@${ADDRESS}:/tmp/"
+
+          # The secret travels here and nowhere else, over ssh, in an
+          # environment rather than an argument: an argument list is visible to
+          # every process on the machine.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" \
+            "NODE_DOMAIN='${DOMAIN}' CP_URL='https://simple-syncbridge.download' \
+             NODE_TOKEN='${NODE_TOKEN}' WS_PATH='${WS_PATH}' EDGE_PATH='${EDGE_PATH}' \
+             bash /tmp/provision.sh"
+
+      - name: A certificate
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ADDRESS: ${{ steps.machine.outputs.address }}
+          ALIAS: ${{ steps.claim.outputs.alias }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -' <<SQL
+          update nodes set state = 'awaiting-certificate', state_since = now() where alias = '${ALIAS}';
+          SQL
+
+          scp -i ~/.ssh/deploy -o BatchMode=yes \
+            node/certificate-agent.sh node/install-certificate-agent.sh "root@${ADDRESS}:/tmp/"
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" 'bash /tmp/install-certificate-agent.sh'
+
+      - name: Measurement
+        env:
+          ADDRESS: ${{ steps.machine.outputs.address }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/deploy -o BatchMode=yes \
+            node/metrics-agent.py node/xray-observability.py \
+            node/check-privacy.sh node/install-metrics-agent.sh "root@${ADDRESS}:/tmp/"
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" 'bash /tmp/install-metrics-agent.sh'
+
+      - name: Check it from outside
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ADDRESS: ${{ steps.machine.outputs.address }}
+          DOMAIN: ${{ inputs.domain }}
+          ALIAS: ${{ steps.claim.outputs.alias }}
+          WS_PATH: ${{ steps.claim.outputs.ws_path }}
+          CERTIFICATES: ${{ inputs.certificates }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -' <<SQL
+          update nodes set state = 'verifying', state_since = now() where alias = '${ALIAS}';
+          SQL
+
+          fail=0
+          note() { echo "  $*"; }
+
+          # The cover site, as a stranger sees it.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+            --resolve "${DOMAIN}:443:${ADDRESS}" ${CERTIFICATES:+$([ "${CERTIFICATES}" = "test" ] && echo --insecure)} \
+            "https://${DOMAIN}/" || echo 000)
+          [ "${code}" = "200" ] && note "site answers 200" || { note "site answered ${code}"; fail=1; }
+
+          # The certificate, and that it came from the authority it should have.
+          issuer=$(echo | openssl s_client -connect "${ADDRESS}:443" -servername "${DOMAIN}" 2>/dev/null \
+            | openssl x509 -noout -issuer 2>/dev/null || echo "")
+          note "certificate issuer: ${issuer:-none}"
+          if [ "${CERTIFICATES}" = "test" ]; then
+            printf '%s' "${issuer}" | grep -qi "staging" \
+              && note "issued by the test authority, as asked" \
+              || { note "a test node was given something other than a test certificate"; fail=1; }
+          else
+            printf '%s' "${issuer}" | grep -qi "let's encrypt" \
+              && note "issued by the real authority, as asked" \
+              || { note "a real node was not given a real certificate"; fail=1; }
+          fi
+
+          # A wrong request to the tunnel path must look like the rest of the site.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+            --resolve "${DOMAIN}:443:${ADDRESS}" $([ "${CERTIFICATES}" = "test" ] && echo --insecure) \
+            "https://${DOMAIN}${WS_PATH}" || echo 000)
+          [ "${code}" = "404" ] && note "a plain request to the tunnel path gets 404" \
+            || { note "the tunnel path answered ${code} to a plain request"; fail=1; }
+
+          # And a real upgrade must reach the engine.
+          code=$(curl -sS --http1.1 -o /dev/null -w '%{http_code}' --max-time 10 \
+            --resolve "${DOMAIN}:443:${ADDRESS}" $([ "${CERTIFICATES}" = "test" ] && echo --insecure) \
+            -H "Upgrade: websocket" -H "Connection: Upgrade" \
+            -H "Sec-WebSocket-Key: AQIDBAUGBwgJCgsMDQ4PEA==" -H "Sec-WebSocket-Version: 13" \
+            "https://${DOMAIN}${WS_PATH}" 2>/dev/null || echo 000)
+          [ "${code}" = "101" ] && note "the tunnel upgrades" || { note "the tunnel answered ${code}"; fail=1; }
+
+          # It keeps no record of where anybody went.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${ADDRESS}" \
+            '/usr/local/bin/simple-vpn-check-privacy' | sed 's/^/  /' || fail=1
+
+          # And the Control Plane has heard from it.
+          echo "  waiting for the first report"
+          seen=0
+          for _ in $(seq 1 12); do
+            sleep 15
+            n=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              "psql \"\$(cat /etc/simple-vpn-cp.dsn)\" -tAc \"select count(*) from metrics.node_samples where node_alias = '${ALIAS}'\"")
+            if [ "${n}" != "0" ]; then seen=1; break; fi
+          done
+          [ "${seen}" = "1" ] && note "it is reporting" || { note "no report arrived in three minutes"; fail=1; }
+
+          exit "${fail}"
+
+      - name: Ready
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ALIAS: ${{ steps.claim.outputs.alias }}
+          DOMAIN: ${{ inputs.domain }}
+          EDGE_PATH: ${{ steps.claim.outputs.edge_path }}
+        run: |
+          set -euo pipefail
+          # `ready` rather than `serving`: both are handed out, and the
+          # difference records that nobody has yet chosen to lean on it.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -' <<SQL
+          update nodes set state = 'ready', state_since = now(),
+                 state_note = 'built by the Add Server workflow'
+          where alias = '${ALIAS}';
+          update domains set lifecycle = 'serving', since = now() where name = lower('${DOMAIN}');
+          insert into bootstrap_entries (id, kind, host, port, path_prefix, weight, note)
+          values (gen_random_uuid(), 'https-edge', '${DOMAIN}', 443, '${EDGE_PATH}', 60,
+                  'Node ${ALIAS} forwards the API');
+          SQL
+          echo "${ALIAS} is ready and will be handed out."
+
+      - name: Say what was made
+        if: always()
+        env:
+          ALIAS: ${{ steps.claim.outputs.alias }}
+          DOMAIN: ${{ inputs.domain }}
+          ADDRESS: ${{ steps.machine.outputs.address }}
+          CERTIFICATES: ${{ inputs.certificates }}
+        run: |
+          {
+            echo "### Add Server"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| node | \`${ALIAS}\` |"
+            echo "| domain | \`${DOMAIN}\` |"
+            echo "| address | \`${ADDRESS:-not created}\` |"
+            echo "| certificates | ${CERTIFICATES} |"
+            echo "| machine | \`simple-vpn-${ALIAS}\` at Kamatera, billed hourly |"
+            echo
+            echo "If this run did not reach the end, the machine may still exist."
+            echo "Remove it with the Kamatera Node workflow, action \`destroy\`,"
+            echo "server name \`simple-vpn-${ALIAS}\`."
+          } >> "${GITHUB_STEP_SUMMARY}"

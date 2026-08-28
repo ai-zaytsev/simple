@@ -79,10 +79,25 @@ func (s *Server) nodeCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chain, err := s.certs.Issue(ctx, req.CSR)
+	// Which authority to ask is a property of the node, not of this service.
+	// A rehearsal machine is certified by the one whose certificates nobody
+	// trusts, so that proving the whole path from nothing to a working node
+	// costs none of the real allowance - five per name per week, and the thing
+	// a genuine renewal depends on.
+	issuer, authority := s.certs, "real"
+	if rehearsal, err := s.store.NodeWantsTestCertificates(ctx, alias); err == nil && rehearsal {
+		if s.certsTest == nil {
+			writeError(w, http.StatusServiceUnavailable, "test certificates are not configured")
+			return
+		}
+		issuer, authority = s.certsTest, "test"
+	}
+
+	chain, err := issuer.Issue(ctx, req.CSR)
 	if err != nil {
 		s.store.RecordRefusal(ctx, expected, alias, "authority refused")
-		s.log.Error("the authority did not issue", "node", alias, "name", expected, "error", err)
+		s.log.Error("the authority did not issue",
+			"node", alias, "name", expected, "authority", authority, "error", err)
 		writeError(w, http.StatusBadGateway, "the authority did not issue")
 		return
 	}
