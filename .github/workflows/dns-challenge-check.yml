@@ -151,5 +151,11 @@ jobs:
           # quietly broke the domain it was checking would be worse than no
           # check at all.
           address=$(dig +short A "${DOMAIN}" @1.1.1.1 | head -1)
+          # address-in-the-clear: an A record is public in DNS by construction,
+          # and anybody can ask the same resolver this asked. A checker that
+          # cannot show what a name resolves to cannot check anything.
+          # address-in-the-clear: an A record is public in DNS by construction,
+          # and anybody can ask the same resolver this just asked. A checker
+          # that cannot show what a name resolves to cannot check anything.
           echo "${DOMAIN} still resolves to: ${address:-nothing}"
           [ -n "${address}" ] || { echo "The domain no longer resolves."; exit 1; }
