@@ -159,11 +159,18 @@ def main(path):
     if nodes:
         say("### Серверы")
         say("")
+        # Aliases are printed, unlike domains. An alias is opaque by design -
+        # not an index, not a hostname, not a region - so it says nothing to a
+        # stranger, and the fleet size it might hint at is already in the table
+        # above. Withholding it only made the panel unusable for acting on: a
+        # workflow that updates one node asks for a name, and there was nowhere
+        # to read one.
+
         say("| сервер | состояние | выдаётся | запас | сессий | CPU | память | задержка | потери |")
         say("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
-        for i, n in enumerate(sorted(nodes, key=lambda x: x.get("alias") or ""), 1):
-            say("| №%d | %s | %s | %s | %s | %s | %s | %s | %s |" % (
-                i, n.get("verdict"), "да" if n.get("offered") else "нет",
+        for n in sorted(nodes, key=lambda x: x.get("alias") or ""):
+            say("| %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+                n.get("alias"), n.get("verdict"), "да" if n.get("offered") else "нет",
                 pct(n.get("room")), n.get("sessions_online"),
                 rate(n.get("cpu_percent")),
                 rate(n.get("memory_percent")),
