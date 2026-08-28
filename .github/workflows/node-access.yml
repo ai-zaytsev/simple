@@ -1,0 +1,107 @@
+name: Node Access
+
+# Answers one question and changes nothing: by what means can this pipeline
+# reach each node, and with whose key.
+#
+# It exists because four runs in a row failed on the way to a node, each for a
+# different reason, and the fourth failed at the node itself. Guessing the
+# fifth reason would have been the fourth guess. This looks instead.
+#
+# Nothing here writes, restarts or installs. It prints fingerprints and yes or
+# no - never key material, never an address.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  JUMP: ${{ secrets.CP_DEPLOY_HOST }}
+
+jobs:
+  access:
+    name: Node Access
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reach the Control Plane
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          {
+            echo "Host *"
+            echo "  IdentityFile ~/.ssh/deploy"
+            echo "  IdentitiesOnly yes"
+            echo "  BatchMode yes"
+            echo "  StrictHostKeyChecking accept-new"
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+          ssh-keyscan -H "${JUMP}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh "root@${JUMP}" true
+          echo "Control Plane reachable with the deploy key."
+
+      - name: What the deploy key is
+        run: |
+          set -euo pipefail
+          # A fingerprint identifies a key without being one. This is what has
+          # to appear on a node for the pipeline to have a way in.
+          echo "deploy key: $(ssh-keygen -lf ~/.ssh/deploy | awk '{print $2}')"
+
+      - name: What the Control Plane holds
+        run: |
+          set -euo pipefail
+          echo "--- keys the Control Plane could reach a node with ---"
+          ssh "root@${JUMP}" 'bash -s' <<'REMOTE'
+          found=0
+          for f in /root/.ssh/id_*; do
+            case "${f}" in *.pub) continue ;; esac
+            [ -f "${f}" ] || continue
+            echo "  $(basename "${f}"): $(ssh-keygen -lf "${f}" 2>/dev/null | awk '{print $2}')"
+            found=1
+          done
+          [ "${found}" -eq 1 ] || echo "  none: the Control Plane has no key of its own"
+          REMOTE
+
+      - name: What each node accepts
+        run: |
+          set -euo pipefail
+          # Asked of the Control Plane, because it is the only machine allowed
+          # to knock on a node at all. Aliases are printed, addresses are not.
+          ssh "root@${JUMP}" 'bash -s' <<'REMOTE'
+          rows=$(psql "$(cat /etc/simple-vpn-cp.dsn)" -tAF'|' -c \
+            "select alias, host from nodes where state <> 'removed' and host <> '0.0.0.0' order by alias")
+
+          printf '%s\n' "${rows}" | while IFS='|' read -r alias address; do
+            [ -n "${alias}" ] || continue
+            printf '%s:\n' "${alias}"
+
+            if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+                   -o ConnectTimeout=10 "root@${address}" true 2>/dev/null; then
+              echo "  the Control Plane gets in with a key of its own"
+              accepted=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "root@${address}" \
+                'ssh-keygen -lf /root/.ssh/authorized_keys 2>/dev/null' 2>/dev/null \
+                | awk '{print $2}' | tr '\n' ' ')
+              echo "  it accepts: ${accepted:-nothing readable}"
+            else
+              echo "  the Control Plane cannot get in either"
+              echo "  what it accepts cannot be read from anywhere in this pipeline"
+            fi
+          done
+          REMOTE
+
+      - name: Say what this means
+        if: always()
+        run: |
+          echo "A node accepting the deploy key's fingerprint can be reached"
+          echo "through the Control Plane, and nothing more is needed."
+          echo
+          echo "A node that does not is a machine this pipeline has no way into."
+          echo "Somebody who already has a way in has to put the deploy key there."
