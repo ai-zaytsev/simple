@@ -313,12 +313,14 @@ func (s *Store) domainLifecycles(
 		// on its own checks. It has to be: it is the domain whose blocking
 		// matters most, because every recovery path depends on devices being
 		// able to ask where to go next.
+		own, checked := byName[st.Name]
+		if !checked {
+			own = Unknown
+		}
 		if alias, ok := domainOf[st.Name]; ok {
-			st.Condition = ConditionOf(measured[alias], now)
-		} else if condition, ok := byName[st.Name]; ok {
-			st.Condition = condition
+			st.Condition = CoverCondition(ConditionOf(measured[alias], now), own)
 		} else {
-			st.Condition = Unknown
+			st.Condition = own
 		}
 
 		Decide(&st, now, 0)
@@ -415,14 +417,29 @@ func (s *Store) RememberServedDomains(ctx context.Context) error {
 // condition only from a node would have left it reading "nothing measured yet"
 // for ever, while being checked every five minutes.
 func (s *Store) domainConditions(ctx context.Context, now time.Time) (map[string]Condition, error) {
+	// Two windows in one pass. The hour is what a domain is normally judged
+	// on, so that one recovering is not held down by yesterday's failures.
+	// The day is the fallback, and it exists because of the alternative:
+	// treating a domain with nothing in the last hour as never measured, when
+	// what it actually has is twenty-four hours of failing. "Nothing measured
+	// yet" is a reason to hand a domain out, and that would be the wrong
+	// answer about the one domain nobody can reach.
 	rows, err := s.pool.Query(ctx, `
 		select target,
-			coalesce(avg(case when vantage = 'control-plane' then (ok::int) end) * 100, -1)::float8,
-			coalesce(avg(case when vantage = 'device' then (ok::int) end) * 100, -1)::float8,
+			coalesce(avg(case when vantage = 'control-plane' and at >= $1
+				then (ok::int) end) * 100, -1)::float8,
+			coalesce(avg(case when vantage = 'device' and at >= $1
+				then (ok::int) end) * 100, -1)::float8,
+			count(*) filter (where vantage = 'device' and at >= $1)::int,
+
+			coalesce(avg(case when vantage = 'control-plane'
+				then (ok::int) end) * 100, -1)::float8,
+			coalesce(avg(case when vantage = 'device'
+				then (ok::int) end) * 100, -1)::float8,
 			count(*) filter (where vantage = 'device')::int
 		from metrics.endpoint_probes
-		where at >= $1
-		group by target`, now.Add(-time.Hour))
+		where at >= $2
+		group by target`, now.Add(-time.Hour), now.Add(-24*time.Hour))
 	if err != nil {
 		return nil, fmt.Errorf("cannot read domain checks: %w", err)
 	}
@@ -430,13 +447,48 @@ func (s *Store) domainConditions(ctx context.Context, now time.Time) (map[string
 
 	conditions := map[string]Condition{}
 	for rows.Next() {
-		var e EndpointHealth
-		if err := rows.Scan(&e.Target, &e.FromUs, &e.FromDevices, &e.DeviceChecks); err != nil {
+		var target string
+		var hour, day EndpointHealth
+		if err := rows.Scan(&target,
+			&hour.FromUs, &hour.FromDevices, &hour.DeviceChecks,
+			&day.FromUs, &day.FromDevices, &day.DeviceChecks); err != nil {
 			return nil, fmt.Errorf("cannot read a domain check: %w", err)
 		}
-		conditions[e.Target] = conditionFromVerdict(endpointVerdict(e))
+		conditions[target] = conditionFromVerdict(endpointVerdict(recentOrElse(hour, day)))
 	}
 	return conditions, rows.Err()
+}
+
+// recentOrElse prefers the last hour and falls back to the last day.
+//
+// "Nothing in the last hour" and "nothing at all" are different situations
+// that produce the same empty row, and only one of them means a domain has
+// never been looked at.
+func recentOrElse(hour, day EndpointHealth) EndpointHealth {
+	if hour.FromUs >= 0 || hour.DeviceChecks > 0 {
+		return hour
+	}
+	return day
+}
+
+// CoverCondition judges a domain that stands in front of a node.
+//
+// It follows the node, because the two usually fail together and reporting
+// them apart would be reporting one thing twice with two different answers.
+// Usually, not always: a node stays healthy by talking to us over a connection
+// it opens itself, and it goes on doing that while the domain in front of it
+// answers nobody. That is not a hypothetical shape - it is what being blocked
+// looks like from here, and it is the first thing this whole lifecycle exists
+// to tell apart.
+//
+// So the node's word is taken except where the domain's own checks say the way
+// in is shut. Those two states are the ones that stop a domain being handed
+// out, and they are exactly the ones the node cannot see.
+func CoverCondition(node, own Condition) Condition {
+	if own == Faulty || own == Blocked {
+		return own
+	}
+	return node
 }
 
 // conditionFromVerdict maps the words the probes speak into the words a

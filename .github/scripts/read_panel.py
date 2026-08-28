@@ -206,14 +206,24 @@ def main(path):
             s.get("name"): s for s in life if s.get("kind") == "domain"
         }
 
+        # What an address is for, without saying what it is called. A cover in
+        # front of a node and the way in to the Control Plane fail differently
+        # and are replaced differently, and a row that does not say which is a
+        # row nobody can act on.
+        covers = {x.get("domain"): x for x in (c.get("domains") or [])}
+
         say("### Точки входа")
         say("")
-        say("| адрес | вывод | отсюда | с устройств | проверок | выдаётся | заменить |")
-        say("| --- | --- | --- | --- | --- | --- | --- |")
+        say("| адрес | что это | вывод | отсюда | с устройств | проверок | выдаётся | заменить |")
+        say("| --- | --- | --- | --- | --- | --- | --- | --- |")
         for i, p in enumerate(sorted(entries, key=lambda x: x.get("target") or ""), 1):
             standing = decided.get(p.get("target")) or {}
-            say("| №%d | %s | %s | %s | %s | %s | %s |" % (
-                i, p.get("verdict"),
+            cover = covers.get(p.get("target"))
+            role = "прикрытие ноды" if cover else "точка входа"
+            if cover:
+                role += " (%s сессий)" % cover.get("sessions")
+            say("| №%d | %s | %s | %s | %s | %s | %s | %s |" % (
+                i, role, p.get("verdict"),
                 rate(p.get("ok_from_us")),
                 rate(p.get("ok_from_devices")),
                 p.get("device_checks"),
