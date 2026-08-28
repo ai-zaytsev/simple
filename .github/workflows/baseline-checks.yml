@@ -151,6 +151,15 @@ jobs:
               if ($LASTEXITCODE -ne 0) {
                 throw "go vet failed in $moduleDir"
               }
+
+              # Tests as well as vet. Some of them are the only enforcement
+              # behind promises this project makes about what it does not
+              # store: a schema with no column for a destination stays that
+              # way because a test reads the migrations and says so.
+              go test ./...
+              if ($LASTEXITCODE -ne 0) {
+                throw "go test failed in $moduleDir"
+              }
             }
             finally {
               Pop-Location

@@ -86,6 +86,9 @@ jobs:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           SS_KEY: ${{ secrets.SPACESHIP_API_KEY }}
           SS_SECRET: ${{ secrets.SPACESHIP_API_SECRET }}
+          # Opens the panel. Absent means the panel is not served at all, which
+          # is the right state for a deployment nobody has given a key.
+          ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
         run: |
           set -euo pipefail
           if [ "${SLOT}" = "a" ]; then
@@ -115,6 +118,7 @@ jobs:
           CP_DNS_CLOUDFLARE_TOKEN=${CF_TOKEN}
           CP_DNS_SPACESHIP_KEY=${SS_KEY}
           CP_DNS_SPACESHIP_SECRET=${SS_SECRET}
+          CP_ADMIN_TOKEN=${ADMIN_TOKEN}
           ENVFILE
 
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'bash -s' <<'REMOTE'

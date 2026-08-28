@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import download.simplevpn.MainActivity
@@ -22,10 +23,13 @@ import download.simplevpn.core.LibXrayEngine
 import download.simplevpn.core.SessionLog
 import download.simplevpn.core.TunBridge
 import download.simplevpn.core.XrayEngine
+import download.simplevpn.metrics.ServiceReport
 import download.simplevpn.net.NetworkMonitor
 import download.simplevpn.config.ConnectionProfile
+import download.simplevpn.config.TransportParams
 import download.simplevpn.plan.AlreadyTunnelled
 import download.simplevpn.plan.ConfigSource
+import download.simplevpn.plan.ControlPlaneClient
 import download.simplevpn.plan.EndpointChoice
 import download.simplevpn.auth.AccountStore
 import download.simplevpn.plan.PlanSource
@@ -101,6 +105,13 @@ class SimpleVpnService : VpnService() {
     private val watchHandler = Handler(Looper.getMainLooper())
     private val watchEndpoint = Runnable { checkEndpoint() }
     private val watchConfig = Runnable { checkConfig() }
+    private val watchReport = Runnable { sendReport() }
+
+    /** When this attempt began, so that "how long to connect" is measurable. */
+    private var connectStartedAt = 0L
+
+    /** When the tunnel came up, so that a session has a length. */
+    private var sessionStartedAt = 0L
     private var probeIntervalMs = DEFAULT_PROBE_INTERVAL_MS
     private var connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS
 
@@ -222,6 +233,12 @@ class SimpleVpnService : VpnService() {
             }
             currentIndex = choice.index
             currentEndpoint = choice.endpoint
+
+            // Counted here, where the endpoint is finally known. One attempt
+            // per press, so that the success rate on the panel is the rate a
+            // person would recognise rather than the rate of internal retries.
+            connectStartedAt = SystemClock.elapsedRealtime()
+            ServiceReport.attempted(choice.endpoint.alias, choice.endpoint.transport.kind)
             val profile = choice.endpoint
 
             SessionLog.record(this, "endpoint from ${available.source}")
@@ -285,6 +302,7 @@ class SimpleVpnService : VpnService() {
                     VpnController.update(VpnConnectionState.Connected(System.currentTimeMillis()))
                     updateNotification(getString(R.string.status_connected))
                     SessionLog.record(this, "connected")
+                    noteConnected()
 
                     // "Connected" has never meant "working". Everything above
                     // succeeds when the node refuses the credential, when a
@@ -465,9 +483,47 @@ class SimpleVpnService : VpnService() {
     private fun startWatching() {
         watchHandler.removeCallbacks(watchEndpoint)
         watchHandler.removeCallbacks(watchConfig)
+        watchHandler.removeCallbacks(watchReport)
         failures.succeeded()
         watchHandler.postDelayed(watchEndpoint, probeIntervalMs)
         watchHandler.postDelayed(watchConfig, configRefreshMs)
+        watchHandler.postDelayed(watchReport, REPORT_INTERVAL_MS)
+    }
+
+    /** Notes that the tunnel came up, and how long it took to get here. */
+    private fun noteConnected() {
+        sessionStartedAt = SystemClock.elapsedRealtime()
+        val took = if (connectStartedAt > 0) sessionStartedAt - connectStartedAt else null
+        ServiceReport.connected(took)
+    }
+
+    /** Notes that a session ended, so it has a length rather than a start. */
+    private fun noteSessionEnded() {
+        if (sessionStartedAt <= 0) return
+        ServiceReport.sessionEnded((SystemClock.elapsedRealtime() - sessionStartedAt) / 1000)
+        sessionStartedAt = 0
+    }
+
+    /**
+     * Sends what has been counted, if anything.
+     *
+     * Off the main thread, and never as a condition of anything working: a
+     * report that fails to arrive costs a window of numbers and nothing else.
+     * Measurement that can break the product is worse than no measurement.
+     */
+    private fun sendReport() {
+        watchHandler.removeCallbacks(watchReport)
+        if (ServiceReport.worthSending()) {
+            val body = ServiceReport.drain()
+            probes.execute {
+                try {
+                    ControlPlaneClient(this).sendReport(body)
+                } catch (t: Throwable) {
+                    Log.i(TAG, "report not delivered", t)
+                }
+            }
+        }
+        if (engine.isRunning) watchHandler.postDelayed(watchReport, REPORT_INTERVAL_MS)
     }
 
     /**
@@ -672,8 +728,19 @@ class SimpleVpnService : VpnService() {
      * it is alive; a node whose Xray had died would have passed that check
      * while carrying nothing, and failover would never have fired.
      */
-    private fun reachable(profile: ConnectionProfile): Boolean =
-        health.check(profile, connectTimeoutMs)
+    private fun reachable(profile: ConnectionProfile): Boolean {
+        val started = SystemClock.elapsedRealtime()
+        val alive = health.check(profile, connectTimeoutMs)
+
+        // The same check, counted. This is the measurement that finds a
+        // blocked domain, and it can only be taken here: a phone on a Russian
+        // network is the one place where the difference between "our server is
+        // down" and "somebody is keeping people away from it" is visible.
+        val name = (profile.transport as? TransportParams.VlessWsTls)?.serverName.orEmpty()
+        val elapsed = (SystemClock.elapsedRealtime() - started).toInt()
+        ServiceReport.probed(name, alive, if (alive) elapsed else null)
+        return alive
+    }
 
     private fun restartEngineForNewNetwork() =
         restartEngineOnCurrentEndpoint("underlying network changed")
@@ -689,6 +756,12 @@ class SimpleVpnService : VpnService() {
     private fun restartEngineOnCurrentEndpoint(reason: String) {
         if (!engine.isRunning) return
         SessionLog.record(this, "$reason, restarting the engine")
+
+        // Counted here and only here. The other places that show
+        // "Reconnecting" either lead into this one or are a different event,
+        // and counting each of them would report a reconnect rate several
+        // times the one people actually experience.
+        ServiceReport.reconnected()
         VpnController.update(VpnConnectionState.Reconnecting)
         updateNotification(getString(R.string.status_reconnecting))
 
@@ -789,6 +862,14 @@ class SimpleVpnService : VpnService() {
         restartHandler.removeCallbacks(restartEngine)
         watchHandler.removeCallbacks(watchEndpoint)
         watchHandler.removeCallbacks(watchConfig)
+
+        // The session is over, so its length is known. Sent now rather than
+        // kept: a phone that is being switched off is a phone that may not get
+        // another chance.
+        noteSessionEnded()
+        sendReport()
+        watchHandler.removeCallbacks(watchReport)
+
         probeAttempts = 0
         currentEndpoint = null
         SessionLog.record(this, "teardown, bridge counters: " + BridgeDiagnostics.snapshot())
@@ -933,6 +1014,16 @@ class SimpleVpnService : VpnService() {
          * unexpected name and does the wrong thing quietly.
          */
         private const val APP_VERSION = 1
+
+        /**
+         * How often what has been counted is sent.
+         *
+         * Fifteen minutes, which is a compromise rather than a measurement:
+         * the numbers are sums and lose nothing by arriving late, and every
+         * report is a radio wake-up on somebody's battery. A session that ends
+         * sooner sends on the way out, so short sessions are not lost.
+         */
+        private const val REPORT_INTERVAL_MS = 15 * 60_000L
 
         /** Used until a plan says otherwise. */
         private const val DEFAULT_PROBE_INTERVAL_MS = 60_000L

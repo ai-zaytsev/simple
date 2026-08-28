@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Состояние сервиса</title>
+<style>
+  :root {
+    --bg: #f7f7f6; --card: #fff; --ink: #16181d; --dim: #6b7280;
+    --line: #e3e4e6; --ok: #1a7f4b; --warn: #a86400; --bad: #b3261e;
+    --bar: #3b5bdb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14151a; --card: #1c1e25; --ink: #e8e9ec; --dim: #9aa0aa;
+      --line: #2b2e37; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+      --bar: #7c93f5;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px 64px; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--dim); margin: 32px 0 10px; font-weight: 600; }
+  .sub { color: var(--dim); font-size: 13px; margin: 0 0 8px; }
+  .card { background: var(--card); border: 1px solid var(--line);
+          border-radius: 10px; padding: 14px 16px; }
+  .grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .tile .k { color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  .tile .v { font-size: 26px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tile .n { color: var(--dim); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-weight: 600; font-size: 12px; color: var(--dim);
+       text-transform: uppercase; letter-spacing: .05em; padding: 0 10px 8px 0; }
+  td { padding: 8px 10px 8px 0; border-top: 1px solid var(--line); }
+  .wrap { overflow-x: auto; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 99px;
+         font-size: 12px; font-weight: 600; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .barrow { display: grid; grid-template-columns: 110px 1fr 92px; gap: 10px;
+            align-items: center; margin-bottom: 6px; }
+  .bar { height: 10px; background: var(--line); border-radius: 99px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--bar); }
+  .muted { color: var(--dim); }
+  input, button { font: inherit; padding: 8px 12px; border-radius: 8px;
+                  border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  button { cursor: pointer; font-weight: 600; }
+  .gate { max-width: 420px; margin: 60px auto; }
+  .note { font-size: 13px; color: var(--dim); margin-top: 10px; }
+</style>
+</head>
+<body>
+<main>
+  <div id="gate" class="gate card" hidden>
+    <h1>Состояние сервиса</h1>
+    <p class="sub">Введите ключ панели.</p>
+    <form id="gateform">
+      <input id="key" type="password" autocomplete="off" placeholder="ключ" style="width:100%">
+      <button type="submit" style="margin-top:10px;width:100%">Открыть</button>
+    </form>
+    <p class="note">Ключ хранится только в этом браузере и отправляется только этому сервису.</p>
+  </div>
+
+  <div id="view" hidden>
+    <h1>Состояние сервиса</h1>
+    <p class="sub" id="stamp"></p>
+
+    <h2>Сейчас</h2>
+    <div class="grid" id="now"></div>
+
+    <h2>Серверы</h2>
+    <div class="card wrap"><table id="nodes"></table></div>
+
+    <h2>Точки входа</h2>
+    <p class="sub">Проверяется отдельно отсюда и с устройств. Расхождение между двумя точками обзора — и есть признак блокировки.</p>
+    <div class="card wrap"><table id="endpoints"></table></div>
+
+    <h2>На что уходит полоса</h2>
+    <p class="sub">За сутки, по всему сервису. Без разбивки по людям — такой разбивки нет в базе.</p>
+    <div class="card" id="classes"></div>
+
+    <h2>Нагрузка по пользователям</h2>
+    <p class="sub">Объём за месяц. Кто именно — не хранится.</p>
+    <div class="grid" id="usage"></div>
+
+    <h2>Подключения</h2>
+    <p class="sub">За сутки, по отчётам устройств.</p>
+    <div class="grid" id="connect"></div>
+  </div>
+</main>
+
+<script>
+(function () {
+  var KEY = "panel-key";
+  var gate = document.getElementById("gate");
+  var view = document.getElementById("view");
+
+  function token() {
+    try { return localStorage.getItem(KEY) || ""; } catch (e) { return ""; }
+  }
+  function remember(value) {
+    try { localStorage.setItem(KEY, value); } catch (e) { /* private window */ }
+  }
+  function forget() {
+    try { localStorage.removeItem(KEY); } catch (e) { /* nothing to do */ }
+  }
+
+  function bytes(n) {
+    if (n === null || n === undefined) return "—";
+    var units = ["Б", "КБ", "МБ", "ГБ", "ТБ", "ПБ"], i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(n < 10 ? 1 : 0)) + " " + units[i];
+  }
+  function bits(n) {
+    if (!n) return "0 бит/с";
+    var units = ["бит/с", "Кбит/с", "Мбит/с", "Гбит/с"], i = 0;
+    while (n >= 1000 && i < units.length - 1) { n /= 1000; i++; }
+    return n.toFixed(n < 10 ? 1 : 0) + " " + units[i];
+  }
+  function num(n, digits) {
+    if (n === null || n === undefined) return "—";
+    return Number(n).toFixed(digits === undefined ? 0 : digits);
+  }
+  function seconds(s) {
+    if (!s) return "—";
+    if (s < 90) return Math.round(s) + " с";
+    if (s < 5400) return Math.round(s / 60) + " мин";
+    return (s / 3600).toFixed(1) + " ч";
+  }
+
+  var NODE_WORDS = {
+    ok: ["работает", "ok"], busy: ["перегружен", "warn"],
+    degraded: ["работает хуже", "warn"], silent: ["молчит", "bad"]
+  };
+  var ENTRY_WORDS = {
+    "works": ["работает", "ok"], "slower": ["работает хуже", "warn"],
+    "unreachable": ["недоступно", "bad"], "likely blocked": ["вероятно блокируется", "bad"]
+  };
+
+  function tile(k, v, n) {
+    return '<div class="card tile"><div class="k">' + k + '</div><div class="v">' + v +
+           '</div>' + (n ? '<div class="n">' + n + '</div>' : '') + '</div>';
+  }
+  function tag(map, key) {
+    var w = map[key] || [key, "muted"];
+    return '<span class="tag ' + w[1] + '">' + w[0] + '</span>';
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c];
+    });
+  }
+
+  function render(d) {
+    document.getElementById("stamp").textContent =
+      "обновлено " + new Date(d.generated_at).toLocaleString("ru-RU");
+
+    document.getElementById("now").innerHTML =
+      tile("Активны за час", d.now.active_users_hour, "уникальных") +
+      tile("Активны за сутки", d.now.active_users_day, "уникальных") +
+      tile("Соединений", d.now.sessions_online, "одновременно") +
+      tile("Серверов на связи", d.now.nodes_reporting + " / " + d.nodes.length) +
+      tile("Отдача", bits(d.now.downlink_bps)) +
+      tile("Приём", bits(d.now.uplink_bps));
+
+    var t = "<tr><th>сервер</th><th>состояние</th><th>сессий</th><th>CPU</th>" +
+            "<th>память</th><th>load</th><th>соединений</th><th>задержка</th>" +
+            "<th>потери</th><th>полоса</th></tr>";
+    d.nodes.forEach(function (n) {
+      t += "<tr><td>" + esc(n.alias) + "</td>" +
+        "<td>" + tag(NODE_WORDS, n.verdict) + "</td>" +
+        "<td>" + n.sessions_online + "</td>" +
+        "<td>" + num(n.cpu_percent, 0) + "%</td>" +
+        "<td>" + num(n.memory_percent, 0) + "%</td>" +
+        "<td>" + num(n.load1, 2) + "</td>" +
+        "<td>" + (n.established === null ? "—" : n.established) + "</td>" +
+        "<td>" + num(n.latency_ms, 0) + " мс</td>" +
+        "<td>" + num(n.loss_percent, 0) + "%</td>" +
+        "<td>" + bits(n.downlink_bps) + "</td></tr>";
+    });
+    document.getElementById("nodes").innerHTML = t;
+
+    var e = "<tr><th>адрес</th><th>вывод</th><th>отсюда</th><th>с устройств</th>" +
+            "<th>проверок</th><th>задержка</th></tr>";
+    if (!d.endpoints.length) {
+      e += '<tr><td colspan="6" class="muted">проверок пока не было</td></tr>';
+    }
+    d.endpoints.forEach(function (p) {
+      e += "<tr><td>" + esc(p.target) + "</td>" +
+        "<td>" + tag(ENTRY_WORDS, p.verdict) + "</td>" +
+        "<td>" + (p.ok_from_us < 0 ? "—" : num(p.ok_from_us, 0) + "%") + "</td>" +
+        "<td>" + (p.ok_from_devices < 0 ? "—" : num(p.ok_from_devices, 0) + "%") + "</td>" +
+        "<td>" + p.device_checks + "</td>" +
+        "<td>" + num(p.latency_ms, 0) + " мс</td></tr>";
+    });
+    document.getElementById("endpoints").innerHTML = e;
+
+    var c = "";
+    if (!d.classes.length) {
+      c = '<p class="muted" style="margin:0">за сутки трафика не было</p>';
+    }
+    d.classes.forEach(function (k) {
+      c += '<div class="barrow"><div>' + esc(k.class) + '</div>' +
+           '<div class="bar"><i style="width:' + k.percent.toFixed(1) + '%"></i></div>' +
+           '<div class="muted">' + k.percent.toFixed(1) + "% · " + bytes(k.bytes) + "</div></div>";
+    });
+    document.getElementById("classes").innerHTML = c;
+
+    var u = d.usage;
+    document.getElementById("usage").innerHTML =
+      tile("Пользователей", u.users, u.period) +
+      tile("Всего", bytes(u.total_bytes)) +
+      tile("Среднее", bytes(u.mean_bytes)) +
+      tile("P50", bytes(u.p50)) +
+      tile("P90", bytes(u.p90)) +
+      tile("P95", bytes(u.p95)) +
+      tile("P99", bytes(u.p99)) +
+      tile("Heavy users", u.heavy_users, "больше " + bytes(u.heavy_above)) +
+      tile("Верхний 1%",
+        u.too_few_for_top ? "—" : num(u.top_1_percent_share, 1) + "%",
+        u.too_few_for_top ? "нужно от 100 пользователей" : "от всего трафика");
+
+    var k = d.connect;
+    document.getElementById("connect").innerHTML =
+      tile("Успешных подключений", num(k.success_rate, 1) + "%", k.successes + " из " + k.attempts) +
+      tile("Переподключений", k.reconnects) +
+      tile("Средняя сессия", seconds(k.avg_session_seconds)) +
+      tile("Задержка", num(k.avg_latency_ms, 0) + " мс");
+  }
+
+  function load() {
+    var key = token();
+    if (!key) { gate.hidden = false; view.hidden = true; return; }
+
+    fetch("/v1/admin/overview", { headers: { authorization: "Bearer " + key } })
+      .then(function (r) {
+        if (r.status === 401 || r.status === 404) { forget(); location.reload(); return null; }
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (d) {
+        if (!d) return;
+        gate.hidden = true; view.hidden = false;
+        render(d);
+      })
+      .catch(function () {
+        document.getElementById("stamp").textContent = "не удалось получить данные";
+      });
+  }
+
+  document.getElementById("gateform").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    remember(document.getElementById("key").value.trim());
+    load();
+  });
+
+  load();
+  setInterval(load, 30000);
+})();
+</script>
+</body>
+</html>

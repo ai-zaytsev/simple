@@ -115,6 +115,19 @@ class ControlPlaneClient(
         }
     }
 
+    /**
+     * Sends what this device saw of the service since the last report.
+     *
+     * Totals, and outcomes of trying our own addresses. Nothing about what
+     * travelled through the tunnel: see metrics/ServiceReport.kt for why this
+     * device is the one that has to answer the blocking question, and for what
+     * it is allowed to say.
+     */
+    fun sendReport(body: String) {
+        val token = accounts.deviceToken ?: return
+        send("/v1/app/report", body, token)
+    }
+
     /** Tells the server a plan did not work, so somebody can look at it. */
     fun reportPlanFailure(seq: Long, reason: String) {
         val token = accounts.deviceToken ?: return

@@ -9,6 +9,7 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"strings"
@@ -69,4 +70,18 @@ func NormaliseEmail(value string) (string, error) {
 		return "", errors.New("address is too long")
 	}
 	return trimmed, nil
+}
+
+// SameSecret compares two secrets without letting the comparison say how far
+// it got.
+//
+// Hashed first so that the comparison is over a fixed length whatever the
+// inputs were: a constant-time compare of two different lengths still tells
+// the caller they were different lengths, which for a secret typed by a person
+// is a start.
+func SameSecret(offered, expected string) bool {
+	if offered == "" || expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare(HashToken(offered), HashToken(expected)) == 1
 }
