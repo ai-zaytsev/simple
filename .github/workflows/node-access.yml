@@ -54,6 +54,21 @@ jobs:
           # A fingerprint identifies a key without being one. This is what has
           # to appear on a node for the pipeline to have a way in.
           echo "deploy key: $(ssh-keygen -lf ~/.ssh/deploy | awk '{print $2}')"
+          echo
+
+          # The public half, printed so that it can be installed.
+          #
+          # A public key is public - that is what the word in its name means,
+          # and it is handed to every server it authenticates against. What it
+          # reveals is which key opens our machines, which is worth something
+          # only to somebody who also holds the private half. That half is a
+          # secret and stays one.
+          #
+          # Printed here because when the answer below is "no way in", this is
+          # the line somebody has to put on a node, and fetching it afterwards
+          # would mean another run to get it.
+          echo "--- the line to add to a node's authorized_keys ---"
+          ssh-keygen -y -f ~/.ssh/deploy
 
       - name: What the Control Plane holds
         run: |
