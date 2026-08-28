@@ -167,6 +167,11 @@ jobs:
             }
           }
 
+      - name: Check the panel script
+        if: steps.detect.outputs.has_go == 'true'
+        shell: bash
+        run: bash control-plane/tools/check-panel-script.sh
+
       - name: Setup Terraform
         if: steps.detect.outputs.has_terraform == 'true'
         uses: hashicorp/setup-terraform@v3
