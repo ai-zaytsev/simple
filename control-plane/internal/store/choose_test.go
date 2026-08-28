@@ -96,25 +96,25 @@ func TestRoomIsTheWorstPressure(t *testing.T) {
 
 func TestQualityFallsWithLatencyLossAndErrors(t *testing.T) {
 	now := time.Now()
-	base := healthy("n-1", now).Quality()
+	base := healthy("n-1", now).Quality(0)
 
 	slow := healthy("n-2", now)
 	high := 400.0
 	slow.UpstreamLatencyMS = &high
-	if slow.Quality() >= base {
+	if slow.Quality(0) >= base {
 		t.Error("a node twenty times slower scores no worse")
 	}
 
 	lossy := healthy("n-3", now)
 	loss := 20.0
 	lossy.LossPercent = &loss
-	if lossy.Quality() >= base {
+	if lossy.Quality(0) >= base {
 		t.Error("a node losing a fifth of its packets scores no worse")
 	}
 
 	failing := healthy("n-4", now)
 	failing.Attempts, failing.Successes = 100, 40
-	if failing.Quality() >= base {
+	if failing.Quality(0) >= base {
 		t.Error("a node devices fail to reach scores no worse")
 	}
 
@@ -122,7 +122,7 @@ func TestQualityFallsWithLatencyLossAndErrors(t *testing.T) {
 	// one person on a train take a node out of service for everybody.
 	unlucky := healthy("n-5", now)
 	unlucky.Attempts, unlucky.Successes = 4, 1
-	if unlucky.Quality() != base {
+	if unlucky.Quality(0) != base {
 		t.Error("four attempts were treated as evidence")
 	}
 }
@@ -214,5 +214,98 @@ func TestVerdictFromRate(t *testing.T) {
 		if got := verdictFromRate(c.rate); got != c.want {
 			t.Errorf("rate %.0f gave %q, want %q", c.rate, got, c.want)
 		}
+	}
+}
+
+// TestMeasuringANodeDoesNotPunishIt is the bug this rule was written wrong
+// for, found on the panel an hour after it went live.
+//
+// A device measuring a domain measures a whole handshake - connect, TLS,
+// upgrade - which on a real phone was averaging 535ms while the node's own
+// round trip was 1.1ms. Both were being judged against the same threshold, so
+// the only node anybody had actually checked scored 0.119 while the node
+// nobody had checked scored 0.629. Being verified made a node worse.
+func TestMeasuringANodeDoesNotPunishIt(t *testing.T) {
+	now := time.Now()
+
+	// Two identical nodes. One has been checked by devices and answers in the
+	// time a handshake takes; the other has never been checked.
+	checked := healthy("n-checked", now)
+	handshake := 535.0
+	checked.DomainLatencyMS = &handshake
+	checked.DomainVerdict = "works"
+
+	unchecked := healthy("n-unchecked", now)
+	unchecked.DomainVerdict = ""
+
+	standings := []NodeStanding{checked, unchecked}
+	typical := TypicalHandshake(standings)
+
+	if checked.Score(typical) < unchecked.Score(typical) {
+		t.Errorf(
+			"a node proven to work scores %.3f against %.3f for one nobody has checked; "+
+				"measuring a node must not be what makes it look bad",
+			checked.Score(typical), unchecked.Score(typical))
+	}
+}
+
+// TestHandshakeIsJudgedAgainstTheOtherNodes checks the replacement rule: a
+// node is compared with its peers rather than with a number somebody chose.
+func TestHandshakeIsJudgedAgainstTheOtherNodes(t *testing.T) {
+	now := time.Now()
+
+	usual, twice := 500.0, 1000.0
+	ordinary := healthy("n-ordinary", now)
+	ordinary.DomainLatencyMS = &usual
+	expensive := healthy("n-expensive", now)
+	expensive.DomainLatencyMS = &twice
+
+	standings := []NodeStanding{ordinary, expensive}
+	typical := TypicalHandshake(standings)
+
+	if expensive.Score(typical) >= ordinary.Score(typical) {
+		t.Error("a node twice as expensive to reach as its peers was not preferred against")
+	}
+
+	// And a whole fleet being slow penalises nobody: the question a chooser
+	// answers is which of these, not whether any of them is good.
+	slowUsual, alsoSlow := 5000.0, 5000.0
+	a := healthy("n-a", now)
+	a.DomainLatencyMS = &slowUsual
+	b := healthy("n-b", now)
+	b.DomainLatencyMS = &alsoSlow
+
+	slowFleet := []NodeStanding{a, b}
+	if a.Score(TypicalHandshake(slowFleet)) != b.Score(TypicalHandshake(slowFleet)) {
+		t.Error("two equally slow nodes were scored differently")
+	}
+}
+
+// TestTypicalHandshakeHasNoSingleMiddle checks the case this fleet is actually
+// in, which the first version got wrong.
+//
+// With two measurements, taking the upper as the median makes the more
+// expensive node the standard: it pays nothing for being expensive, and the
+// cheaper one gains nothing for being cheap. The whole comparison collapses at
+// exactly the fleet size we have.
+func TestTypicalHandshakeHasNoSingleMiddle(t *testing.T) {
+	cheap, dear := 500.0, 1000.0
+	standings := []NodeStanding{
+		{DomainLatencyMS: &cheap},
+		{DomainLatencyMS: &dear},
+	}
+	if got := TypicalHandshake(standings); got != 750 {
+		t.Errorf("the middle of 500 and 1000 came out as %.0f", got)
+	}
+
+	// An odd count still has a real middle.
+	middle := 800.0
+	standings = append(standings, NodeStanding{DomainLatencyMS: &middle})
+	if got := TypicalHandshake(standings); got != 800 {
+		t.Errorf("the middle of 500, 800 and 1000 came out as %.0f", got)
+	}
+
+	if got := TypicalHandshake(nil); got != 0 {
+		t.Errorf("with nothing measured the middle should be nothing, got %.0f", got)
 	}
 }

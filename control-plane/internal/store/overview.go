@@ -139,13 +139,14 @@ func (s *Store) Overview(ctx context.Context, now time.Time) (Overview, error) {
 	if err != nil {
 		return o, err
 	}
+	typical := TypicalHandshake(standings)
 	byAlias := map[string]NodeStanding{}
 	for _, standing := range standings {
 		byAlias[standing.Node.Alias] = standing
 	}
 	for i := range nodes {
 		if standing, ok := byAlias[nodes[i].Alias]; ok {
-			nodes[i].Score = standing.Score()
+			nodes[i].Score = standing.Score(typical)
 			nodes[i].Room = standing.Room()
 			nodes[i].Offered = standing.Usable(now)
 			nodes[i].DomainVerdict = standing.DomainVerdict

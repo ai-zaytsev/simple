@@ -58,8 +58,51 @@ type NodeStanding struct {
 // getting worse; quality says how well it is serving the people already on it.
 // A node with plenty of room that loses a tenth of its packets is not a good
 // place to send anybody, and neither is a healthy node that is full.
-func (s NodeStanding) Score() float64 {
-	return s.Room() * s.Quality()
+// typicalHandshake is what reaching a node's domain costs across the fleet.
+//
+// Passed into scoring rather than assumed, because the number it is compared
+// against is not a network round trip. A device measures a whole handshake -
+// connect, TLS, upgrade - which on real phones runs to hundreds of
+// milliseconds where the node's own ping is one. Judging both against one
+// fixed threshold penalised every node anybody had actually measured, so the
+// node nobody had checked came out ahead of the node proven to be working.
+// That was live on the panel: 0.629 for the unmeasured node, 0.119 for the
+// good one.
+//
+// So a node is compared against the others rather than against a number
+// somebody chose. A node at the fleet's usual cost pays nothing; one that is
+// twice as expensive to reach pays half. If every node is slow, none is
+// penalised - which is right for a chooser, whose whole question is which of
+// these to use. Whether the fleet as a whole is slow is a different question
+// and the panel already answers it.
+func (s NodeStanding) Score(typicalHandshake float64) float64 {
+	return s.Room() * s.Quality(typicalHandshake)
+}
+
+// TypicalHandshake is the middle of what devices measured, or zero when
+// nothing has been measured yet.
+func TypicalHandshake(standings []NodeStanding) float64 {
+	measured := []float64{}
+	for _, s := range standings {
+		if s.DomainLatencyMS != nil && *s.DomainLatencyMS > 0 {
+			measured = append(measured, *s.DomainLatencyMS)
+		}
+	}
+	if len(measured) == 0 {
+		return 0
+	}
+	sort.Float64s(measured)
+
+	// The middle pair averaged when there is no single middle. Taking the
+	// upper one instead looks like a detail and is not: with two nodes it
+	// makes the more expensive of them the standard, so the expensive node
+	// pays nothing and the cheap one gains nothing. Two nodes is what this
+	// fleet has.
+	middle := len(measured) / 2
+	if len(measured)%2 == 0 {
+		return (measured[middle-1] + measured[middle]) / 2
+	}
+	return measured[middle]
 }
 
 // Room is how much of this node is still free, from 0 to 1.
@@ -82,18 +125,25 @@ func (s NodeStanding) Room() float64 {
 }
 
 // Quality is how well this node is serving the people already on it.
-func (s NodeStanding) Quality() float64 {
+func (s NodeStanding) Quality(typicalHandshake float64) float64 {
 	quality := 1.0
 
-	// Latency, as a smooth penalty rather than a threshold. Thresholds make a
-	// node flip between chosen and shunned over one millisecond; this makes a
-	// slower node less likely rather than forbidden.
-	latency := s.DomainLatencyMS
-	if latency == nil {
-		latency = s.UpstreamLatencyMS
+	// What it costs a device to reach this node, against what it costs to
+	// reach the others. Absence of a measurement is not an advantage: a node
+	// nobody has checked simply pays nothing here, and so does a node at the
+	// usual cost.
+	if typicalHandshake > 0 && s.DomainLatencyMS != nil && *s.DomainLatencyMS > 0 {
+		worse := *s.DomainLatencyMS/typicalHandshake - 1
+		if worse > 0 {
+			quality *= 1 / (1 + worse)
+		}
 	}
-	if latency != nil && *latency > 0 {
-		quality *= 1 / (1 + *latency/latencyHalvesAt)
+
+	// The node's own round trip, which is a round trip and can be judged
+	// against a number. Smooth rather than a threshold: a threshold makes a
+	// node flip between chosen and shunned over one millisecond.
+	if s.UpstreamLatencyMS != nil && *s.UpstreamLatencyMS > 0 {
+		quality *= 1 / (1 + *s.UpstreamLatencyMS/roundTripHalvesAt)
 	}
 
 	if s.LossPercent != nil {
@@ -134,10 +184,14 @@ func (s NodeStanding) Usable(now time.Time) bool {
 }
 
 const (
-	// Where a node's latency has cost it half its quality. Two hundred
+	// Where a node's own round trip has cost it half its quality. Two hundred
 	// milliseconds is roughly the point at which a person notices the service
 	// rather than the internet.
-	latencyHalvesAt = 200.0
+	//
+	// This is a round trip and only a round trip. What a device measures when
+	// it checks a domain is a whole handshake - connect, TLS, upgrade - and is
+	// judged against the other nodes instead; see TypicalHandshake.
+	roundTripHalvesAt = 200.0
 
 	// Below this many connection attempts, a success rate is noise.
 	minAttemptsToJudge = 20
@@ -172,9 +226,11 @@ func Rank(standings []NodeStanding, deviceKey string, now time.Time) []NodeStand
 		usable   bool
 	}
 
+	typical := TypicalHandshake(standings)
+
 	ranked := make([]keyed, 0, len(standings))
 	for _, s := range standings {
-		score := s.Score()
+		score := s.Score(typical)
 
 		// Never exactly zero: a node with no measurements at all has not
 		// earned a place at the front, and it has not earned exclusion
