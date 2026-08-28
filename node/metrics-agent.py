@@ -90,6 +90,14 @@ def counters():
             continue
         kind, who, _, direction = parts
         side = "up" if direction == "uplink" else "down"
+        # A shaped outbound is the same outbound with a mark on the socket, so
+        # its bytes belong in the same total. Folded here rather than reported
+        # apart: the mix is about what the service carries, and splitting it by
+        # who pays would answer a question nobody asked while leaving both
+        # halves too small to read.
+        if kind == "outbound" and who.startswith("slow-"):
+            who = who[len("slow-"):]
+
         if kind == "user":
             per_user.setdefault(who, {"up": 0, "down": 0})
             per_user[who][side] += value
@@ -292,8 +300,35 @@ def deliver(pending):
 HEAVY_PATIENCE_S = 6 * 3600
 
 
-def apply_heavy(heavy, waiting_since):
-    """Puts a changed list into effect, preferring a moment nobody will notice.
+def apply_shaping(speed_mbit):
+    """Sets the shaper to the figure the Control Plane named, or removes it.
+
+    Called every round rather than only on a change, because unlike the lists
+    this lives in the kernel: a reboot takes it away and nothing else would put
+    it back. Setting it again when it is already right does nothing, which is
+    what makes it survive a machine coming up.
+
+    A failure here is reported and swallowed. A node that cannot shape is
+    serving people too fast; a node that stopped serving because shaping failed
+    is serving nobody, and the second is worse.
+    """
+    argument = str(speed_mbit) if speed_mbit else "none"
+    try:
+        result = subprocess.run(
+            ["/usr/local/lib/simple-vpn/speed-limit.sh", argument],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception as problem:  # noqa: BLE001 - never take the node down for this
+        print("could not run the shaper:", type(problem).__name__, file=sys.stderr)
+        return
+
+    if result.returncode != 0:
+        print("the shaper refused:", (result.stderr or result.stdout).strip()[-200:],
+              file=sys.stderr)
+
+
+def apply_lists(heavy, limited, speed_mbit, waiting_since):
+    """Puts changed lists into effect, preferring a moment nobody will notice.
 
     Applying it restarts the engine, and there is no way around that: Xray
     reads its routing table once at start, and the API call documented for
@@ -311,7 +346,16 @@ def apply_heavy(heavy, waiting_since):
         print("cannot reach the configuration builder", file=sys.stderr)
         return waiting_since
 
-    if sorted(heavy) == xray_observability.read_heavy():
+    same_heavy = sorted(heavy) == xray_observability.read_heavy()
+    same_limited = sorted(limited) == xray_observability.read_limited()
+
+    # The shaper is set every round regardless of the lists, because it lives
+    # in the kernel rather than in a file: a reboot takes it away and nothing
+    # else would put it back. Setting it again when it is already right costs
+    # nothing and is what makes it survive a machine coming up.
+    apply_shaping(speed_mbit if limited else 0)
+
+    if same_heavy and same_limited:
         return None
 
     live = tunnel_connections()
@@ -320,14 +364,14 @@ def apply_heavy(heavy, waiting_since):
         return waiting_since or time.time()
 
     print(
-        "applying a new group list (%d credentials, %d connections open)"
-        % (len(heavy), live or 0),
+        "applying new group lists (%d heavy, %d limited, %d connections open)"
+        % (len(heavy), len(limited), live or 0),
         file=sys.stderr,
     )
     try:
-        xray_observability.apply(heavy=sorted(heavy))
+        xray_observability.apply(heavy=sorted(heavy), limited=sorted(limited))
     except Exception as problem:  # noqa: BLE001 - never take the node down for this
-        print("could not apply the group list:", type(problem).__name__, file=sys.stderr)
+        print("could not apply the group lists:", type(problem).__name__, file=sys.stderr)
         return waiting_since
     return None
 
@@ -358,7 +402,12 @@ def main():
             answer = deliver(pending)
             if answer is not None:
                 pending = []
-                waiting_since = apply_heavy(answer.get("heavy", []), waiting_since)
+                waiting_since = apply_lists(
+                    answer.get("heavy", []),
+                    answer.get("limited", []),
+                    int(answer.get("speed_mbit") or 0),
+                    waiting_since,
+                )
         except (urllib.error.URLError, OSError) as problem:
             print("could not deliver:", type(problem).__name__, file=sys.stderr)
 

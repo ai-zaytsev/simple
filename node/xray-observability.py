@@ -33,6 +33,16 @@ BACKUP = Path("/root/xray-config.before-observability.json")
 # else; the node never learns why they are on it.
 HEAVY_LIST = Path("/etc/simple-vpn-heavy.json")
 
+# The credentials held to a speed, and the figure they are held to. Kept the
+# same way and for the same reason: the node is handed a list and a number and
+# is told nothing about what either means.
+LIMITED_LIST = Path("/etc/simple-vpn-limited.json")
+
+# The firewall mark put on connections that are to be shaped. Traffic carrying
+# it is what the shaper slows; everything else, including this machine's own
+# administration, is untouched by construction.
+SLOW_MARK = 0x51
+
 # The classes the Business Owner asked to see. Names are short because they end
 # up as counter names, and a counter name is not a place for prose.
 CLASSES = [
@@ -133,46 +143,79 @@ def matchers():
     return rules
 
 
-def classification_rules(api_rules, heavy):
-    """The routing table, with the heavier group split off where asked.
+def classification_rules(api_rules, heavy, limited):
+    """The routing table, split by two questions that are asked separately.
 
-    Each matcher is emitted twice when there is a heavy list: once narrowed to
-    those credentials and pointing at `heavy-<class>`, then unchanged pointing
-    at `class-<class>`. With no heavy list the second half is the whole table
-    and the node behaves exactly as it did before this existed.
+    A connection has to answer both: which kind of traffic it is, which decides
+    the counter, and whether the person is held to a speed, which decides
+    whether the socket carries the shaping mark. Xray picks one outbound, so
+    the two answers have to meet in the outbound tag.
+
+    Order is everything here. The first match wins, so the narrowest rules come
+    first: slowed and heavy, then slowed, then heavy, then everybody else. Put
+    the other way round, the broad rule would answer first and the narrow ones
+    would never be reached - which is the failure that leaves a limit written
+    down and not applied.
     """
     rules = list(api_rules)
 
     for matcher, name in matchers():
-        if heavy:
-            narrowed = dict(matcher)
-            narrowed["type"] = "field"
-            narrowed["user"] = heavy
-            narrowed["outboundTag"] = "heavy-" + name
-            rules.append(narrowed)
-
-        ordinary = dict(matcher)
-        ordinary["type"] = "field"
-        ordinary["outboundTag"] = "class-" + name
-        rules.append(ordinary)
+        # Both, then one, then the other, then neither. Written as a list so
+        # the order is visible in one place rather than in four blocks that
+        # can be edited apart.
+        for users, tag in (
+            (both(heavy, limited), "slow-heavy-" + name),
+            (limited, "slow-class-" + name),
+            (heavy, "heavy-" + name),
+            (None, "class-" + name),
+        ):
+            if users is not None and not users:
+                continue
+            rule = dict(matcher)
+            rule["type"] = "field"
+            if users:
+                rule["user"] = users
+            rule["outboundTag"] = tag
+            rules.append(rule)
 
     return rules
 
 
-def read_heavy():
-    """The list as it was last applied, or empty if it never has been."""
+def both(heavy, limited):
+    """The credentials on both lists, in a stable order."""
+    return sorted(set(heavy) & set(limited))
+
+
+def read_list(path):
+    """A list as it was last applied, or empty if it never has been."""
     try:
-        return sorted(json.loads(HEAVY_LIST.read_text()))
+        return sorted(json.loads(path.read_text()))
     except Exception:  # noqa: BLE001 - a missing or broken list means none
         return []
 
 
+def write_list(path, values):
+    path.write_text(json.dumps(sorted(values)))
+    path.chmod(0o600)
+
+
+def read_heavy():
+    return read_list(HEAVY_LIST)
+
+
 def write_heavy(heavy):
-    HEAVY_LIST.write_text(json.dumps(sorted(heavy)))
-    HEAVY_LIST.chmod(0o600)
+    write_list(HEAVY_LIST, heavy)
 
 
-def patch(config, heavy):
+def read_limited():
+    return read_list(LIMITED_LIST)
+
+
+def write_limited(limited):
+    write_list(LIMITED_LIST, limited)
+
+
+def patch(config, heavy, limited):
     changed = []
 
     # Counting has to be switched on in three places that do not know about one
@@ -226,6 +269,21 @@ def patch(config, heavy):
                 if "class outbounds added" not in changed:
                     changed.append("class outbounds added")
 
+        # The same outbounds again, differing in one field: a mark on the
+        # socket. The mark is the only thing the shaper can see - it works
+        # below Xray, on the kernel's queues, where there are no users and no
+        # connections, only packets - so a speed limit has to be written into
+        # the socket at the moment it is opened or it cannot be applied at all.
+        for tag in ("slow-class-" + name, "slow-heavy-" + name):
+            if tag not in have:
+                outbounds.append({
+                    "tag": tag,
+                    "protocol": "freedom",
+                    "streamSettings": {"sockopt": {"mark": SLOW_MARK}},
+                })
+                if "shaped outbounds added" not in changed:
+                    changed.append("shaped outbounds added")
+
     routing = config.setdefault("routing", {})
     rules = routing.get("rules", [])
     api_rules = [r for r in rules if r.get("outboundTag") == "api"]
@@ -233,7 +291,7 @@ def patch(config, heavy):
         print("The management interface has no routing rule. Refusing to touch this.")
         sys.exit(1)
 
-    wanted = classification_rules(api_rules, heavy)
+    wanted = classification_rules(api_rules, heavy, limited)
     if rules != wanted:
         routing["rules"] = wanted
         if "classification rules written" not in changed:
@@ -263,7 +321,7 @@ def refuse_if_logging(config):
     log["dnsLog"] = False
 
 
-def apply(heavy=None, restart=True):
+def apply(heavy=None, limited=None, restart=True):
     """Writes the configuration and, if anything changed, restarts the engine.
 
     Returns True when the engine was restarted.
@@ -276,13 +334,16 @@ def apply(heavy=None, restart=True):
     """
     if heavy is None:
         heavy = read_heavy()
+    if limited is None:
+        limited = read_limited()
 
     config = json.loads(CONFIG.read_text())
     refuse_if_logging(config)
-    changed = patch(config, heavy)
+    changed = patch(config, heavy, limited)
 
     if not changed:
         write_heavy(heavy)
+        write_limited(limited)
         return False
 
     candidate = Path("/tmp/xray-observability-candidate.json")
@@ -305,6 +366,7 @@ def apply(heavy=None, restart=True):
     shutil.copy2(candidate, CONFIG)
     candidate.unlink(missing_ok=True)
     write_heavy(heavy)
+    write_limited(limited)
 
     for line in changed:
         print("  " + line)

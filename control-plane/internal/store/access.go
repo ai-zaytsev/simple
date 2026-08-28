@@ -161,6 +161,13 @@ type DeviceSummary struct {
 	State      string
 	CreatedAt  string
 	LastSeenAt string
+
+	// Whether this is an installation of our application or something else
+	// holding a link, and what the person calls it. Both are here so that one
+	// list can show a phone and a television side by side: revoking the right
+	// one must not require reading identifiers.
+	Kind  string
+	Label string
 }
 
 func (s *Store) DevicesOfAccount(ctx context.Context, accountID uuid.UUID) ([]DeviceSummary, error) {
@@ -169,7 +176,8 @@ func (s *Store) DevicesOfAccount(ctx context.Context, accountID uuid.UUID) ([]De
 		       c.credential_uuid,
 		       coalesce(c.state, 'NONE'),
 		       to_char(d.created_at, 'YYYY-MM-DD"T"HH24:MI:SSZ'),
-		       to_char(coalesce(d.last_seen_at, d.created_at), 'YYYY-MM-DD"T"HH24:MI:SSZ')
+		       to_char(coalesce(d.last_seen_at, d.created_at), 'YYYY-MM-DD"T"HH24:MI:SSZ'),
+		       d.kind, d.label
 		from devices d
 		left join device_credentials c
 		       on c.device_id = d.id and c.state = 'ACTIVE'
@@ -183,7 +191,8 @@ func (s *Store) DevicesOfAccount(ctx context.Context, accountID uuid.UUID) ([]De
 	var out []DeviceSummary
 	for rows.Next() {
 		var d DeviceSummary
-		if err := rows.Scan(&d.ID, &d.Credential, &d.State, &d.CreatedAt, &d.LastSeenAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.Credential, &d.State, &d.CreatedAt, &d.LastSeenAt,
+			&d.Kind, &d.Label); err != nil {
 			return nil, fmt.Errorf("cannot read a device: %w", err)
 		}
 		out = append(out, d)
@@ -269,11 +278,16 @@ func evictBeyondLimit(ctx context.Context, tx pgx.Tx, accountID, keep uuid.UUID)
 		return nil, fmt.Errorf("cannot read the device limit: %w", err)
 	}
 
+	// Only the application's own installations. A television is not competing
+	// for the same slot as a phone: with one shared number, connecting a
+	// television on a tier that allows one device would cut off the phone that
+	// connected it, and the person would watch their own action sign them out.
 	rows, err := tx.Query(ctx, `
 		select c.device_id
 		from device_credentials c
 		join devices d on d.id = c.device_id
 		where d.account_id = $1
+		  and d.kind = 'app'
 		  and c.state = 'ACTIVE'
 		  and c.device_id <> $2
 		order by c.created_at desc
@@ -380,4 +394,121 @@ func (s *Store) AccountTierByEmail(ctx context.Context, email string) (AccountTi
 		return AccountTier{}, fmt.Errorf("cannot read the tier: %w", err)
 	}
 	return out, nil
+}
+
+// ErrTooManyExternal means the tier does not allow another one.
+var ErrTooManyExternal = errors.New("no room for another external device")
+
+// AddExternalDevice creates a router, a television or a computer.
+//
+// One statement's worth of difference from an application installation: no
+// token, because it never asks us anything, and a label, because a person
+// revoking one needs to know which is which.
+//
+// The limit is checked inside the transaction that does the insert, so two
+// requests arriving together cannot both find room and both take it.
+func (s *Store) AddExternalDevice(
+	ctx context.Context, accountID uuid.UUID, label string,
+) (DeviceSummary, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return DeviceSummary{}, fmt.Errorf("cannot begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var allowed, used int
+	err = tx.QueryRow(ctx, `
+		select l.max_external,
+		       (select count(*)::int
+		          from devices d
+		          join device_credentials c
+		            on c.device_id = d.id and c.state = 'ACTIVE'
+		         where d.account_id = $1 and d.kind = 'external')
+		from accounts a join tier_limits l on l.tier = a.tier
+		where a.id = $1`, accountID).Scan(&allowed, &used)
+	if err != nil {
+		return DeviceSummary{}, fmt.Errorf("cannot read the external limit: %w", err)
+	}
+	if used >= allowed {
+		return DeviceSummary{}, ErrTooManyExternal
+	}
+
+	deviceID := uuid.New()
+	if _, err := tx.Exec(ctx, `
+		insert into devices (id, account_id, kind, label)
+		values ($1, $2, 'external', $3)`, deviceID, accountID, label); err != nil {
+		return DeviceSummary{}, fmt.Errorf("cannot create the device: %w", err)
+	}
+
+	// Its own credential, from the same table every other credential lives in.
+	// This is where "no shared key" stops being a promise: there is one row per
+	// device and a unique index over the live ones, so a second device cannot
+	// be given the first one's access even deliberately.
+	credential := uuid.New()
+	if _, err := tx.Exec(ctx, `
+		insert into device_credentials (id, device_id, credential_uuid, updated_seq)
+		values ($1, $2, $3, next_seq('credentials'))`,
+		uuid.New(), deviceID, credential); err != nil {
+		return DeviceSummary{}, fmt.Errorf("cannot create the credential: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return DeviceSummary{}, fmt.Errorf("cannot commit: %w", err)
+	}
+
+	return DeviceSummary{
+		ID:         deviceID,
+		Credential: &credential,
+		State:      "ACTIVE",
+		Kind:       "external",
+		Label:      label,
+	}, nil
+}
+
+// LimitedCredentials is every credential whose account is capped, with the cap.
+//
+// Returned as a list rather than a rate per credential, because the node needs
+// a set to route on and one number to shape with. A rate per credential would
+// mean a shaping class per person, which is a great many classes and no more
+// truth: everybody on a tier is held to the same figure.
+//
+// The node learns which credentials are slowed and how slow. It does not learn
+// what tier means, who is on one, or why - the same arrangement as the heavier
+// group, and for the same reason.
+func (s *Store) LimitedCredentials(ctx context.Context) ([]string, int, error) {
+	// The lowest cap in force. One number because there is one shaping class;
+	// with two paid speeds this becomes a class each, and that is a change to
+	// the node rather than to this query.
+	var speed *int
+	if err := s.pool.QueryRow(ctx, `
+		select min(speed_mbit) from tier_limits where speed_mbit is not null`).
+		Scan(&speed); err != nil {
+		return nil, 0, fmt.Errorf("cannot read the speed limits: %w", err)
+	}
+	if speed == nil {
+		return []string{}, 0, nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		select c.credential_uuid::text
+		from device_credentials c
+		join devices d on d.id = c.device_id
+		join accounts a on a.id = d.account_id
+		join tier_limits l on l.tier = a.tier
+		where c.state = 'ACTIVE' and l.speed_mbit is not null
+		order by c.credential_uuid`)
+	if err != nil {
+		return nil, 0, fmt.Errorf("cannot list limited credentials: %w", err)
+	}
+	defer rows.Close()
+
+	limited := []string{}
+	for rows.Next() {
+		var credential string
+		if err := rows.Scan(&credential); err != nil {
+			return nil, 0, fmt.Errorf("cannot read a limited credential: %w", err)
+		}
+		limited = append(limited, credential)
+	}
+	return limited, *speed, rows.Err()
 }

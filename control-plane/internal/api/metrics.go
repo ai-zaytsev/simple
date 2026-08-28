@@ -137,7 +137,21 @@ func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("cannot work out the heavy set", "error", err)
 		heavy = []string{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "heavy": heavy})
+
+	// And which are held to a speed, with the figure. Same arrangement: a list
+	// and a number, with nothing said about tiers, prices or people.
+	capped, speed, err := s.store.LimitedCredentials(r.Context())
+	if err != nil {
+		s.log.Error("cannot work out the capped set", "error", err)
+		capped, speed = []string{}, 0
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":     "ok",
+		"heavy":      heavy,
+		"limited":    capped,
+		"speed_mbit": speed,
+	})
 }
 
 // heavyCredentials is the set of credentials belonging to the heaviest
