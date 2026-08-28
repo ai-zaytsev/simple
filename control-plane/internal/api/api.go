@@ -141,6 +141,10 @@ func (s *Server) Routes() http.Handler {
 	// numbers are not.
 	mux.HandleFunc("GET /panel", s.panel)
 	mux.HandleFunc("GET /v1/admin/overview", s.adminOverview)
+
+	// Assigning a status by hand, which is how VIP is given out at this stage.
+	// Behind the same key, therefore not served to the internet.
+	mux.HandleFunc("POST /v1/admin/account/tier", s.adminTier)
 	return mux
 }
 
@@ -249,7 +253,11 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 		Seq:         seq,
 		IssuedAt:    now.Format(time.RFC3339),
 		ExpiresAt:   now.Add(s.planTTL).Format(time.RFC3339),
-		AccountTier: "FREE",
+		// The account's, read with the device and never written here. A
+		// literal in this field was correct for as long as there was one tier
+		// and silently wrong the moment there were two, which is the kind of
+		// mistake that keeps passing its tests.
+		AccountTier: device.Tier,
 		Primary:     nodes[0],
 		Reserves:    reserves(nodes),
 		DNS: document.DNS{

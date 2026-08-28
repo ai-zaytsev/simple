@@ -18,6 +18,16 @@ var ErrNoSuchDevice = errors.New("no such device")
 type Device struct {
 	ID        uuid.UUID
 	AccountID uuid.UUID
+
+	// Which tier the account behind this device is on.
+	//
+	// Read from accounts, never stored on the device, and that is the whole
+	// mechanism by which a status belongs to a person rather than to a phone.
+	// There is no tier column on devices for this to be filled from, so a
+	// device cannot carry a status of its own even by mistake - which means
+	// signing in on a second phone cannot produce a different answer, because
+	// both answers come from the same row.
+	Tier string
 }
 
 // IssueDeviceToken replaces this device's secret and returns the new one.
@@ -56,11 +66,15 @@ func (s *Store) IssueDeviceToken(ctx context.Context, deviceID uuid.UUID, hash [
 // before this existed, and a claim is exactly what an attacker supplies.
 func (s *Store) DeviceByToken(ctx context.Context, hash []byte) (Device, error) {
 	var device Device
+	// The join is the point. A device is identified and its account's tier is
+	// read in one statement, so there is no moment at which the two could be
+	// about different accounts and no second lookup anybody could forget.
 	err := s.pool.QueryRow(ctx, `
-		select d.id, d.account_id
+		select d.id, d.account_id, a.tier
 		from devices d
+		join accounts a on a.id = d.account_id
 		where d.token_hash = $1 and d.account_id is not null`, hash).
-		Scan(&device.ID, &device.AccountID)
+		Scan(&device.ID, &device.AccountID, &device.Tier)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Device{}, ErrNoSuchDevice
 	}
@@ -298,4 +312,72 @@ func evictBeyondLimit(ctx context.Context, tx pgx.Tx, accountID, keep uuid.UUID)
 	}
 
 	return over, nil
+}
+
+// AccountTier is what an account's status is, and what it currently means.
+type AccountTier struct {
+	AccountID  uuid.UUID
+	Tier       string
+	MaxDevices int
+	Devices    int
+}
+
+// ErrNoSuchAccount is returned when nobody has signed in with that address.
+var ErrNoSuchAccount = errors.New("no such account")
+
+// SetAccountTier moves an account between statuses.
+//
+// By address, because that is the only handle a person has that an operator
+// also has. The address is used to find the row and is not returned, so a
+// caller that logs the answer logs an account identifier rather than somebody's
+// mailbox.
+//
+// The database refuses a tier nobody has defined, through the foreign key on
+// tier_limits. That refusal is left to the database rather than checked here:
+// a list of allowed words in Go and a list of rows in the schema would be two
+// lists, and the day they disagree is the day one of them is wrong.
+func (s *Store) SetAccountTier(ctx context.Context, email, tier string) (AccountTier, error) {
+	var out AccountTier
+
+	err := s.pool.QueryRow(ctx, `
+		update accounts set tier = $2
+		where lower(email) = lower($1)
+		returning id, tier`, email, tier).Scan(&out.AccountID, &out.Tier)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AccountTier{}, ErrNoSuchAccount
+	}
+	if err != nil {
+		// The address is not wrapped into the error: an error travels into
+		// logs, and this one would carry a mailbox with it.
+		return AccountTier{}, fmt.Errorf("cannot set the tier: %w", err)
+	}
+
+	// What the new status means and how many devices are on it, so that the
+	// answer says what happened rather than only that something did.
+	if err := s.pool.QueryRow(ctx, `
+		select l.max_devices,
+		       (select count(*)::int from devices d where d.account_id = $1)
+		from tier_limits l where l.tier = $2`, out.AccountID, out.Tier).
+		Scan(&out.MaxDevices, &out.Devices); err != nil {
+		return out, fmt.Errorf("cannot read what the tier allows: %w", err)
+	}
+	return out, nil
+}
+
+// AccountTierByEmail reads a status without changing it.
+func (s *Store) AccountTierByEmail(ctx context.Context, email string) (AccountTier, error) {
+	var out AccountTier
+	err := s.pool.QueryRow(ctx, `
+		select a.id, a.tier, l.max_devices,
+		       (select count(*)::int from devices d where d.account_id = a.id)
+		from accounts a join tier_limits l on l.tier = a.tier
+		where lower(a.email) = lower($1)`, email).
+		Scan(&out.AccountID, &out.Tier, &out.MaxDevices, &out.Devices)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AccountTier{}, ErrNoSuchAccount
+	}
+	if err != nil {
+		return AccountTier{}, fmt.Errorf("cannot read the tier: %w", err)
+	}
+	return out, nil
 }
