@@ -185,6 +185,27 @@ jobs:
             echo "ok: $fixture"
           done
 
+          # Not crashing is not the same as reading correctly, and the
+          # difference is what the first live run cost: a domain nothing could
+          # reach was printed as one nobody had checked, because a zero was
+          # being folded into the not-measured fallback. The fixture holds that
+          # exact shape and the output is now looked at rather than discarded.
+          zeroes=$(python3 .github/scripts/read_panel.py \
+            .github/scripts/fixtures/overview-zeroes.json)
+
+          echo "${zeroes}" | grep -q 'unreachable | 0% | 0%' || {
+            echo "A measured zero is being printed as though nothing was measured."
+            echo "${zeroes}" | grep -A 4 'Точки входа'
+            exit 1
+          }
+          echo "ok: a zero reads as a zero"
+
+          echo "${zeroes}" | grep -q 'посчитаны по 10 ч истории' || {
+            echo "The peaks do not say how much history they rest on."
+            exit 1
+          }
+          echo "ok: the peaks carry their span"
+
       - name: Setup Terraform
         if: steps.detect.outputs.has_terraform == 'true'
         uses: hashicorp/setup-terraform@v3

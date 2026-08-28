@@ -190,6 +190,16 @@ type CapacityView struct {
 	P95Utilisation float64  `json:"p95_utilisation"`
 	Growth         *float64 `json:"growth_week_on_week"`
 
+	// How much history the peaks and the busy line were computed from.
+	//
+	// Reported because without it they read as weekly figures whatever they
+	// are: a peak over ten hours and a peak over seven days are shown in the
+	// same box, and only one of them means what the label says. Growth already
+	// refuses to answer without two weeks; these two cannot refuse, because a
+	// peak over ten hours is still a real peak - so they say their span
+	// instead.
+	HistoryHours float64 `json:"history_hours"`
+
 	NodesUsable  int `json:"nodes_usable"`
 	NodesSpare   int `json:"nodes_spare"`
 	NodesBlocked int `json:"nodes_blocked"`
@@ -259,6 +269,9 @@ func (s *Store) capacityView(
 	if v.ByHour, err = s.hourlyPeaks(ctx, now); err != nil {
 		return v, err
 	}
+	if v.HistoryHours, err = s.historyHours(ctx, now); err != nil {
+		return v, err
+	}
 	// Daytime and evening as people live them, not as UTC has them. The hours
 	// are Moscow's because that is where the load is; an evening peak read off
 	// a UTC clock lands in the afternoon and looks like nothing.
@@ -298,6 +311,24 @@ func (s *Store) hourlyPeaks(ctx context.Context, now time.Time) ([]int, error) {
 		}
 	}
 	return hours, rows.Err()
+}
+
+// historyHours is how far back the samples the peaks are drawn from reach.
+//
+// Capped at the same week the peaks look at, because "we have four months of
+// history" says nothing about a figure computed from seven days of it.
+func (s *Store) historyHours(ctx context.Context, now time.Time) (float64, error) {
+	var oldest *time.Time
+	err := s.pool.QueryRow(ctx, `
+		select min(at) from metrics.node_samples where at >= $1`,
+		now.Add(-7*24*time.Hour)).Scan(&oldest)
+	if err != nil {
+		return 0, fmt.Errorf("cannot tell how much history there is: %w", err)
+	}
+	if oldest == nil {
+		return 0, nil
+	}
+	return now.Sub(*oldest).Hours(), nil
 }
 
 func maxOfHours(hours []int, from, to int) int {

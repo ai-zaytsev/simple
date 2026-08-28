@@ -24,6 +24,27 @@ def pct(value):
     return "—" if value is None else "%.0f%%" % (value * 100)
 
 
+def rate(value):
+    """A percentage the service reports, where a negative means "not measured".
+
+    Written out rather than folded into an `or` because that is what went
+    wrong the first time this ran: `value or -1` turns a genuine zero into the
+    fallback, so a domain nothing could reach was printed as a domain nobody
+    had checked. A failure shown as an absence is worse than no panel: it does
+    not look like a problem.
+    """
+    if value is None or value < 0:
+        return "—"
+    return "%.0f%%" % value
+
+
+def number(value, scale=1.0, digits=1):
+    """A number that may legitimately be zero."""
+    if value is None:
+        return "—"
+    return ("%." + str(digits) + "f") % (value / scale)
+
+
 def main(path):
     with open(path, encoding="utf-8") as handle:
         d = json.load(handle)
@@ -62,6 +83,19 @@ def main(path):
         c.get("nodes_blocked"), c.get("nodes_faulty")))
     say("| доменов в запасе | %s |" % c.get("domains_spare"))
     say("")
+
+    # A peak over ten hours and a peak over seven days sit in the same box and
+    # only one of them means what the label says.
+    hours = c.get("history_hours")
+    if hours is not None:
+        if hours < 24:
+            span = "%.0f ч" % hours
+        else:
+            span = "%.1f сут" % (hours / 24.0)
+        say("Пики и P95 посчитаны по %s истории." % span)
+        if hours < 7 * 24:
+            say("Это меньше недели, так что «за неделю» здесь значит «за всё, что есть».")
+        say("")
 
     hours = c.get("by_hour") or []
     if any(hours):
@@ -109,8 +143,16 @@ def main(path):
     say("| соединений | %s |" % now.get("sessions_online"))
     say("| серверов на связи | %s из %s |" % (
         now.get("nodes_reporting"), len(d.get("nodes") or [])))
-    say("| отдача / приём | %.1f / %.1f Мбит/с |" % (
-        (now.get("downlink_bps") or 0) / 1e6, (now.get("uplink_bps") or 0) / 1e6))
+    say("| отдача / приём | %s / %s Мбит/с |" % (
+        number(now.get("downlink_bps"), 1e6), number(now.get("uplink_bps"), 1e6)))
+
+    # Connections, not people. One phone holds tens of them, so the two
+    # numbers above are not the same quantity and the ratio between them is
+    # what turns a capacity figure in connections into one in users.
+    users = now.get("active_users_hour") or 0
+    sessions = now.get("sessions_online") or 0
+    if users > 0:
+        say("| соединений на пользователя | %s |" % number(sessions / float(users), 1.0))
     say("")
 
     nodes = d.get("nodes") or []
@@ -123,10 +165,10 @@ def main(path):
             say("| №%d | %s | %s | %s | %s | %s | %s | %s | %s |" % (
                 i, n.get("verdict"), "да" if n.get("offered") else "нет",
                 pct(n.get("room")), n.get("sessions_online"),
-                pct((n.get("cpu_percent") or 0) / 100),
-                pct((n.get("memory_percent") or 0) / 100),
+                rate(n.get("cpu_percent")),
+                rate(n.get("memory_percent")),
                 "—" if n.get("latency_ms") is None else "%.0f мс" % n["latency_ms"],
-                pct((n.get("loss_percent") or 0) / 100)))
+                rate(n.get("loss_percent"))))
         say("")
 
     # Lifecycles carry names, so only the counts and the four answers survive.
@@ -156,16 +198,27 @@ def main(path):
 
     entries = d.get("endpoints") or []
     if entries:
+        # What was decided about a domain, next to what is measured about it.
+        # Separately the two are readable and say nothing: a domain nothing can
+        # reach is only a problem if it is still being handed out, and that is
+        # the pair somebody has to see at once.
+        decided = {
+            s.get("name"): s for s in life if s.get("kind") == "domain"
+        }
+
         say("### Точки входа")
         say("")
-        say("| адрес | вывод | отсюда | с устройств | проверок |")
-        say("| --- | --- | --- | --- | --- |")
+        say("| адрес | вывод | отсюда | с устройств | проверок | выдаётся | заменить |")
+        say("| --- | --- | --- | --- | --- | --- | --- |")
         for i, p in enumerate(sorted(entries, key=lambda x: x.get("target") or ""), 1):
-            say("| №%d | %s | %s | %s | %s |" % (
+            standing = decided.get(p.get("target")) or {}
+            say("| №%d | %s | %s | %s | %s | %s | %s |" % (
                 i, p.get("verdict"),
-                "—" if (p.get("ok_from_us") or -1) < 0 else "%.0f%%" % p["ok_from_us"],
-                "—" if (p.get("ok_from_devices") or -1) < 0 else "%.0f%%" % p["ok_from_devices"],
-                p.get("device_checks")))
+                rate(p.get("ok_from_us")),
+                rate(p.get("ok_from_devices")),
+                p.get("device_checks"),
+                "да" if standing.get("may_hand_out") else "нет",
+                "да" if standing.get("needs_replacing") else "—"))
         say("")
 
     u = d.get("usage") or {}
