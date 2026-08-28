@@ -53,6 +53,12 @@ type Server struct {
 	// issue rather than one that issues badly.
 	certs *certs.Issuer
 
+	// The same issuance against the authority whose certificates nobody
+	// trusts. A rehearsal node uses it, so that trying the whole path end to
+	// end does not spend the real allowance - five per name per week, and what
+	// a genuine renewal depends on.
+	certsTest *certs.Issuer
+
 	// adminToken opens the panel. Empty means the panel does not exist, which
 	// is the right answer for a deployment that was never given a secret: a
 	// dashboard with no lock is a dashboard for everybody.
@@ -87,6 +93,7 @@ func New(
 	baseURL string,
 	deriver *analytics.Deriver,
 	issuer *certs.Issuer,
+	testIssuer *certs.Issuer,
 	adminToken string,
 	nodeCapacity int,
 	log *slog.Logger,
@@ -100,6 +107,7 @@ func New(
 		baseURL:        baseURL,
 		analytics:      deriver,
 		certs:          issuer,
+		certsTest:      testIssuer,
 		adminToken:     adminToken,
 		nodeCapacity:   nodeCapacity,
 		log:            log,
