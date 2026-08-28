@@ -205,13 +205,24 @@ jobs:
             | jq -r '(.commandIds[0]? // .commandId? // (if type == "array" then .[0] else empty end)) // empty' \
             2>/dev/null || echo "")
           if [ -z "${command_id}" ] || [ "${command_id}" = "null" ]; then
-            echo "The provider did not start the creation."
-            # What it objected to, after the generated password has been
-            # masked. The first failure here printed only the field names,
-            # which said "errors" and nothing about what was wrong.
-            printf '%s' "${created}" \
-              | jq -r '(.errors // [])[] | "  " + ((.info // .message // .code // "") | tostring)' \
-              2>/dev/null || printf '%s' "${created}" | jq -r 'keys_unsorted | join(", ")' 2>/dev/null || true
+            echo "The provider did not start the creation. It said:"
+
+            # Every string it sent back, wherever in the answer it put it,
+            # except anything whose name suggests a secret.
+            #
+            # Two earlier versions of this printed nothing useful: first only
+            # the field names, which said "errors", and then only a guessed
+            # path inside them. The reason that time - the account's active
+            # server quota was full - arrived by email, from the provider, to
+            # a person. A run that fails has to say why without anybody
+            # opening their inbox.
+            printf '%s' "${created}" | jq -r '
+              [paths(strings) as $p | {k: ($p | map(tostring) | join(".")), v: getpath($p)}]
+              | map(select((.k | test("password|secret|key|token"; "i")) | not))
+              | map(select((.v | length) > 0))
+              | .[:12][] | "  \(.k): \(.v)"' 2>/dev/null \
+              || printf '%s' "${created}" | jq -r '"  fields: " + (keys_unsorted | join(", "))' 2>/dev/null \
+              || echo "  the answer could not be read"
             exit 1
           fi
 
