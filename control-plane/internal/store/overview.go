@@ -54,6 +54,13 @@ type NodeHealth struct {
 	// above so that the rule is readable in one place instead of buried in
 	// a case expression.
 	Verdict string `json:"verdict"`
+
+	// What the chooser made of this node, so that "why is everybody on that
+	// one" has an answer on the screen rather than only in the code.
+	Score         float64 `json:"score"`
+	Room          float64 `json:"room"`
+	Offered       bool    `json:"offered"`
+	DomainVerdict string  `json:"domain_verdict"`
 }
 
 type ClassShare struct {
@@ -123,6 +130,26 @@ func (s *Store) Overview(ctx context.Context, now time.Time) (Overview, error) {
 	nodes, err := s.nodeHealth(ctx, now)
 	if err != nil {
 		return o, err
+	}
+
+	// The same numbers the chooser used, not a second opinion assembled from
+	// the same tables by different code. Two answers to "how good is this
+	// node" is one answer too many.
+	standings, err := s.NodeStandings(ctx, "", defaultCapacityForPanel)
+	if err != nil {
+		return o, err
+	}
+	byAlias := map[string]NodeStanding{}
+	for _, standing := range standings {
+		byAlias[standing.Node.Alias] = standing
+	}
+	for i := range nodes {
+		if standing, ok := byAlias[nodes[i].Alias]; ok {
+			nodes[i].Score = standing.Score()
+			nodes[i].Room = standing.Room()
+			nodes[i].Offered = standing.Usable(now)
+			nodes[i].DomainVerdict = standing.DomainVerdict
+		}
 	}
 	o.Nodes = nodes
 	for _, n := range nodes {

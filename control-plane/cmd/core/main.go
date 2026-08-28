@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -190,6 +191,18 @@ func run(log *slog.Logger) error {
 	// it; the daily summaries stay for thirteen.
 	go probe.NewHousekeeper(st, 35*24*time.Hour, 400*24*time.Hour, log).Run(ctx)
 
+	// How many tunnel connections a node is taken to be sized for when it does
+	// not say so itself. Used to work out how much room is left before the
+	// numbers get bad, which is too late to find out by watching them get bad.
+	nodeCapacity := 500
+	if raw := os.Getenv("CP_NODE_CAPACITY"); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed <= 0 {
+			return errors.New("CP_NODE_CAPACITY must be a positive number of connections")
+		}
+		nodeCapacity = parsed
+	}
+
 	// Empty means the panel is not served at all. A dashboard is the one place
 	// where every number in this system is visible at once, so it is closed
 	// unless somebody has deliberately opened it.
@@ -200,7 +213,7 @@ func run(log *slog.Logger) error {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           api.New(st, signer, cleaned, planTTL, sender, baseURL, deriver, issuer, adminToken, log).Routes(),
+		Handler:           api.New(st, signer, cleaned, planTTL, sender, baseURL, deriver, issuer, adminToken, nodeCapacity, log).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

@@ -187,16 +187,19 @@
       tile("Отдача", bits(d.now.downlink_bps)) +
       tile("Приём", bits(d.now.uplink_bps));
 
-    var t = "<tr><th>сервер</th><th>состояние</th><th>сессий</th><th>CPU</th>" +
-            "<th>память</th><th>load</th><th>соединений</th><th>задержка</th>" +
-            "<th>потери</th><th>полоса</th></tr>";
+    var t = "<tr><th>сервер</th><th>состояние</th><th>выдаётся</th><th>запас</th>" +
+            "<th>сессий</th><th>CPU</th><th>память</th><th>соединений</th>" +
+            "<th>задержка</th><th>потери</th><th>полоса</th></tr>";
     d.nodes.forEach(function (n) {
       t += "<tr><td>" + esc(n.alias) + "</td>" +
         "<td>" + tag(NODE_WORDS, n.verdict) + "</td>" +
+        // Whether the chooser is willing to send anybody here at all, which is
+        // a different question from whether the machine looks well.
+        "<td>" + (n.offered ? '<span class="ok">да</span>' : '<span class="bad">нет</span>') + "</td>" +
+        "<td>" + num((n.room || 0) * 100, 0) + "%</td>" +
         "<td>" + n.sessions_online + "</td>" +
         "<td>" + num(n.cpu_percent, 0) + "%</td>" +
         "<td>" + num(n.memory_percent, 0) + "%</td>" +
-        "<td>" + num(n.load1, 2) + "</td>" +
         "<td>" + (n.established === null ? "—" : n.established) + "</td>" +
         "<td>" + num(n.latency_ms, 0) + " мс</td>" +
         "<td>" + num(n.loss_percent, 0) + "%</td>" +
