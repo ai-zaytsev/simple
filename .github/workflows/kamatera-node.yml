@@ -125,8 +125,15 @@ jobs:
                              | unique | join(" ")' /tmp/one.json 2>/dev/null || echo "")
 
             if [ -n "${address}" ]; then
-              echo "  address of ${id}: ${address}"
-              echo "| Candidate machine | \`${address}\` |" >> "${GITHUB_STEP_SUMMARY}"
+              # Masked, then reported as existing without being said.
+              #
+              # This printed addresses in plain sight while three other
+              # workflows were being taught not to. The guard written for those
+              # looked for one shape of the mistake - publishing a step output -
+              # and this is the other shape, a plain echo, so it passed.
+              echo "::add-mask::${address}"
+              echo "  ${id} has an address"
+              echo "| Candidate machine | address recorded |" >> "${GITHUB_STEP_SUMMARY}"
             else
               fields=$(jq -r '(if type == "array" then .[0] else . end) | keys_unsorted | join(", ")' \
                 /tmp/one.json 2>/dev/null || echo "unreadable")
@@ -256,8 +263,10 @@ jobs:
             'if type == "array" then (.[] | select(.name == $n) | .networks[]?.ips[]? ) else empty end' \
             /tmp/servers.json | grep -vE '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)' | head -1)
 
-          echo "Address: ${address:-unknown}"
-          echo "| Candidate machine | \`${address:-unknown}\` |" >> "${GITHUB_STEP_SUMMARY}"
+          [ -n "${address}" ] && echo "::add-mask::${address}"
+          echo "Address: ${address:+recorded}${address:-unknown}"
+          echo "| Candidate machine | ${address:+address recorded}${address:-unknown} |" \
+            >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Remove the machine
         if: ${{ inputs.action == 'destroy' }}

@@ -124,8 +124,9 @@ jobs:
             address=$(curl -sS -H "Authorization: Bearer ${token}" \
               "https://api.digitalocean.com/v2/droplets/${id}" \
               | jq -r '[.droplet.networks.v4[] | select(.type == "public") | .ip_address] | .[0] // empty')
-            printf '%-6s %s\n' "${region}" "${address:-pending}"
-            echo "| ${region} | \`${address:-pending}\` |" >> "${GITHUB_STEP_SUMMARY}"
+            [ -n "${address}" ] && echo "::add-mask::${address}"
+            printf '%-6s %s\n' "${region}" "${address:+ready}${address:-pending}"
+            echo "| ${region} | ${address:+ready}${address:-pending} |" >> "${GITHUB_STEP_SUMMARY}"
           done < /tmp/probes.txt
 
           echo ""

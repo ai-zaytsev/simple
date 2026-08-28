@@ -1,44 +1,77 @@
 #!/usr/bin/env bash
 #
-# An address written to a step output must be masked first.
+# An address must be masked before anything can print it.
 #
-# A step output is not a secret. Every later step that takes one through `env:`
-# prints it in that step's environment block, so an address reaches a public
-# log a dozen times without anybody echoing it once. That is how it got there:
-# one workflow masked its addresses and another, written later, did not, and
-# nothing said the two disagreed.
+# The first version of this looked for one shape of the mistake: publishing an
+# address as a step output. It passed while a workflow two files away printed
+# two live node addresses with a plain echo, and the addresses reached a public
+# log an hour after the guard was written.
 #
-# Checked by reading the workflows rather than by trusting the habit, because
-# the habit is what failed.
+# So it checks the mistake now rather than the shape it took the first time:
+# any line that could put an address in front of somebody - published as an
+# output, echoed, or added to a job summary - must be preceded by a mask of the
+# same variable.
+#
+# Why it matters at all: the repository is public, so its Actions logs are. A
+# node's address is the single fact somebody intending to block this service
+# would most like to be handed, and the cover domain in front of the machine
+# exists so that the address is not the obvious thing about it.
 set -euo pipefail
+
+# Variable names that hold somewhere a machine can be reached. Matched as whole
+# words inside ${...} so that unrelated names - "hostname of the provider API" -
+# do not drag every workflow into this.
+names='address|addresses|ip|ips|node_ip|host|hosts|server_ip'
 
 failed=0
 
 for workflow in .github/workflows/*.yml; do
-    # Lines that publish an output whose name is about where a machine is.
-    while IFS=: read -r line _; do
+    while read -r line; do
         [ -n "${line}" ] || continue
 
-        # The variable being published, so the mask can be matched to it.
-        variable=$(sed -n "${line}p" "${workflow}" \
-            | sed -E 's/.*\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?.*\$\{?GITHUB_OUTPUT.*/\1/')
+        text=$(sed -n "${line}p" "${workflow}")
 
-        from=$((line > 12 ? line - 12 : 1))
-        if sed -n "${from},${line}p" "${workflow}" | grep -q "add-mask::\${\?${variable}"; then
+        # The variable this line would put in front of somebody.
+        variable=$(printf '%s' "${text}" \
+            | grep -oE '\$\{?('"${names}"')\}?' | head -1 \
+            | tr -d '${}')
+        [ -n "${variable}" ] || continue
+
+        # A line that only masks is the fix, not the fault.
+        case "${text}" in *add-mask*) continue ;; esac
+
+        # Secrets are masked by the platform, so a line printing one is safe.
+        case "${text}" in *secrets.*) continue ;; esac
+
+        # Named on purpose, with the reason written above the line.
+        #
+        # An exception with a reason beside it is a decision somebody can argue
+        # with. A blanket rule with no way out gets worked around instead, and
+        # the workaround is where the next one hides: masking the answer of a
+        # DNS check would leave a check that checks nothing.
+        from=$((line > 4 ? line - 4 : 1))
+        if sed -n "${from},${line}p" "${workflow}" | grep -q 'address-in-the-clear:'; then
             continue
         fi
 
-        echo "${workflow}:${line}: an address is published without being masked first"
-        sed -n "${line}p" "${workflow}"
+        from=$((line > 15 ? line - 15 : 1))
+        if sed -n "${from},${line}p" "${workflow}" \
+             | grep -q "add-mask::\${\?${variable}"; then
+            continue
+        fi
+
+        echo "${workflow}:${line}: an address is shown without being masked first"
+        echo "  ${text}"
         failed=1
-    done < <(grep -nE '^\s*echo "[a-z_]*(ip|address|host)[a-z_]*=\$\{?[A-Za-z_]' "${workflow}" \
-             | grep 'GITHUB_OUTPUT' | cut -d: -f1 | sed 's/$/:/')
+    done < <(grep -nE '(echo|printf).*\$\{?('"${names}"')\}?' "${workflow}" \
+             | grep -E 'GITHUB_OUTPUT|GITHUB_STEP_SUMMARY|echo "|printf ' \
+             | cut -d: -f1)
 done
 
 if [ "${failed}" -ne 0 ]; then
     echo
-    echo "Add: echo \"::add-mask::\${the_variable}\" before writing it to GITHUB_OUTPUT."
+    echo "Put: echo \"::add-mask::\${the_variable}\" before anything prints it."
     exit 1
 fi
 
-echo "ok: every published address is masked first"
+echo "ok: every address is masked before anything shows it"
