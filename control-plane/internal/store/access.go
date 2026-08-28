@@ -287,7 +287,6 @@ func evictBeyondLimit(ctx context.Context, tx pgx.Tx, accountID, keep uuid.UUID)
 		from device_credentials c
 		join devices d on d.id = c.device_id
 		where d.account_id = $1
-		  and d.kind = 'app'
 		  and c.state = 'ACTIVE'
 		  and c.device_id <> $2
 		order by c.created_at desc
