@@ -79,6 +79,10 @@
     <h2>Серверы</h2>
     <div class="card wrap"><table id="nodes"></table></div>
 
+    <h2>Серверы и домены: что с ними происходит</h2>
+    <p class="sub">Слева — что решено, справа — что измерено. «Сломался» и «работает, но заблокирован» это разные строки.</p>
+    <div class="card wrap"><table id="lifecycles"></table></div>
+
     <h2>Точки входа</h2>
     <p class="sub">Проверяется отдельно отсюда и с устройств. Расхождение между двумя точками обзора — и есть признак блокировки.</p>
     <div class="card wrap"><table id="endpoints"></table></div>
@@ -206,6 +210,44 @@
         "<td>" + bits(n.downlink_bps) + "</td></tr>";
     });
     document.getElementById("nodes").innerHTML = t;
+
+    var STATE_WORDS = {
+      "creating": ["создаётся", "muted"], "configuring": ["настраивается", "muted"],
+      "awaiting-certificate": ["ждёт сертификат", "muted"], "verifying": ["проверяется", "muted"],
+      "ready": ["готов", "ok"], "serving": ["работает", "ok"],
+      "degraded": ["работает хуже нормы", "warn"], "blocked": ["заблокирован", "bad"],
+      "faulty": ["неисправен", "bad"], "draining": ["выводится", "warn"],
+      "quarantined": ["изолирован", "warn"], "removing": ["удаляется", "muted"],
+      "removed": ["удалён", "muted"], "retired": ["больше не используется", "muted"],
+      "unknown": ["ещё не измерен", "muted"]
+    };
+    var WHY = {
+      "not finished being built": "ещё строится",
+      "gone; kept so the name is never reused": "нет; имя сохранено, чтобы не переиспользовать",
+      "being taken away": "убирается",
+      "carrying the people already on it, given to nobody new": "дослуживает подключённых, новым не выдаётся",
+      "held out of service deliberately": "снят с обращения намеренно",
+      "reachable from us and not from devices: this is a block, not a fault": "мы достаём, устройства нет — это блокировка, не поломка",
+      "nobody can reach it, including us": "не достаёт никто, включая нас",
+      "working, and worse than it should be": "работает хуже, чем должен",
+      "nothing measured yet": "ещё не измерялся",
+      "finished and proven, held as a spare": "готов и проверен, держим в запасе",
+      "working": "работает"
+    };
+    var l = "<tr><th>что это</th><th>имя</th><th>состояние</th><th>выдавать</th>" +
+            "<th>снять</th><th>заменить</th><th>удалять</th><th>почему</th></tr>";
+    (d.lifecycles || []).forEach(function (s) {
+      function yn(v, cls) { return v ? '<span class="' + cls + '">да</span>' : '<span class="muted">—</span>'; }
+      l += "<tr><td>" + (s.kind === "server" ? "сервер" : "домен") + "</td>" +
+        "<td>" + esc(s.name) + "</td>" +
+        "<td>" + tag(STATE_WORDS, s.state) + "</td>" +
+        "<td>" + yn(s.may_hand_out, "ok") + "</td>" +
+        "<td>" + yn(s.stop_handing_out, "bad") + "</td>" +
+        "<td>" + yn(s.needs_replacing, "bad") + "</td>" +
+        "<td>" + yn(s.may_delete, "warn") + "</td>" +
+        '<td class="muted">' + esc(WHY[s.because] || s.because) + "</td></tr>";
+    });
+    document.getElementById("lifecycles").innerHTML = l;
 
     var e = "<tr><th>адрес</th><th>вывод</th><th>отсюда</th><th>с устройств</th>" +
             "<th>проверок</th><th>задержка</th></tr>";
