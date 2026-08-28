@@ -58,6 +58,12 @@ type Server struct {
 	// dashboard with no lock is a dashboard for everybody.
 	adminToken string
 
+	// nodeCapacity is how many tunnel connections a node is taken to be sized
+	// for when it does not say so itself. Configuration rather than a
+	// constant: the number is a property of the machines we happen to rent,
+	// and renting larger ones should not mean rebuilding this.
+	nodeCapacity int
+
 	// names is the set of addresses this service will accept a report about,
 	// cached for a minute. Guarded because device reports arrive in parallel.
 	names     map[string]bool
@@ -82,6 +88,7 @@ func New(
 	deriver *analytics.Deriver,
 	issuer *certs.Issuer,
 	adminToken string,
+	nodeCapacity int,
 	log *slog.Logger,
 ) *Server {
 	return &Server{
@@ -94,6 +101,7 @@ func New(
 		analytics:      deriver,
 		certs:          issuer,
 		adminToken:     adminToken,
+		nodeCapacity:   nodeCapacity,
 		log:            log,
 	}
 }
@@ -168,11 +176,28 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nodes, err := s.store.ActiveNodes(ctx, kind)
-	if err != nil {
-		s.log.Error("cannot build a plan", "error", err)
+	// Where to send this device, decided from what the service has measured
+	// rather than from the order the nodes were created in. The user is never
+	// asked and never told: a plan names a primary and its reserves, and the
+	// reason one of them is first lives here.
+	//
+	// Keyed to the device so the answer is stable - a plan that reshuffles on
+	// every refresh reconnects people for nothing - and drawn at random within
+	// that, weighted by score, so that the best node does not become the
+	// busiest one by being recommended to everybody at once.
+	standings, err := s.store.NodeStandings(ctx, kind, s.nodeCapacity)
+	if err != nil || len(standings) == 0 {
+		if err != nil {
+			s.log.Error("cannot read node standings", "error", err)
+		}
 		writeError(w, http.StatusServiceUnavailable, "no endpoint available")
 		return
+	}
+
+	ordered := store.Rank(standings, device.ID.String(), time.Now().UTC())
+	nodes := make([]document.Node, 0, len(ordered))
+	for _, standing := range ordered {
+		nodes = append(nodes, standing.Node)
 	}
 
 	// Where traffic goes, decided here and not by the client. A client that
