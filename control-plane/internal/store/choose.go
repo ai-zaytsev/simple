@@ -92,7 +92,17 @@ func TypicalHandshake(standings []NodeStanding) float64 {
 		return 0
 	}
 	sort.Float64s(measured)
-	return measured[len(measured)/2]
+
+	// The middle pair averaged when there is no single middle. Taking the
+	// upper one instead looks like a detail and is not: with two nodes it
+	// makes the more expensive of them the standard, so the expensive node
+	// pays nothing and the cheap one gains nothing. Two nodes is what this
+	// fleet has.
+	middle := len(measured) / 2
+	if len(measured)%2 == 0 {
+		return (measured[middle-1] + measured[middle]) / 2
+	}
+	return measured[middle]
 }
 
 // Room is how much of this node is still free, from 0 to 1.

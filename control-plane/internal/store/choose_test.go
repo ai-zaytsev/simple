@@ -280,3 +280,32 @@ func TestHandshakeIsJudgedAgainstTheOtherNodes(t *testing.T) {
 		t.Error("two equally slow nodes were scored differently")
 	}
 }
+
+// TestTypicalHandshakeHasNoSingleMiddle checks the case this fleet is actually
+// in, which the first version got wrong.
+//
+// With two measurements, taking the upper as the median makes the more
+// expensive node the standard: it pays nothing for being expensive, and the
+// cheaper one gains nothing for being cheap. The whole comparison collapses at
+// exactly the fleet size we have.
+func TestTypicalHandshakeHasNoSingleMiddle(t *testing.T) {
+	cheap, dear := 500.0, 1000.0
+	standings := []NodeStanding{
+		{DomainLatencyMS: &cheap},
+		{DomainLatencyMS: &dear},
+	}
+	if got := TypicalHandshake(standings); got != 750 {
+		t.Errorf("the middle of 500 and 1000 came out as %.0f", got)
+	}
+
+	// An odd count still has a real middle.
+	middle := 800.0
+	standings = append(standings, NodeStanding{DomainLatencyMS: &middle})
+	if got := TypicalHandshake(standings); got != 800 {
+		t.Errorf("the middle of 500, 800 and 1000 came out as %.0f", got)
+	}
+
+	if got := TypicalHandshake(nil); got != 0 {
+		t.Errorf("with nothing measured the middle should be nothing, got %.0f", got)
+	}
+}
