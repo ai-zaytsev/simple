@@ -1,0 +1,73 @@
+name: Read The Panel
+
+# What the Definition Of Done requires after every deploy, made possible.
+#
+# The panel stopped being served to the internet in stage 18, which is right:
+# a dashboard is the one place where every number in this system is visible at
+# once. But the rule that a stage is not closed until the live numbers have
+# been read against expectations then had no mechanism, and a rule with no
+# mechanism is a rule that quietly stops happening.
+#
+# So the numbers are fetched over the same channel the deploy uses, from
+# 127.0.0.1 on the host, and printed here.
+#
+# The repository is public. Server names, domain names and IP addresses are
+# never printed: a list of our consumable covers in a public log is a list
+# handed to whoever would block them. Names become positions - "домен №2" -
+# which is enough to act on and nothing to anybody else.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  panel:
+    name: Read The Panel
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'true'
+          echo "Host reachable."
+
+      - name: Fetch the numbers
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_TOKEN}" ]; then
+            echo "No CP_ADMIN_TOKEN: the panel is closed on this deployment."
+            exit 1
+          fi
+
+          # The token travels on stdin, not in the command line: an argument
+          # list is visible in the process table of the host.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'read -r t; curl -sS --max-time 20 -H "authorization: Bearer ${t}" \
+               http://127.0.0.1:8080/v1/admin/overview' \
+            <<< "${ADMIN_TOKEN}" > /tmp/overview.json
+
+          # Proof it is the answer and not an error page, before anything is
+          # printed. An unauthorised reply is JSON too.
+          if ! grep -q '"generated_at"' /tmp/overview.json; then
+            echo "The panel did not answer with an overview."
+            exit 1
+          fi
+          echo "Fetched $(wc -c < /tmp/overview.json) bytes."
+
+      - name: Say what it shows
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/read_panel.py /tmp/overview.json | tee -a "${GITHUB_STEP_SUMMARY}"

@@ -1,0 +1,40 @@
+{
+  "generated_at": "2026-08-28T17:00:00Z",
+  "now": {"active_users_hour": 3, "active_users_day": 11, "sessions_online": 7,
+          "nodes_reporting": 2, "uplink_bps": 1200000.0, "downlink_bps": 9400000.0},
+  "nodes": [
+    {"alias": "b", "verdict": "ok", "offered": true, "room": 0.98,
+     "sessions_online": 4, "cpu_percent": 6.0, "memory_percent": 31.0,
+     "latency_ms": 512.0, "loss_percent": 0.0},
+    {"alias": "a", "verdict": "silent", "offered": false, "room": 1.0,
+     "sessions_online": 0, "cpu_percent": null, "memory_percent": null,
+     "latency_ms": null, "loss_percent": null}
+  ],
+  "capacity": {
+    "state": "SCALE_REQUIRED",
+    "reasons": ["нет запасного сервера: отказ одного унесёт с собой своих людей"],
+    "sessions_now": 7, "capacity_total": 1000, "utilisation": 0.007, "spare_room": 993,
+    "peak_today": 9, "peak_week": 14, "peak_used": 0.014, "peak_day": 6, "peak_evening": 14,
+    "by_hour": [0,0,0,0,0,0,0,0,0,1,2,3,4,5,6,6,7,9,11,14,13,9,4,1],
+    "p95_utilisation": 0.009, "growth_week_on_week": null,
+    "nodes_usable": 2, "nodes_spare": 0, "nodes_blocked": 0, "nodes_faulty": 0,
+    "domains_spare": 1,
+    "groups": [{"group": "default", "nodes": 2, "spare": 0, "sessions": 7,
+                "capacity": 1000, "utilisation": 0.007}],
+    "domains": [{"domain": "x.example", "node": "b", "sessions": 7, "share": 1.0,
+                 "verdict": "works"},
+                {"domain": "y.example", "node": "a", "sessions": 0, "share": 0.0,
+                 "verdict": ""}]
+  },
+  "lifecycles": [
+    {"kind": "server", "name": "a", "state": "serving", "may_hand_out": true,
+     "stop_handing_out": false, "needs_replacing": false, "may_delete": false},
+    {"kind": "domain", "name": "x.example", "state": "serving", "may_hand_out": true,
+     "stop_handing_out": false, "needs_replacing": false, "may_delete": false}
+  ],
+  "endpoints": [
+    {"target": "x.example", "verdict": "works", "ok_from_us": 100.0,
+     "ok_from_devices": -1, "device_checks": 0}
+  ],
+  "usage": {"users": 4, "total_bytes": 3400000000}
+}
