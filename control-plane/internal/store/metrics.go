@@ -31,8 +31,15 @@ type NodeSample struct {
 }
 
 // ClassBytes is traffic of one kind, for a whole node, over one window.
+//
+// Cohort is `ordinary` or `heavy` and nothing else - the database refuses a
+// third value. It says which group of users the traffic came from and cannot
+// say which user, because the node that reported it does not know either: it
+// was told a list of credentials to route the other way and nothing about what
+// the list means.
 type ClassBytes struct {
 	Class    string
+	Cohort   string
 	Uplink   int64
 	Downlink int64
 }
@@ -67,13 +74,17 @@ func (s *Store) RecordNodeSample(ctx context.Context, alias string, m NodeSample
 // could. The separation the schema promises is kept here by the signature.
 func (s *Store) RecordTrafficClasses(ctx context.Context, alias string, at time.Time, classes []ClassBytes) error {
 	for _, c := range classes {
+		cohort := c.Cohort
+		if cohort != "heavy" {
+			cohort = "ordinary"
+		}
 		_, err := s.pool.Exec(ctx, `
-			insert into metrics.traffic_classes (at, node_alias, class, uplink_bytes, downlink_bytes)
-			values ($1,$2,$3,$4,$5)
-			on conflict (node_alias, at, class) do update
+			insert into metrics.traffic_classes (at, node_alias, class, cohort, uplink_bytes, downlink_bytes)
+			values ($1,$2,$3,$4,$5,$6)
+			on conflict (node_alias, at, class, cohort) do update
 			set uplink_bytes = metrics.traffic_classes.uplink_bytes + excluded.uplink_bytes,
 			    downlink_bytes = metrics.traffic_classes.downlink_bytes + excluded.downlink_bytes`,
-			at, alias, c.Class, c.Uplink, c.Downlink)
+			at, alias, c.Class, cohort, c.Uplink, c.Downlink)
 		if err != nil {
 			return fmt.Errorf("cannot record traffic classes: %w", err)
 		}
@@ -263,16 +274,126 @@ func (s *Store) RollUpDay(ctx context.Context, day time.Time) error {
 	}
 
 	_, err = s.pool.Exec(ctx, `
-		insert into metrics.traffic_class_days (day, class, uplink_bytes, downlink_bytes)
-		select $1::date, class, coalesce(sum(uplink_bytes),0), coalesce(sum(downlink_bytes),0)
+		insert into metrics.traffic_class_days (day, class, cohort, uplink_bytes, downlink_bytes)
+		select $1::date, class, cohort, coalesce(sum(uplink_bytes),0), coalesce(sum(downlink_bytes),0)
 		from metrics.traffic_classes
 		where at >= $1::date and at < $1::date + interval '1 day'
-		group by class
-		on conflict (day, class) do update set
+		group by class, cohort
+		on conflict (day, class, cohort) do update set
 			uplink_bytes = excluded.uplink_bytes,
 			downlink_bytes = excluded.downlink_bytes`, day)
 	if err != nil {
 		return fmt.Errorf("cannot roll up classes: %w", err)
+	}
+	return nil
+}
+
+// MIN_ACCOUNTS_FOR_COHORTS is the point below which "the heavy users" stops
+// being a group and starts being a list of people.
+//
+// Ten is not a statistical threshold; it is a floor. Describing what a group
+// of three does is describing three people, and the fact that their names are
+// not stored does not help when everybody involved knows who they are.
+const MinAccountsForCohorts = 10
+
+// HeavinessThreshold is the volume above which an account counts as heavy,
+// and how many accounts the period has at all.
+//
+// Defined against the middle of the distribution rather than as a fixed number
+// of gigabytes, so it keeps meaning as the service grows and as what people do
+// with it changes. Returns zero when there are too few accounts to speak of
+// groups, which is the answer, not a failure.
+func (s *Store) HeavinessThreshold(ctx context.Context, period time.Time) (int64, int, error) {
+	var above int64
+	var people int
+
+	err := s.pool.QueryRow(ctx, `
+		select coalesce(percentile_disc(0.5) within group (order by bytes), 0) * 5,
+		       count(*)::int
+		from metrics.account_usage where period = $1`, period).Scan(&above, &people)
+	if err != nil {
+		return 0, 0, fmt.Errorf("cannot read the heaviness threshold: %w", err)
+	}
+	if people < MinAccountsForCohorts {
+		return 0, people, nil
+	}
+	return above, people, nil
+}
+
+// HeavyPseudonyms is the set of epoch keys whose volume is above the line.
+//
+// Returns pseudonyms rather than accounts because that is all this half of the
+// schema holds. Turning them back into accounts happens in the service, in
+// memory, and is never written down - the same crossing point, in the same
+// direction, as the one that put the numbers here.
+func (s *Store) HeavyPseudonyms(ctx context.Context, period time.Time, above int64) (map[string]bool, error) {
+	heavy := map[string]bool{}
+	if above <= 0 {
+		return heavy, nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		select analytics_id from metrics.account_usage
+		where period = $1 and bytes > $2`, period, above)
+	if err != nil {
+		return nil, fmt.Errorf("cannot list heavy usage: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("cannot read a heavy row: %w", err)
+		}
+		heavy[id] = true
+	}
+	return heavy, rows.Err()
+}
+
+// CredentialOwners lists every live credential together with the account it
+// belongs to.
+//
+// Used only to decide which credentials a node should route through its heavy
+// outbounds. The pair exists for the length of that decision and is not stored
+// by anything that receives it: the node is told a list of credentials and
+// never learns what the list means beyond "these go the other way".
+func (s *Store) CredentialOwners(ctx context.Context) (map[string]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `
+		select c.credential_uuid::text, d.account_id
+		from device_credentials c
+		join devices d on d.id = c.device_id
+		join accounts a on a.id = d.account_id
+		where c.state = 'ACTIVE' and a.state = 'ACTIVE' and d.account_id is not null`)
+	if err != nil {
+		return nil, fmt.Errorf("cannot list credential owners: %w", err)
+	}
+	defer rows.Close()
+
+	owners := map[string]uuid.UUID{}
+	for rows.Next() {
+		var credential string
+		var account uuid.UUID
+		if err := rows.Scan(&credential, &account); err != nil {
+			return nil, fmt.Errorf("cannot read a credential owner: %w", err)
+		}
+		owners[credential] = account
+	}
+	return owners, rows.Err()
+}
+
+// RecordCohortSizes writes how many accounts were in each group.
+//
+// A share without a group size is not a measurement. This is also what the
+// panel reads before it agrees to show anything at all.
+func (s *Store) RecordCohortSizes(ctx context.Context, at time.Time, heavy, ordinary int) error {
+	for cohort, size := range map[string]int{"heavy": heavy, "ordinary": ordinary} {
+		_, err := s.pool.Exec(ctx, `
+			insert into metrics.cohort_sizes (at, cohort, accounts) values ($1,$2,$3)
+			on conflict (at, cohort) do update set accounts = excluded.accounts`,
+			at, cohort, size)
+		if err != nil {
+			return fmt.Errorf("cannot record cohort sizes: %w", err)
+		}
 	}
 	return nil
 }

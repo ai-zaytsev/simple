@@ -47,6 +47,9 @@
   .bar { height: 10px; background: var(--line); border-radius: 99px; overflow: hidden; }
   .bar > i { display: block; height: 100%; background: var(--bar); }
   .muted { color: var(--dim); }
+  .small { font-size: 12px; margin: 0 0 8px; }
+  h3 { font-size: 14px; margin: 0 0 2px; }
+  .two { display: grid; gap: 24px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
   input, button { font: inherit; padding: 8px 12px; border-radius: 8px;
                   border: 1px solid var(--line); background: var(--card); color: var(--ink); }
   button { cursor: pointer; font-weight: 600; }
@@ -83,6 +86,10 @@
     <h2>На что уходит полоса</h2>
     <p class="sub">За сутки, по всему сервису. Без разбивки по людям — такой разбивки нет в базе.</p>
     <div class="card" id="classes"></div>
+
+    <h2>Чем тяжёлые пользователи отличаются от обычных</h2>
+    <p class="sub">За сутки. Разделение делается на ноде в момент маршрутизации; кто в какой группе — не хранится.</p>
+    <div class="card" id="shape"></div>
 
     <h2>Нагрузка по пользователям</h2>
     <p class="sub">Объём за месяц. Кто именно — не хранится.</p>
@@ -141,6 +148,18 @@
     "works": ["работает", "ok"], "slower": ["работает хуже", "warn"],
     "unreachable": ["недоступно", "bad"], "likely blocked": ["вероятно блокируется", "bad"]
   };
+
+  function cohortColumn(title, classes, accounts, bytesTotal) {
+    var head = "<h3>" + title + "</h3><p class=\"muted small\">" +
+      accounts + " польз. · " + bytes(bytesTotal) + "</p>";
+    var rows = "";
+    (classes || []).forEach(function (k) {
+      rows += '<div class="barrow"><div>' + esc(k.class) + '</div>' +
+        '<div class="bar"><i style="width:' + k.percent.toFixed(1) + '%"></i></div>' +
+        '<div class="muted">' + k.percent.toFixed(1) + "%</div></div>";
+    });
+    return "<div>" + head + (rows || '<p class="muted">нет трафика</p>') + "</div>";
+  }
 
   function tile(k, v, n) {
     return '<div class="card tile"><div class="k">' + k + '</div><div class="v">' + v +
@@ -210,6 +229,27 @@
            '<div class="muted">' + k.percent.toFixed(1) + "% · " + bytes(k.bytes) + "</div></div>";
     });
     document.getElementById("classes").innerHTML = c;
+
+    var s = d.load_shape || {};
+    var shape = "";
+    if (s.withheld) {
+      // Said rather than shown as an empty chart: an empty chart reads as
+      // "nobody does anything", and the truth is that there are not enough
+      // people yet to describe a group without describing a person.
+      var why = {
+        "not measured yet": "Пока не измерено",
+        "too few accounts to speak of groups": "Слишком мало пользователей, чтобы говорить о группах",
+        "one of the groups is too small to describe without describing people":
+          "Одна из групп слишком мала: описать её значило бы описать конкретных людей"
+      }[s.withheld] || s.withheld;
+      shape = '<p class="muted" style="margin:0">' + esc(why) + "</p>";
+    } else {
+      shape = '<div class="two">' +
+        cohortColumn("Тяжёлые", s.heavy, s.heavy_accounts, s.heavy_bytes) +
+        cohortColumn("Обычные", s.ordinary, s.ordinary_accounts, s.ordinary_bytes) +
+        "</div>";
+    }
+    document.getElementById("shape").innerHTML = shape;
 
     var u = d.usage;
     document.getElementById("usage").innerHTML =

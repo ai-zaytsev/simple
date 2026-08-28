@@ -41,10 +41,18 @@ type nodeSample struct {
 	HeapBytes        *int64             `json:"heap_bytes"`
 	XrayUptimeS      *int64             `json:"xray_uptime_s"`
 	CredentialBytes  map[string]int64   `json:"credential_bytes"`
-	ClassBytes       map[string]struct {
-		Up   int64 `json:"up"`
-		Down int64 `json:"down"`
-	} `json:"class_bytes"`
+
+	// Two sets of class counters, because the node routes the heavier accounts
+	// through a parallel set of outbounds. Neither set carries a user: the node
+	// was handed a list of credentials to send the other way and told nothing
+	// about what the list means.
+	ClassBytes      map[string]direction `json:"class_bytes"`
+	HeavyClassBytes map[string]direction `json:"heavy_class_bytes"`
+}
+
+type direction struct {
+	Up   int64 `json:"up"`
+	Down int64 `json:"down"`
 }
 
 // nodeMetrics takes a node's report and turns the half of it that is about
@@ -103,10 +111,15 @@ func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		classes := make([]store.ClassBytes, 0, len(sample.ClassBytes))
+		classes := make([]store.ClassBytes, 0, len(sample.ClassBytes)+len(sample.HeavyClassBytes))
 		for name, bytes := range sample.ClassBytes {
 			classes = append(classes, store.ClassBytes{
-				Class: name, Uplink: bytes.Up, Downlink: bytes.Down,
+				Class: name, Cohort: "ordinary", Uplink: bytes.Up, Downlink: bytes.Down,
+			})
+		}
+		for name, bytes := range sample.HeavyClassBytes {
+			classes = append(classes, store.ClassBytes{
+				Class: name, Cohort: "heavy", Uplink: bytes.Up, Downlink: bytes.Down,
 			})
 		}
 		if err := s.store.RecordTrafficClasses(r.Context(), alias, at, classes); err != nil {
@@ -116,7 +129,75 @@ func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {
 		s.foldUsage(r, at, sample.CredentialBytes)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	// The answer carries which credentials the node should route the other
+	// way. It is the whole conversation about cohorts: the node learns a list,
+	// never what the list means, and never how it was arrived at.
+	heavy, err := s.heavyCredentials(r)
+	if err != nil {
+		s.log.Error("cannot work out the heavy set", "error", err)
+		heavy = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "heavy": heavy})
+}
+
+// heavyCredentials is the set of credentials belonging to the heaviest
+// accounts this period.
+//
+// Computed here rather than queried, because the two halves of the schema are
+// not joinable and must not become so: usage is keyed by an epoch pseudonym,
+// credentials are keyed by account, and the only thing that can hold both at
+// once is a running function. It holds them for the length of this call.
+//
+// Empty while there are too few accounts to speak of groups at all. That is
+// the honest answer at this size, and it is also the safe one: a "heavy
+// cohort" of one is a person.
+func (s *Server) heavyCredentials(r *http.Request) ([]string, error) {
+	s.heavyOnce.Lock()
+	defer s.heavyOnce.Unlock()
+
+	if time.Since(s.heavyAt) < time.Minute && s.heavySet != nil {
+		return s.heavySet, nil
+	}
+
+	now := time.Now().UTC()
+	period := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+
+	above, people, err := s.store.HeavinessThreshold(r.Context(), period)
+	if err != nil {
+		return nil, err
+	}
+
+	owners, err := s.store.CredentialOwners(r.Context())
+	if err != nil {
+		return nil, err
+	}
+
+	heavy := []string{}
+	if above > 0 {
+		pseudonyms, err := s.store.HeavyPseudonyms(r.Context(), period, above)
+		if err != nil {
+			return nil, err
+		}
+		for credential, account := range owners {
+			if pseudonyms[s.analytics.ID(account, period)] {
+				heavy = append(heavy, credential)
+			}
+		}
+	}
+	sort.Strings(heavy)
+
+	// Group sizes, kept alongside the traffic so that a share is never read
+	// without knowing how many people it is a share of.
+	ordinary := people - len(heavy)
+	if ordinary < 0 {
+		ordinary = 0
+	}
+	if err := s.store.RecordCohortSizes(r.Context(), now.Truncate(time.Hour), len(heavy), ordinary); err != nil {
+		s.log.Error("cannot record cohort sizes", "error", err)
+	}
+
+	s.heavySet, s.heavyAt = heavy, time.Now()
+	return heavy, nil
 }
 
 // foldUsage turns credentials into pseudonyms and adds up the month.
