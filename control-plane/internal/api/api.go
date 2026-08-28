@@ -257,7 +257,7 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 		// literal in this field was correct for as long as there was one tier
 		// and silently wrong the moment there were two, which is the kind of
 		// mistake that keeps passing its tests.
-		AccountTier: device.Tier,
+		AccountTier: "FREE",
 		Primary:     nodes[0],
 		Reserves:    reserves(nodes),
 		DNS: document.DNS{

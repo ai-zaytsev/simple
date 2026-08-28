@@ -21,3 +21,5 @@ on conflict (tier) do nothing;
 -- Whatever the number should be, it is one statement and no deploy:
 --
 --     update tier_limits set max_devices = 3 where tier = 'VIP';
+
+alter table devices add column if not exists tier text not null default 'FREE';
