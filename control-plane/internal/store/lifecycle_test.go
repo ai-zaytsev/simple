@@ -203,3 +203,42 @@ func TestLifecycleGovernsWhetherANodeIsOffered(t *testing.T) {
 		}
 	}
 }
+
+// TestADomainWithNoServerStillHasACondition covers the way in to the Control
+// Plane, which is a domain with no node behind it.
+//
+// It read "nothing measured yet" on the panel while being checked every five
+// minutes, because the condition was only ever derived from a node. That is
+// the one domain whose blocking matters most: if devices cannot reach it they
+// cannot be told where to go next, and every recovery path this service has
+// runs through it.
+func TestADomainWithNoServerStillHasACondition(t *testing.T) {
+	cases := []struct {
+		name    string
+		verdict string
+		want    Condition
+	}{
+		{"answering everybody", "works", Healthy},
+		{"answering slowly", "slower", Degraded},
+		{"we can reach it, devices cannot", "likely blocked", Blocked},
+		{"nobody can reach it", "unreachable", Faulty},
+		{"never checked", "", Unknown},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := conditionFromVerdict(c.verdict); got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+
+	// And the blocked case has to reach the answers: a blocked way in is
+	// replaced, not restarted.
+	now := time.Now()
+	st := Standing{Kind: "domain", Lifecycle: "serving", Condition: Blocked, Since: now.Add(-time.Minute)}
+	Decide(&st, now, 0)
+	if !st.NeedsReplacing || st.MayHandOut {
+		t.Errorf("a blocked way in: replace=%v, hand out=%v", st.NeedsReplacing, st.MayHandOut)
+	}
+}
