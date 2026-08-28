@@ -267,8 +267,14 @@ jobs:
             echo "No address returned."
             exit 1
           fi
+          # Masked before it is written. A step output is not a secret, so
+          # every later step taking it through `env:` prints it in that step's
+          # environment block. See add-node.yml for the same, and for why an
+          # address is the fact worth withholding.
+          echo "::add-mask::${ip}"
+
           echo "node_ip=${ip}" >> "${GITHUB_OUTPUT}"
-          echo "Node created at ${ip}"
+          echo "Node created."
 
       - name: Settle the endpoint
         env:

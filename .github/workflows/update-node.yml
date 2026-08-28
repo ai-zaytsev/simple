@@ -70,6 +70,15 @@ jobs:
             echo "No node called '${ALIAS}' has an address. Nothing to update."
             exit 1
           fi
+
+          # Masked before it is written anywhere. A step output is not a secret,
+          # so every later step taking it through `env:` would print it in that
+          # step's environment block - a dozen appearances in a public log with
+          # nobody echoing it once. See add-node.yml, where the same is done and
+          # for the same reason: a node's address is what somebody intending to
+          # block this service would most like to be handed.
+          echo "::add-mask::${address}"
+
           echo "address=${address}" >> "${GITHUB_OUTPUT}"
           echo "Found it."
 
