@@ -4,12 +4,9 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"download.simplevpn/control-plane/internal/document"
 )
 
 type Store struct {
@@ -45,50 +42,6 @@ func (s *Store) NextSeq(ctx context.Context, scope string) (int64, error) {
 		return 0, fmt.Errorf("cannot advance the sequence for %s: %w", scope, err)
 	}
 	return seq, nil
-}
-
-// ActiveNodes returns nodes a client may be sent to, oldest first.
-//
-// Draining and retired nodes are excluded here rather than filtered later:
-// a node the operator has taken out of service must not reach a plan by any
-// path, and one place to enforce that is easier to keep true than several.
-func (s *Store) ActiveNodes(ctx context.Context, kind string) ([]document.Node, error) {
-	rows, err := s.pool.Query(ctx, `
-		select alias, host, port, transport_kind, params
-		from nodes
-		where state = 'active' and transport_kind = $1
-		order by created_at`, kind)
-	if err != nil {
-		return nil, fmt.Errorf("cannot read nodes: %w", err)
-	}
-	defer rows.Close()
-
-	var nodes []document.Node
-	for rows.Next() {
-		var (
-			node   document.Node
-			raw    []byte
-			tkind  string
-		)
-		if err := rows.Scan(&node.Alias, &node.Host, &node.Port, &tkind, &raw); err != nil {
-			return nil, fmt.Errorf("cannot read a node row: %w", err)
-		}
-
-		params := map[string]any{}
-		if err := json.Unmarshal(raw, &params); err != nil {
-			return nil, fmt.Errorf("node %s has unreadable parameters: %w", node.Alias, err)
-		}
-
-		node.Transport = document.Transport{Kind: tkind, Params: params}
-		nodes = append(nodes, node)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("cannot finish reading nodes: %w", err)
-	}
-	if len(nodes) == 0 {
-		return nil, errors.New("no active node of that transport exists")
-	}
-	return nodes, nil
 }
 
 // Record keeps every issued document.

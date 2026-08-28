@@ -69,6 +69,13 @@ func (r *Runner) Run(ctx context.Context) {
 }
 
 func (r *Runner) round(ctx context.Context) {
+	// Every domain in use gets a row before it is checked, so that a domain
+	// cannot be serving people and unknown to the lifecycle at the same time.
+	// A domain with no row is a domain nobody can decide to retire.
+	if err := r.store.RememberServedDomains(ctx); err != nil {
+		r.log.Error("cannot record the domains in use", "error", err)
+	}
+
 	names, err := r.store.ServedNames(ctx)
 	if err != nil {
 		r.log.Error("cannot list what to check", "error", err)

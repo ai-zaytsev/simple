@@ -24,6 +24,10 @@ type NodeStanding struct {
 	Node       document.Node
 	ServerName string
 
+	// What was decided about this node, as opposed to what is observed about
+	// it. See lifecycle.go for why the two are never the same column.
+	Lifecycle string
+
 	// Capacity is how many tunnel connections this node is sized for. A
 	// declared property of the machine, not a measurement: the point of it is
 	// to know how much room is left before the numbers get bad, which is too
@@ -58,9 +62,9 @@ type NodeStanding struct {
 // getting worse; quality says how well it is serving the people already on it.
 // A node with plenty of room that loses a tenth of its packets is not a good
 // place to send anybody, and neither is a healthy node that is full.
-// typicalHandshake is what reaching a node's domain costs across the fleet.
 //
-// Passed into scoring rather than assumed, because the number it is compared
+// typicalHandshake is what reaching a node's domain costs across the fleet.
+// Passed in rather than assumed, because the number it is compared
 // against is not a network round trip. A device measures a whole handshake -
 // connect, TLS, upgrade - which on real phones runs to hundreds of
 // milliseconds where the node's own ping is one. Judging both against one
@@ -172,12 +176,18 @@ func (s NodeStanding) Quality(typicalHandshake float64) float64 {
 // has stopped reporting, or whose domain devices cannot reach, is not a poor
 // choice but a wrong one. Scoring them low would still put them in front of
 // somebody the moment every other node had a bad minute.
+// It reads both axes, because either can withhold a node and they withhold it
+// for different reasons. A node still being built is not broken and a
+// quarantined node is not unhealthy; both are simply not on offer.
 func (s NodeStanding) Usable(now time.Time) bool {
-	if s.LastSeen == nil || now.Sub(*s.LastSeen) > silentAfter {
+	// An empty lifecycle means the caller built this standing by hand, which
+	// is what the tests do. Treating that as "not decided yet" rather than as
+	// "not allowed" keeps the condition rules testable on their own.
+	if s.Lifecycle != "" && s.Lifecycle != "ready" && s.Lifecycle != "serving" {
 		return false
 	}
-	switch s.DomainVerdict {
-	case "unreachable", "likely blocked":
+	switch ConditionOf(s, now) {
+	case Blocked, Faulty:
 		return false
 	}
 	return true
@@ -276,7 +286,7 @@ func uniform(deviceKey, alias string) float64 {
 func (s *Store) NodeStandings(ctx context.Context, kind string, defaultCapacity int) ([]NodeStanding, error) {
 	rows, err := s.pool.Query(ctx, `
 		select
-			n.alias, n.host, n.port, n.transport_kind, n.params,
+			n.alias, n.host, n.port, n.transport_kind, n.params, n.state,
 			coalesce(n.params->>'server_name', ''),
 			coalesce((n.params->>'capacity')::int, $2),
 			sample.at, sample.cpu_percent, sample.memory_percent,
@@ -311,7 +321,7 @@ func (s *Store) NodeStandings(ctx context.Context, kind string, defaultCapacity 
 
 		-- An empty kind means every kind, so that the panel can show the same
 		-- numbers the chooser used rather than a second opinion about them.
-		where n.state = 'active' and ($1 = '' or n.transport_kind = $1)
+		where n.state <> 'removed' and ($1 = '' or n.transport_kind = $1)
 		order by n.alias`, kind, defaultCapacity)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read node standings: %w", err)
@@ -327,7 +337,7 @@ func (s *Store) NodeStandings(ctx context.Context, kind string, defaultCapacity 
 			okRate float64
 		)
 		if err := rows.Scan(
-			&st.Node.Alias, &st.Node.Host, &st.Node.Port, &tkind, &raw,
+			&st.Node.Alias, &st.Node.Host, &st.Node.Port, &tkind, &raw, &st.Lifecycle,
 			&st.ServerName, &st.Capacity,
 			&st.LastSeen, &st.CPUPercent, &st.MemoryPercent,
 			&st.Sessions, &st.LossPercent, &st.UpstreamLatencyMS,

@@ -31,6 +31,10 @@ type Overview struct {
 	// is large enough that describing it is not describing people.
 	LoadShape LoadShape `json:"load_shape"`
 
+	// Every server and domain, what was decided about it, what is observed,
+	// and the four answers those produce together.
+	Lifecycles []Standing `json:"lifecycles"`
+
 	Usage     UsageShape       `json:"usage"`
 	Connect   ConnectSummary   `json:"connect"`
 	Endpoints []EndpointHealth `json:"endpoints"`
@@ -169,6 +173,9 @@ func (s *Store) Overview(ctx context.Context, now time.Time) (Overview, error) {
 		return o, err
 	}
 	if o.LoadShape, err = s.loadShape(ctx, now); err != nil {
+		return o, err
+	}
+	if o.Lifecycles, err = s.Lifecycles(ctx, now); err != nil {
 		return o, err
 	}
 	if o.Connect, err = s.connectSummary(ctx, now); err != nil {
