@@ -206,6 +206,36 @@ jobs:
           }
           echo "ok: the peaks carry their span"
 
+      - name: Every workflow must still parse
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A workflow that does not parse does not announce itself. GitHub
+          # keeps the last version it could read and answers a dispatch with
+          # "this workflow has no trigger" - which sounds like a missing line
+          # rather than a broken file, and sent me looking in the wrong place.
+          #
+          # It broke because a script embedded in a run block had lines at
+          # column zero: inside the file they read as new top-level keys. A
+          # program inside a program inside a file has to respect the
+          # indentation of all three, and nothing said so until now.
+          python3 - <<'PY'
+          import sys, yaml, pathlib
+          bad = 0
+          for path in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
+              try:
+                  loaded = yaml.safe_load(path.read_text())
+              except Exception as problem:
+                  print(f"{path}: does not parse: {problem}")
+                  bad = 1
+                  continue
+              if not isinstance(loaded, dict) or not loaded.get(True, loaded.get("on")):
+                  print(f"{path}: parses, but has no trigger; it would never run")
+                  bad = 1
+          print("ok: every workflow parses and has a trigger" if not bad else "")
+          sys.exit(bad)
+          PY
+
       - name: An address published to a step output must be masked first
         shell: bash
         run: bash .github/scripts/check-masked-addresses.sh
