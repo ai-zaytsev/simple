@@ -60,9 +60,24 @@ if ! command -v nginx >/dev/null 2>&1; then
 else
   # access_log off does not touch error_log, which is how a real user's
   # address and the tunnel path ended up on disk together.
-  if nginx -T 2>/dev/null | grep -qE "^\s*access_log\s+[^;]*;" \
-     && ! nginx -T 2>/dev/null | grep -qE "^\s*access_log\s+off\s*;"; then
-    fault "an access_log is enabled somewhere in the nginx configuration"
+  #
+  # Every access_log line the running configuration actually has, rather than
+  # a yes-or-no answer about whether one exists somewhere.
+  #
+  # "Somewhere" was what this said the first time it fired, on a node built by
+  # the pipeline, and it left nowhere to go: the configuration written by the
+  # provisioning script turns the log off in both of its server blocks, so the
+  # only way to learn which line it meant was to guess. A check that finds a
+  # fault and will not say where is a check somebody argues with instead of
+  # acting on.
+  logs=$(nginx -T 2>/dev/null | grep -nE "^[[:space:]]*access_log[[:space:]]" || true)
+  live=$(printf '%s' "${logs}" | grep -vE "access_log[[:space:]]+off[[:space:]]*;" || true)
+
+  if [ -n "${live}" ]; then
+    fault "an access_log is enabled in the nginx configuration"
+    printf '%s\n' "${live}" | sed 's/^/      /'
+  elif [ -n "${logs}" ]; then
+    echo "  every access_log is off ($(printf '%s\n' "${logs}" | wc -l) of them)"
   fi
 
   level=$(nginx -T 2>/dev/null | grep -oE "^\s*error_log\s+\S+\s+(debug|info|notice|warn|error|crit|alert|emerg)" \
