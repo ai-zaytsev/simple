@@ -207,6 +207,17 @@ func (s *Store) nodeHealth(ctx context.Context, now time.Time) ([]NodeHealth, er
 			where s.node_alias = n.alias
 			order by s.at desc limit 1
 		) l on true
+
+		-- A machine that has been taken away is not a machine that has stopped
+		-- answering. The chooser has always known the difference; this table
+		-- did not, and read the removed ones as "silent" - the word it uses for
+		-- a node that should be reporting and is not.
+		--
+		-- Eight of them appeared in one sitting, from one afternoon of
+		-- rebuilding, each looking like a fault. A list that grows a false
+		-- alarm every time a node is replaced is a list nobody finishes
+		-- reading, and the one real fault in it goes with the rest.
+		where n.state <> 'removed'
 		order by n.alias`)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read node health: %w", err)
