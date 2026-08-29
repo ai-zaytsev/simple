@@ -59,6 +59,31 @@ else
   echo "  nginx error level already set"
 fi
 
+# The access log the distribution turns on for every server block that does
+# not say otherwise.
+#
+# Ours say otherwise, both of them, which is why this was invisible: nothing
+# was actually being written. But it is inherited, so the next server block
+# added by anybody - a redirect, a health endpoint, a second site - starts
+# logging client addresses without that being a decision.
+#
+# Turning it off at the top makes "no request logging" the property of the
+# machine rather than of every block remembering to ask for it.
+if [ -f "${CONF}" ] && grep -qE "^[[:space:]]*access_log[[:space:]]+[^;]*;" "${CONF}" \
+   && ! grep -qE "^[[:space:]]*access_log[[:space:]]+off[[:space:]]*;" "${CONF}"; then
+  cp "${CONF}" /root/nginx.conf.before-access-log
+  sed -i -E "s#^([[:space:]]*)access_log[[:space:]]+[^;]*;#\1access_log off;#" "${CONF}"
+  if ! nginx -t >/dev/null 2>&1; then
+    cp /root/nginx.conf.before-access-log "${CONF}"
+    echo "Nginx refused the change. Put back what was there."
+    exit 1
+  fi
+  systemctl reload nginx
+  echo "  nginx no longer logs requests anywhere by default"
+else
+  echo "  nginx request logging already off"
+fi
+
 # What is already written stays written until it is removed. Truncated rather
 # than deleted so that ownership and permissions survive and nginx keeps
 # writing to the same open handles.
