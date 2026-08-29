@@ -1,0 +1,146 @@
+name: Account Tier
+
+# Giving somebody VIP, without anybody's address reaching this log.
+#
+# The obvious way to name an account is the address its owner signed in with,
+# and it is the one way this workflow may not use: a workflow_dispatch input
+# appears in the run header, and the run header is public. That is not a
+# detail to work around - it is the reason this file exists at all, and the
+# reason assigning a tier had until now to be done by hand on the machine.
+#
+# So the handle is the start of the account's identifier. Enough to pick one
+# out of a listing, useless to anybody without the database, and short enough
+# that printing it costs nothing. The service refuses a prefix that matches
+# more than one account rather than choosing between them: a tier granted to
+# somebody who did not pay for it is not a mistake that announces itself.
+#
+# List first, then set. The listing carries no address either - a prefix, a
+# tier and a count of devices.
+#
+# The tables are printed by scripts in .github/scripts rather than by Python
+# written into the run blocks below. The first version did it the other way
+# and the file stopped parsing: a program inside a block scalar has to be
+# indented to stay inside it, and GitHub reports an unparseable workflow as
+# one with no trigger.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do. List first, then set using a prefix from it.
+        required: true
+        default: list
+        type: choice
+        options:
+          - list
+          - set
+      prefix:
+        description: >
+          The first characters of the account identifier, copied from the
+          listing. At least four. Ignored when listing.
+        required: false
+        default: ""
+        type: string
+      tier:
+        description: Which status to give. Ignored when listing.
+        required: true
+        default: FREE
+        type: choice
+        options:
+          - FREE
+          - VIP
+
+permissions:
+  contents: read
+
+jobs:
+  tier:
+    name: Account Tier
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'true'
+          echo "Host reachable."
+
+      - name: What accounts there are
+        if: inputs.action == 'list'
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The token on stdin, never in the command line: an argument list is
+          # visible in the process table of the host it runs on.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'read -r t; curl -sS --max-time 20 -H "authorization: Bearer ${t}" \
+               -H "content-type: application/json" -d "{}" \
+               http://127.0.0.1:8080/v1/admin/accounts' \
+            <<< "${ADMIN_TOKEN}" > /tmp/accounts.json
+
+          # Proof it is the answer and not an error page, before anything is
+          # printed. An unauthorised reply is JSON too.
+          if ! grep -q '"accounts"' /tmp/accounts.json; then
+            echo "The service did not answer with a listing."
+            exit 1
+          fi
+
+          python3 .github/scripts/say_accounts.py /tmp/accounts.json \
+            | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: Give it a tier
+        if: inputs.action == 'set'
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          PREFIX: ${{ inputs.prefix }}
+          TIER: ${{ inputs.tier }}
+        run: |
+          set -euo pipefail
+
+          # Refused here as well as in the service. The service is the one that
+          # counts; a refusal before a round trip says the same thing in the
+          # place somebody is already looking.
+          if [ "${#PREFIX}" -lt 4 ]; then
+            echo "Give at least four characters of the identifier."
+            echo "Run this with action=list first and copy a prefix from it."
+            exit 1
+          fi
+
+          body=$(printf '{"prefix": "%s", "tier": "%s"}' "${PREFIX}" "${TIER}")
+
+          # Both the token and the request on stdin, for the same reason.
+          printf '%s\n%s\n' "${ADMIN_TOKEN}" "${body}" \
+            | ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              'read -r t; read -r b; printf "%s" "${b}" | curl -sS --max-time 20 \
+                 -o /tmp/tier.json -w "%{http_code}" \
+                 -H "authorization: Bearer ${t}" \
+                 -H "content-type: application/json" --data-binary @- \
+                 http://127.0.0.1:8080/v1/admin/account/tier-by-prefix; \
+               echo; cat /tmp/tier.json; rm -f /tmp/tier.json' > /tmp/answer.txt
+
+          code=$(head -1 /tmp/answer.txt)
+          tail -n +2 /tmp/answer.txt > /tmp/tier.json
+
+          if [ "${code}" != "200" ]; then
+            echo "Not set. HTTP ${code}."
+            # The service's own refusal, which carries no address: this
+            # endpoint is never given one.
+            cat /tmp/tier.json
+            exit 1
+          fi
+
+          python3 .github/scripts/say_tier.py /tmp/tier.json \
+            | tee -a "${GITHUB_STEP_SUMMARY}"

@@ -156,6 +156,11 @@ func (s *Server) Routes() http.Handler {
 	// Assigning a status by hand, which is how VIP is given out at this stage.
 	// Behind the same key, therefore not served to the internet.
 	mux.HandleFunc("POST /v1/admin/account/tier", s.adminTier)
+
+	// The same operation with a handle that may appear in a public log, which
+	// is what lets it happen through the pipeline rather than by hand.
+	mux.HandleFunc("POST /v1/admin/accounts", s.adminAccounts)
+	mux.HandleFunc("POST /v1/admin/account/tier-by-prefix", s.adminTierByPrefix)
 	return mux
 }
 

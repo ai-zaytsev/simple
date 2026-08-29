@@ -610,3 +610,99 @@ func (s *Store) RotateExternalCredential(
 	out.State = "ACTIVE"
 	return out, nil
 }
+
+// AccountBrief is one account, said without saying who it is.
+type AccountBrief struct {
+	// The first characters of the identifier, which is all an operator needs
+	// to name one and less than a public log should carry.
+	Prefix  string
+	Tier    string
+	Devices int
+}
+
+// prefixLength is how much of an identifier is enough to pick one out.
+//
+// Eight hexadecimal characters is four billion, which for a service with one
+// account is absurd and for a service with a million is still comfortable: the
+// chance that two of a million collide on eight characters is about one in
+// eight. When it happens, the operation below refuses rather than guesses.
+const prefixLength = 8
+
+// Accounts lists what exists, with no address and no whole identifier.
+//
+// An operator needs to answer two questions before changing anything - how
+// many accounts are there, and which tier is each on - and neither of them
+// requires knowing who anybody is. This is what makes assigning a tier
+// possible from a workflow whose log is public.
+func (s *Store) Accounts(ctx context.Context) ([]AccountBrief, error) {
+	rows, err := s.pool.Query(ctx, `
+		select left(a.id::text, $1), a.tier,
+		       (select count(*)::int from devices d where d.account_id = a.id)
+		from accounts a
+		order by a.created_at`, prefixLength)
+	if err != nil {
+		return nil, fmt.Errorf("cannot list accounts: %w", err)
+	}
+	defer rows.Close()
+
+	out := []AccountBrief{}
+	for rows.Next() {
+		var b AccountBrief
+		if err := rows.Scan(&b.Prefix, &b.Tier, &b.Devices); err != nil {
+			return nil, fmt.Errorf("cannot read an account: %w", err)
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// ErrAmbiguousAccount means the prefix given matches more than one account.
+var ErrAmbiguousAccount = errors.New("that prefix matches more than one account")
+
+// SetAccountTierByPrefix moves an account between statuses, named by the start
+// of its identifier.
+//
+// The point of the prefix is the log. Assigning a tier is an operator action,
+// operator actions run through the pipeline, and the pipeline's log is public
+// - so the handle has to be something that can be written there. An address
+// cannot. A whole identifier could, and does not need to: it is useless
+// without the database, but printing it costs something and buys nothing.
+//
+// Refused when the prefix matches more than one account. A tier granted to
+// somebody who did not pay for it is not the kind of mistake that announces
+// itself, so the ambiguous case has to fail rather than pick.
+func (s *Store) SetAccountTierByPrefix(
+	ctx context.Context, prefix, tier string,
+) (AccountTier, error) {
+	var matches int
+	if err := s.pool.QueryRow(ctx,
+		`select count(*)::int from accounts where id::text like $1 || '%'`,
+		prefix).Scan(&matches); err != nil {
+		return AccountTier{}, fmt.Errorf("cannot count matching accounts: %w", err)
+	}
+	switch matches {
+	case 0:
+		return AccountTier{}, ErrNoSuchAccount
+	case 1:
+	default:
+		return AccountTier{}, ErrAmbiguousAccount
+	}
+
+	var out AccountTier
+	err := s.pool.QueryRow(ctx, `
+		update accounts set tier = $2
+		where id::text like $1 || '%'
+		returning id, tier`, prefix, tier).Scan(&out.AccountID, &out.Tier)
+	if err != nil {
+		return AccountTier{}, fmt.Errorf("cannot set the tier: %w", err)
+	}
+
+	if err := s.pool.QueryRow(ctx, `
+		select l.max_devices, l.max_external,
+		       (select count(*)::int from devices d where d.account_id = $1)
+		from tier_limits l where l.tier = $2`, out.AccountID, out.Tier).
+		Scan(&out.MaxDevices, &out.MaxExternal, &out.Devices); err != nil {
+		return out, fmt.Errorf("cannot read what the tier allows: %w", err)
+	}
+	return out, nil
+}
