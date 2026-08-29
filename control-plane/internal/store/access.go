@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -562,18 +563,28 @@ func (s *Store) LimitedCredentials(ctx context.Context) ([]string, int, error) {
 	return limited, *speed, rows.Err()
 }
 
-// TierOfAccount is the status an account is on, and nothing else about it.
+// TierOfAccount is the status an account is on and the day it began, and
+// nothing else about it.
 //
 // Separate from AccountTierByEmail because the caller here is the application
 // on somebody's phone, asking about itself. It has proved a device token, not
 // an address, and it has no business naming one.
-func (s *Store) TierOfAccount(ctx context.Context, accountID uuid.UUID) (string, error) {
+//
+// The creation date comes back with the tier because the two are always wanted
+// together: whether somebody may buy VIP depends on what they have now and on
+// how long they have had it. Two queries for one decision would be two chances
+// for them to disagree.
+func (s *Store) TierOfAccount(
+	ctx context.Context, accountID uuid.UUID,
+) (string, time.Time, error) {
 	var tier string
+	var created time.Time
 	if err := s.pool.QueryRow(ctx,
-		`select tier from accounts where id = $1`, accountID).Scan(&tier); err != nil {
-		return "", fmt.Errorf("cannot read the tier: %w", err)
+		`select tier, created_at from accounts where id = $1`, accountID).
+		Scan(&tier, &created); err != nil {
+		return "", time.Time{}, fmt.Errorf("cannot read the tier: %w", err)
 	}
-	return tier, nil
+	return tier, created, nil
 }
 
 // ErrNotYours means the device named is not on the caller's account.

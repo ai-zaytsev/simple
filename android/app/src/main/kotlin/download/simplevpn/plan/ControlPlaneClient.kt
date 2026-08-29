@@ -127,17 +127,45 @@ class ControlPlaneClient(
      * not a downgrade, and treating it as one would take the section
      * away every time the network hiccuped.
      */
-    fun tier(): String? {
+    fun tier(): Standing? {
         val token = accounts.deviceToken ?: return null
         val answer = send("/v1/devices", "{}", token)
         if (answer !is Result.Received) return null
         return try {
-            org.json.JSONObject(answer.envelopeJson).optString("tier").ifBlank { null }
+            val json = org.json.JSONObject(answer.envelopeJson)
+            val tier = json.optString("tier").ifBlank { return null }
+            val buy = json.optJSONObject("purchase")
+            Standing(
+                tier = tier,
+                mayBuy = buy?.optBoolean("available") ?: false,
+                whyNot = buy?.optString("reason").orEmpty(),
+                // Passed through as it arrived. The phone does not parse the
+                // date and does not compare it with its own clock: a device
+                // whose clock is wrong would otherwise decide for itself that
+                // the wait is over, which is the one thing the server is here
+                // to decide.
+                opensOn = buy?.optString("available_at").orEmpty(),
+            )
         } catch (t: Throwable) {
-            Log.w(TAG, "cannot read the tier", t)
+            Log.w(TAG, "cannot read the standing", t)
             null
         }
     }
+
+    /**
+     * What this account is, and whether it may buy what it is not.
+     *
+     * Both in one answer because they arrive in one call and are drawn in one
+     * corner of one screen. Split apart they would be two requests that can
+     * disagree, and the disagreement would show as a button that offers
+     * something the account already has.
+     */
+    data class Standing(
+        val tier: String,
+        val mayBuy: Boolean,
+        val whyNot: String,
+        val opensOn: String,
+    )
 
     /** Every external device on this account, with its links. */
     fun externalDevices(): Result {

@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"download.simplevpn/control-plane/internal/auth"
+	"download.simplevpn/control-plane/internal/purchase"
 	"download.simplevpn/control-plane/internal/store"
 )
 
@@ -91,14 +92,40 @@ func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
 	// Answered on this call because the application already makes it, and
 	// because this is the call that says what an account has. It carries no
 	// address: the caller proved a device token, and a tier is not personal.
-	tier, err := s.store.TierOfAccount(r.Context(), device.AccountID)
+	tier, created, err := s.store.TierOfAccount(r.Context(), device.AccountID)
 	if err != nil {
 		s.log.Error("cannot read the tier", "error", err)
 		writeError(w, http.StatusInternalServerError, "cannot read the account")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"devices": out, "tier": tier})
+	// Whether VIP may be bought, decided here rather than on the phone.
+	//
+	// The application draws the answer and does not compute it: the free
+	// period and the switch both change from the server, and a device
+	// applying its own copy of the rule would keep offering a purchase for as
+	// long as it took somebody to install a new version. That is the whole
+	// requirement of this stage.
+	//
+	// A failure to read the settings leaves the offer closed. Selling because
+	// a query failed is the one outcome here worth refusing outright.
+	offer := purchase.Offer{Reason: purchase.ReasonClosed}
+	if state, err := s.store.LoadServiceState(r.Context()); err != nil {
+		s.log.Error("cannot read the purchase settings", "error", err)
+	} else {
+		offer = purchase.Assess(time.Now().UTC(), created, tier, state.Purchases)
+	}
+
+	buy := map[string]any{"available": offer.Available, "reason": offer.Reason}
+	if offer.AvailableAt != nil {
+		buy["available_at"] = offer.AvailableAt.UTC().Format(time.RFC3339)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"devices":  out,
+		"tier":     tier,
+		"purchase": buy,
+	})
 }
 
 type revokeRequest struct {

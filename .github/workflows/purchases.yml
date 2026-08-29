@@ -1,0 +1,118 @@
+name: Purchases
+
+# Whether VIP may be bought, and how long a new account waits first.
+#
+# Both from the server, which is the requirement: a number that can only be
+# changed by releasing an application is a number nobody changes. The switch
+# exists for the day something goes wrong with taking money - a day that
+# arrives without warning and must not need a release to survive.
+#
+# Turning selling off does nothing to accounts that already have VIP. That is
+# decided in the service, before the switch is even looked at, and there is a
+# test holding the order in place: an account that has paid must never be told
+# the thing it paid for is unavailable.
+#
+# Nothing here names a person. The settings are service-wide - selling is open
+# or it is not, and the wait is the same for everybody - so this log carries no
+# account and no address.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Read the settings, or change them.
+        required: true
+        default: show
+        type: choice
+        options:
+          - show
+          - set
+      open:
+        description: Whether anybody may buy VIP. Ignored when showing.
+        required: true
+        default: "no"
+        type: choice
+        options:
+          - "no"
+          - "yes"
+      free_days:
+        description: >
+          Days on FREE before an account may buy. Changing this moves the
+          people already waiting, which is the point of it being a number of
+          days rather than a date. Ignored when showing.
+        required: true
+        default: "7"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  purchases:
+    name: Purchases
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'true'
+          echo "Host reachable."
+
+      - name: Ask, and change if asked
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          ACTION: ${{ inputs.action }}
+          OPEN: ${{ inputs.open }}
+          FREE_DAYS: ${{ inputs.free_days }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+
+          if [ "${ACTION}" = "set" ]; then
+            case "${FREE_DAYS}" in
+              ''|*[!0-9]*)
+                echo "The wait must be a whole number of days."
+                exit 1
+                ;;
+            esac
+            open=false
+            [ "${OPEN}" = "yes" ] && open=true
+            body=$(printf '{"open": %s, "free_days": %s}' "${open}" "${FREE_DAYS}")
+          else
+            # An empty body reads without changing anything.
+            body='{}'
+          fi
+
+          # Token and request both on stdin: an argument list is visible in the
+          # process table of the host it runs on.
+          printf '%s\n%s\n' "${ADMIN_TOKEN}" "${body}" \
+            | ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              "read -r t; read -r b; printf '%s' \"\${b}\" | curl -sS --max-time 20 \
+                 -o /tmp/purchases.json -w '%{http_code}' \
+                 -H \"authorization: Bearer \${t}\" \
+                 -H 'content-type: application/json' \
+                 -H 'x-changed-by: ${ACTOR}' \
+                 --data-binary @- \
+                 http://127.0.0.1:8080/v1/admin/purchases; \
+               echo; cat /tmp/purchases.json; rm -f /tmp/purchases.json" > /tmp/answer.txt
+
+          code=$(head -1 /tmp/answer.txt)
+          tail -n +2 /tmp/answer.txt > /tmp/purchases.json
+
+          if [ "${code}" != "200" ]; then
+            echo "Not done. HTTP ${code}."
+            cat /tmp/purchases.json
+            exit 1
+          fi
+
+          python3 .github/scripts/say_purchases.py /tmp/purchases.json \
+            | tee -a "${GITHUB_STEP_SUMMARY}"

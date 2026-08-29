@@ -45,6 +45,14 @@ type Overview struct {
 	Endpoints []EndpointHealth `json:"endpoints"`
 
 	Tiers []TierPolicy `json:"tiers"`
+
+	// Whether VIP may be bought, and how long a new account waits first.
+	//
+	// On the panel because it is the pair most likely to be wrong without
+	// anybody noticing: selling switched off during an incident and never
+	// switched back is invisible from every other angle, and the symptom is
+	// an absence of revenue that nobody attributes to a setting.
+	Purchases PurchaseSettings `json:"purchases"`
 }
 
 type NodeHealth struct {
@@ -213,7 +221,23 @@ func (s *Store) Overview(ctx context.Context, now time.Time) (Overview, error) {
 	if o.Tiers, err = s.tierPolicies(ctx); err != nil {
 		return o, err
 	}
+
+	// Read from the same place the decision reads it, not from a copy kept
+	// for the panel. A panel showing its own idea of a setting is a panel
+	// that can agree with itself while disagreeing with the service.
+	if state, err := s.LoadServiceState(ctx); err == nil {
+		o.Purchases = PurchaseSettings{
+			Open:     state.Purchases.Open,
+			FreeDays: state.Purchases.FreeDays,
+		}
+	}
 	return o, nil
+}
+
+// PurchaseSettings is what the panel says about selling.
+type PurchaseSettings struct {
+	Open     bool `json:"open"`
+	FreeDays int  `json:"free_days"`
 }
 
 // TierPolicy is what a tier allows, and how many accounts are on it.
