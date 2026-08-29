@@ -117,6 +117,26 @@ jobs:
 
           update nodes set state = 'removed', state_since = now(), state_note = '${REASON}'
           where host = '${ADDRESS}' and state <> 'removed';
+
+          -- And the way in this node was providing.
+          --
+          -- A node in service also forwards the API, so becoming ready writes
+          -- a bootstrap entry on its own domain. Retiring it did not take that
+          -- away, which left two things wrong at once: the domain could never
+          -- be reused, because a way in is refused as a cover, and devices went
+          -- on being told to try an address where nothing answers.
+          --
+          -- Written as an invariant rather than as a matching delete: every
+          -- forwarded entry whose domain no node is serving is switched off,
+          -- so retirements that already happened are repaired by the next one.
+          -- The bootstrap host proper is not touched: it forwards nothing and
+          -- belongs to no node.
+          update bootstrap_entries set enabled = false
+          where enabled and kind = 'https-edge'
+            and lower(host) not in (
+              select lower(params->>'server_name') from nodes
+              where state <> 'removed' and coalesce(params->>'server_name', '') <> ''
+            );
           SQL
 
           # The alias and the freed domain, read back so the next run has what
@@ -127,6 +147,9 @@ jobs:
           select alias || ' was retired; its domain ' ||
                  coalesce(params->>'server_name', '(none)') || ' is free again'
           from nodes where host = '${ADDRESS}' and state = 'removed';
+
+          select 'ways in still offered: ' || count(*)::text
+          from bootstrap_entries where enabled;
           SQL
 
           SSH_STDIN=/tmp/retire.sql bash infra/ssh-retry.sh "root@${JUMP}" \
