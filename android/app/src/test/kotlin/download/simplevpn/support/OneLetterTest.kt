@@ -46,26 +46,74 @@ class OneLetterTest {
 
     @Test
     fun `the recording goes to mail applications only`() {
-        // ACTION_SEND is what carries an attachment; the selector is what puts
-        // back the restriction ACTION_SENDTO gave for free. Without it this
-        // offers every messenger on the phone a file listing the sites this
-        // phone visited.
+        // ACTION_SEND is what carries an attachment, and it is answered by
+        // every messenger on the phone - which must not be offered a file
+        // listing the sites this phone visited.
+        //
+        // The first attempt put a mailto: selector on the intent and left the
+        // matching to the system. On a real phone nothing opened at all. So
+        // the mail applications are now looked up by the intent that is known
+        // to resolve here - the support button already uses it - and each is
+        // addressed by name.
         assertTrue(
-            "the recording letter has no mailto: selector, so it would be " +
-                "offered to every application that can share a file",
-            mail.contains("""selector = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:"))"""),
+            "the mail applications are not looked up, so this relies on " +
+                "intent matching that was already seen to fail",
+            mail.contains("queryIntentActivities"),
+        )
+        assertTrue(
+            "the letters are not addressed to a package, so any application " +
+                "that can share a file could take one",
+            mail.contains("setPackage("),
         )
     }
 
     @Test
-    fun `the screen no longer opens a chooser for the recording`() {
+    fun `a letter that does not open is reported`() {
+        // The defect that mattered was not that it failed. It was that it
+        // failed silently: the dialog closed and nothing else happened, which
+        // is indistinguishable from the application being broken.
         assertTrue(
-            "the screen still builds a share chooser for the recording",
-            !screen.contains("createChooser"),
+            "nothing tells the person when no letter opened",
+            screen.contains("noMailApplication = true"),
+        )
+        assertTrue(
+            "sending does not report whether anything opened",
+            screen.contains("if (!sendRecordingByMail(context))"),
+        )
+    }
+
+    @Test
+    fun `the screen never builds a letter of its own`() {
+        // The screen starts what SupportMail built and composes nothing. This
+        // is what keeps the two letters identical: a second ACTION_SEND intent
+        // here would be a second place with its own idea of the address, the
+        // subject and the body.
+        assertTrue(
+            "the screen builds its own send intent, which is a second letter",
+            !screen.contains("Intent(Intent.ACTION_SEND)"),
         )
         assertTrue(
             "the screen does not send the recording through SupportMail",
             screen.contains("SupportMail.withRecording"),
+        )
+    }
+
+    @Test
+    fun `a chooser is only ever offered the letters`() {
+        // A chooser appears when the phone has more than one mail
+        // application, and it must be built from the letters and nothing
+        // else. The generic version of this - createChooser over a bare
+        // ACTION_SEND - is what offered every messenger a file listing the
+        // sites this phone visited.
+        if (!screen.contains("createChooser")) return
+
+        assertTrue(
+            "a chooser is built without naming which intents it may offer",
+            screen.contains("EXTRA_INITIAL_INTENTS"),
+        )
+        assertTrue(
+            "the chooser is not built from the letters",
+            screen.contains("createChooser(letters.first()"),
         )
     }
 
