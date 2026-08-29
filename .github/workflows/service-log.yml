@@ -1,0 +1,102 @@
+name: Service Log
+
+# The Control Plane's own account of what it did, read from here.
+#
+# Some things this service knows are told to nobody: a node asking for a
+# certificate is answered "the authority did not issue" and the reason - which
+# authority, which order, which refusal - is written to the journal instead.
+# That is right. A node has no business learning the shape of our failures.
+#
+# But it left the reason unreachable to whoever is fixing it, and today that
+# happened three times: the queue that answered with an error, the proxy that
+# closed a connection, and now an authority that refused in three seconds.
+#
+# What it prints is filtered twice: any line carrying an @ is dropped whole,
+# because the one thing this service must never publish is somebody's address,
+# and anything shaped like an IPv4 is masked, because a node's address is what
+# a blocker would most like handed to them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      matching:
+        description: Only lines containing this. Leave empty for everything recent.
+        required: false
+        default: ""
+        type: string
+      lines:
+        description: How many recent lines to look through.
+        required: true
+        default: "200"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  JUMP: ${{ secrets.CP_DEPLOY_HOST }}
+
+jobs:
+  log:
+    name: Service Log
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reach the Control Plane
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          {
+            echo "Host *"
+            echo "  IdentityFile ~/.ssh/deploy"
+            echo "  IdentitiesOnly yes"
+            echo "  BatchMode yes"
+            echo "  StrictHostKeyChecking accept-new"
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+          ssh-keyscan -H "${JUMP}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh "root@${JUMP}" true
+
+      - name: Say what it said
+        env:
+          MATCHING: ${{ inputs.matching }}
+          LINES: ${{ inputs.lines }}
+        run: |
+          set -euo pipefail
+
+          case "${LINES}" in
+            ''|*[!0-9]*) echo "The number of lines must be a number."; exit 1 ;;
+          esac
+
+          ssh "root@${JUMP}" \
+            "journalctl -u simple-vpn-core -n ${LINES} --no-pager -o cat" > /tmp/journal.txt
+
+          # An address belongs to a person and must not be published, whatever
+          # else the line says. Dropped rather than masked: a line that had to
+          # be edited to be safe is a line better left out.
+          before=$(wc -l < /tmp/journal.txt)
+          grep -v '@' /tmp/journal.txt > /tmp/safe.txt || true
+          dropped=$(( before - $(wc -l < /tmp/safe.txt) ))
+          [ "${dropped}" -eq 0 ] || echo "(${dropped} line(s) held back: they carry an address)"
+
+          if [ -n "${MATCHING}" ]; then
+            grep -F -- "${MATCHING}" /tmp/safe.txt > /tmp/shown.txt || true
+          else
+            cp /tmp/safe.txt /tmp/shown.txt
+          fi
+
+          # A node's address is not a person's, and it is still the fact worth
+          # withholding: it is what somebody intending to block this service
+          # would most like to be handed.
+          sed -E 's/\b([0-9]{1,3}\.){3}[0-9]{1,3}\b/[address]/g' /tmp/shown.txt \
+            | tail -n 100 | sed 's/^/  /'
+
+          echo
+          echo "$(wc -l < /tmp/shown.txt) line(s) matched."
