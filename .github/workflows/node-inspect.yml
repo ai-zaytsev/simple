@@ -120,14 +120,27 @@ jobs:
           # A class with no filter catches nothing, and looks exactly like a
           # class that does. The first inspection printed the classes and not
           # the filters, which is why it read as a chain that was whole.
-          tc filter show dev "${iface}" 2>/dev/null | sed "s/^/  /" || echo "  no filter on the way out"
-          tc filter show dev ifb-slow 2>/dev/null | sed "s/^/  /" || echo "  no filter on the way in"
+          # Captured, then judged. Piping into sed and relying on `||` reports
+          # sed's success, not the command's, so an empty answer printed
+          # nothing at all - and an absent filter is the answer that matters
+          # most here.
+          out=$(tc filter show dev "${iface}" 2>/dev/null || true)
+          [ -n "${out}" ] && printf '%s\n' "${out}" | sed "s/^/  /" \
+            || echo "  no filter on the way out"
+          in=$(tc filter show dev ifb-slow 2>/dev/null || true)
+          [ -n "${in}" ] && printf '%s\n' "${in}" | sed "s/^/  /" \
+            || echo "  no filter on the way in"
           echo "  --- and is the way in redirected at all ---"
           # On the ingress hook specifically. The plain listing shows the root
           # and says nothing about whether incoming packets are being moved to
           # the device that shapes them - which is the whole of the download
           # direction, and the one people notice.
-          tc filter show dev "${iface}" parent ffff: 2>/dev/null | sed "s/^/  /" \n            || echo "  nothing is redirecting the way in"
+          redirect=$(tc filter show dev "${iface}" parent ffff: 2>/dev/null || true)
+          if [ -n "${redirect}" ]; then
+            printf '%s\n' "${redirect}" | sed "s/^/  /"
+          else
+            echo "  nothing is redirecting the way in"
+          fi
           tc qdisc show dev "${iface}" 2>/dev/null | sed "s/^/  /"
 
           echo "=== Where the bytes are actually going ==="

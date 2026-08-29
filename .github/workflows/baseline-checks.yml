@@ -236,6 +236,13 @@ jobs:
           sys.exit(bad)
           PY
 
+      - name: No backslash-n where a line break was meant
+        shell: bash
+        # A diagnostic broke this way and reported the opposite of the
+        # truth about a live node. The check is cheap; being lied to by
+        # my own tool cost an evening.
+        run: bash .github/scripts/check-no-stray-escapes.sh
+
       - name: An address published to a step output must be masked first
         shell: bash
         run: bash .github/scripts/check-masked-addresses.sh
