@@ -68,6 +68,7 @@ object SessionLog {
     fun dropTrace(context: Context) {
         runCatching { traceFile(context).delete() }
         runCatching { File(context.cacheDir, TRACE_EXPORT_NAME).delete() }
+        runCatching { File(context.cacheDir, TRACE_EXPORT_WAS).delete() }
     }
 
     /** Whether a recording is sitting on the device waiting to be sent. */
@@ -117,7 +118,10 @@ object SessionLog {
                 append(readTail(trace).ifBlank { "(the recording is empty)\n" })
             }
 
-            target.writeText(text)
+            // UTF-8 said out loud. It is already Kotlin's default and the file
+            // carries Russian text; a default is a thing that can change, and
+            // this one would change silently into unreadable attachments.
+            target.writeText(text, Charsets.UTF_8)
             target
         } catch (t: Throwable) {
             Log.e(TAG, "could not export the recording", t)
@@ -175,7 +179,20 @@ object SessionLog {
     private const val APP_NAME = "session.log"
     private const val ENGINE_NAME = "engine.log"
     private const val TRACE_NAME = "trace.log"
-    private const val TRACE_EXPORT_NAME = "logs/simple-vpn-recording.log"
+    // .txt, and the extension is the whole of it.
+    //
+    // The share intent already declared text/plain and that is not what the
+    // receiving application reads. It resolves the content URI and asks the
+    // provider, and FileProvider derives the type from the file name against
+    // Android's MIME table - which has no entry for .log, so the answer was
+    // application/octet-stream. A messenger refused it as an unsupported
+    // attachment and a mail client could not add it at all, both correctly
+    // and both about a file that is plain text.
+    //
+    // The old name is still removed on cleanup below, so an upgrade does not
+    // leave one behind in the cache.
+    private const val TRACE_EXPORT_NAME = "logs/simple-vpn-recording.txt"
+    private const val TRACE_EXPORT_WAS = "logs/simple-vpn-recording.log"
 
     /** How the engine names a destination it has recognised. */
     private val SNIFFED = Regex("sniffed domain: ([a-zA-Z0-9._-]+)")
