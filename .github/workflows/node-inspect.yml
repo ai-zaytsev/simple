@@ -121,26 +121,15 @@ jobs:
           # account's traffic is counted under the plain outbounds rather than
           # the shaped ones, the rules are not matching it, and nothing below
           # the rules can help.
+          # One line, and that is not a style preference. Written across
+          # several, the script's own lines began at column zero and fell out
+          # of the YAML block that was supposed to contain them - after which
+          # GitHub could not read the file at all and reported that this
+          # workflow has no trigger. A program inside a program inside a file
+          # has to respect the indentation of all three.
           /usr/local/bin/xray api statsquery --server=127.0.0.1:10085 2>/dev/null \
-            | python3 -c '
-import json, sys
-try:
-    stats = json.load(sys.stdin).get("stat", [])
-except Exception:
-    print("  counters could not be read"); raise SystemExit
-totals = {}
-for s in stats:
-    name = s.get("name", "")
-    if not name.startswith("outbound>>>"):
-        continue
-    tag = name.split(">>>")[1]
-    group = "shaped" if tag.startswith("slow-") else "plain"
-    totals[group] = totals.get(group, 0) + int(s.get("value", 0) or 0)
-if not totals:
-    print("  nothing has been counted yet")
-for group, value in sorted(totals.items()):
-    print("  %-8s %.1f MB" % (group, value / 1e6))
-' || echo "  counters could not be read"
+            | python3 -c 'import json,sys; s=json.load(sys.stdin).get("stat",[]); o=[(x.get("name","").split(">>>")[1], int(x.get("value",0) or 0)) for x in s if x.get("name","").startswith("outbound>>>")]; print("  shaped %.1f MB" % (sum(v for t,v in o if t.startswith("slow-"))/1e6)); print("  plain  %.1f MB" % (sum(v for t,v in o if not t.startswith("slow-"))/1e6))' \
+            || echo "  counters could not be read"
 
           echo "=== Does the mark survive the return ==="
           iptables -t mangle -S 2>/dev/null | grep -i connmark | sed 's/^/  /' \
