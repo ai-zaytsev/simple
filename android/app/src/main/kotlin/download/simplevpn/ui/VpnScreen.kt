@@ -350,13 +350,31 @@ private fun RecordingIndicator(stopsAtElapsedMillis: Long) {
     )
 }
 
-/** Hands a file to whatever the user picks to send it with. */
+/**
+ * Hands a file to whatever the user picks to send it with.
+ *
+ * The type is declared twice over and neither declaration is redundant. This
+ * intent says text/plain, which is what the chooser reads to decide who to
+ * offer; the receiving application then resolves the content URI and asks the
+ * provider, which derives its answer from the file name. The two disagreed
+ * while the export was called .log - Android's MIME table has no entry for it,
+ * so the provider answered application/octet-stream - and a messenger called
+ * it an unsupported attachment while a mail client simply could not add it.
+ * Both were right, about a file that is plain text. The export is .txt now.
+ *
+ * The ClipData is the same story about permission rather than type. The grant
+ * flag covers EXTRA_STREAM on its own in most receivers and not in all of
+ * them; a receiver that reads the URI off the clip data gets the grant this
+ * way and an empty file otherwise, which is the worst of the failures here
+ * because it looks like it worked.
+ */
 private fun shareFile(context: android.content.Context, file: java.io.File, title: String) {
     val uri = FileProvider.getUriForFile(context, "${context.packageName}.logs", file)
     val send = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
         putExtra(Intent.EXTRA_STREAM, uri)
         putExtra(Intent.EXTRA_SUBJECT, title)
+        clipData = android.content.ClipData.newUri(context.contentResolver, file.name, uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     runCatching {
