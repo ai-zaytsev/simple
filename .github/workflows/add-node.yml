@@ -431,7 +431,16 @@ jobs:
             --resolve "${DOMAIN}:443:${ADDRESS}" $([ "${CERTIFICATES}" = "test" ] && echo --insecure) \
             -H "Upgrade: websocket" -H "Connection: Upgrade" \
             -H "Sec-WebSocket-Key: AQIDBAUGBwgJCgsMDQ4PEA==" -H "Sec-WebSocket-Version: 13" \
-            "https://${DOMAIN}${WS_PATH}" 2>/dev/null || echo 000)
+            "https://${DOMAIN}${WS_PATH}" 2>/dev/null || true)
+
+          # `|| true` rather than `|| echo 000`, and this is the whole of what
+          # went wrong the first time this step ran on a real node.
+          #
+          # After a successful upgrade curl has nowhere to go: the connection
+          # stays open until --max-time and curl exits non-zero having already
+          # printed the code. The fallback then appended to it, and a healthy
+          # tunnel was reported as answering "101000".
+          code="${code:-000}"
           [ "${code}" = "101" ] && note "the tunnel upgrades" || { note "the tunnel answered ${code}"; fail=1; }
 
           # It keeps no record of where anybody went.
@@ -509,7 +518,7 @@ jobs:
             echo "|---|---|"
             echo "| node | \`${ALIAS}\` |"
             echo "| domain | \`${DOMAIN}\` |"
-            echo "| address | \`${ADDRESS:-not created}\` |"
+            echo "| address | $([ -n "${ADDRESS:-}" ] && echo recorded || echo "not created") |"
             echo "| certificates | ${CERTIFICATES} |"
             echo "| machine | \`simple-vpn-${ALIAS}\` at Kamatera, billed hourly |"
             echo
