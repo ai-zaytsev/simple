@@ -22,11 +22,12 @@ def main(path):
     print("Адресов здесь нет. Префикс — начало идентификатора, которого")
     print("достаточно, чтобы назвать аккаунт, и мало, чтобы что-то о нём узнать.")
     print()
-    print("| префикс | тариф | устройств |")
-    print("| --- | --- | --- |")
+    print("| префикс | тариф | устройств | заведён |")
+    print("| --- | --- | --- | --- |")
     for account in accounts:
-        print("| %s… | %s | %s |" % (
-            account.get("prefix"), account.get("tier"), account.get("devices")))
+        print("| %s… | %s | %s | %s |" % (
+            account.get("prefix"), account.get("tier"),
+            account.get("devices"), account.get("created")))
     print()
     print("Всего: %d." % len(accounts))
 
