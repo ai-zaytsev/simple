@@ -1,0 +1,107 @@
+name: Node Inspect
+
+# What one node is actually doing, read and not touched.
+#
+# The speed limit is the first thing whose failure looks exactly like success:
+# the tunnel works, the page loads, and the only sign that the limit is absent
+# is a number on somebody's phone. Everything needed to tell why lives on the
+# node - the routing table the engine loaded, the list it was handed, the
+# queues the kernel holds - and until now the only way to see any of it was to
+# run the installer, which changes all three.
+#
+# So this changes nothing. No install, no restart, no configuration written.
+
+on:
+  workflow_dispatch:
+    inputs:
+      alias:
+        description: Which node, as the panel shows it.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  JUMP: ${{ secrets.CP_DEPLOY_HOST }}
+
+jobs:
+  inspect:
+    name: Node Inspect
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reach the Control Plane
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          {
+            echo "Host *"
+            echo "  IdentityFile ~/.ssh/deploy"
+            echo "  IdentitiesOnly yes"
+            echo "  BatchMode yes"
+            echo "  StrictHostKeyChecking accept-new"
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+          ssh-keyscan -H "${JUMP}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh "root@${JUMP}" true
+
+      - name: Find the node
+        id: node
+        env:
+          ALIAS: ${{ inputs.alias }}
+        run: |
+          set -euo pipefail
+          address=$(ssh "root@${JUMP}" \
+            "psql \"\$(cat /etc/simple-vpn-cp.dsn)\" -tAc \
+             \"select host from nodes where alias = '${ALIAS}' and state <> 'removed'\"" \
+            | tr -d '[:space:]')
+          if [ -z "${address}" ] || [ "${address}" = "0.0.0.0" ]; then
+            echo "No node called '${ALIAS}' has an address."
+            exit 1
+          fi
+          echo "::add-mask::${address}"
+          echo "address=${address}" >> "${GITHUB_OUTPUT}"
+
+      - name: Say what it is doing
+        env:
+          ADDRESS: ${{ steps.node.outputs.address }}
+        run: |
+          set -euo pipefail
+          bash infra/ssh-retry.sh -J "root@${JUMP}" "root@${ADDRESS}" 'bash -s' <<'REMOTE' | sed 's/^/  /'
+          set -u
+
+          echo "=== Who is held to a speed ==="
+          if [ -s /etc/simple-vpn-limited.json ]; then
+            echo "  the node has been handed $(python3 -c 'import json;print(len(json.load(open("/etc/simple-vpn-limited.json"))))' 2>/dev/null || echo '?') credential(s) to slow"
+          else
+            echo "  no list has been applied; nobody is being slowed"
+          fi
+
+          echo "=== Does the engine route them apart ==="
+          slow=$(grep -c '"slow-' /usr/local/etc/xray/config.json 2>/dev/null || echo 0)
+          echo "  outbounds and rules mentioning the shaped set: ${slow}"
+
+          echo "=== Is the mark on the socket ==="
+          grep -o '"mark": *[0-9]*' /usr/local/etc/xray/config.json 2>/dev/null | sort -u | sed 's/^/  /' \
+            || echo "  no mark in the engine's configuration"
+
+          echo "=== What the kernel is shaping ==="
+          iface=$(ip route show default | awk '/default/ {print $5; exit}')
+          tc class show dev "${iface}" 2>/dev/null | sed 's/^/  /' || echo "  nothing on the way out"
+          tc class show dev ifb-slow 2>/dev/null | sed 's/^/  /' || echo "  nothing on the way in"
+
+          echo "=== Does the mark survive the return ==="
+          iptables -t mangle -S 2>/dev/null | grep -i connmark | sed 's/^/  /' \
+            || echo "  the connection's mark is not being saved or restored"
+
+          echo "=== What the measuring agent last said ==="
+          journalctl -u simple-vpn-metrics -n 12 --no-pager -o cat 2>/dev/null | sed 's/^/  /'
+          REMOTE
