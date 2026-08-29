@@ -18,6 +18,14 @@
 # outgoing socket - so the connection's mark is saved and restored. Without
 # that, a limit would apply to uploads and to nothing else.
 #
+# And it did, for a while, because saving and restoring is not sufficient on
+# its own. The restore lives in netfilter; traffic control on the way in runs
+# before netfilter, so the mark was not there yet when the incoming filter
+# looked for it. The fetch has to happen inside the filter, and that is what
+# `action connmark` below is for. This paragraph is here because the two lines
+# above read as though they were enough, and a phone measured eight megabits
+# up against a hundred and eleven down while they were.
+#
 # Run twice and the second run changes nothing.
 set -euo pipefail
 
@@ -87,9 +95,37 @@ modprobe ifb numifbs=0 2>/dev/null || true
 ip link add ifb-slow type ifb 2>/dev/null || true
 ip link set ifb-slow up
 
+# The action that reads a connection's mark, asked for by name.
+#
+# Loaded on purpose rather than left to appear when first used: a missing
+# module makes the filter below fail, the script stop, and the shaping that
+# was already applied stay - which is a limit on uploads only, and that is
+# precisely the fault this change exists to remove.
+modprobe act_connmark 2>/dev/null || true
+
 tc qdisc add dev "${IFACE}" handle ffff: ingress
+
+# The mark is fetched here, before the packet is moved.
+#
+# This is the whole of why the limit held one direction and not the other. A
+# packet arriving from the internet carries no mark of its own: the mark was
+# put on the socket going out, and the rule that copies it back from the
+# connection lives in netfilter's PREROUTING. Traffic control on the way in
+# runs *before* netfilter, so by the time this filter looked, there was
+# nothing to look at - every incoming packet fell into the default class and
+# went at full speed.
+#
+# Uploads were held correctly the whole time, because on the way out traffic
+# control runs after netfilter and the mark is already there. A limit that
+# works in one direction is the shape this mistake takes, and it is what a
+# person notices: the download is the number on the speed test.
+#
+# `action connmark` reads the connection's mark into the packet at this point,
+# which is exactly what it exists for.
 tc filter add dev "${IFACE}" parent ffff: protocol all prio 1 u32 \
-    match u32 0 0 action mirred egress redirect dev ifb-slow
+    match u32 0 0 \
+    action connmark \
+    action mirred egress redirect dev ifb-slow
 
 tc qdisc add dev ifb-slow root handle 1: htb default 1
 tc class add dev ifb-slow parent 1: classid 1:1 htb rate 10gbit
