@@ -83,14 +83,37 @@ class OneLetterTest {
     }
 
     @Test
-    fun `the screen no longer opens a chooser for the recording`() {
+    fun `the screen never builds a letter of its own`() {
+        // The screen starts what SupportMail built and composes nothing. This
+        // is what keeps the two letters identical: a second ACTION_SEND intent
+        // here would be a second place with its own idea of the address, the
+        // subject and the body.
         assertTrue(
-            "the screen still builds a share chooser for the recording",
-            !screen.contains("createChooser"),
+            "the screen builds its own send intent, which is a second letter",
+            !screen.contains("Intent(Intent.ACTION_SEND)"),
         )
         assertTrue(
             "the screen does not send the recording through SupportMail",
             screen.contains("SupportMail.withRecording"),
+        )
+    }
+
+    @Test
+    fun `a chooser is only ever offered the letters`() {
+        // A chooser appears when the phone has more than one mail
+        // application, and it must be built from the letters and nothing
+        // else. The generic version of this - createChooser over a bare
+        // ACTION_SEND - is what offered every messenger a file listing the
+        // sites this phone visited.
+        if (!screen.contains("createChooser")) return
+
+        assertTrue(
+            "a chooser is built without naming which intents it may offer",
+            screen.contains("EXTRA_INITIAL_INTENTS"),
+        )
+        assertTrue(
+            "the chooser is not built from the letters",
+            screen.contains("createChooser(letters.first()"),
         )
     }
 
