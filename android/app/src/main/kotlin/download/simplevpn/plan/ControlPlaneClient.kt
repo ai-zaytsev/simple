@@ -116,6 +116,57 @@ class ControlPlaneClient(
     }
 
     /**
+     * The account's status, as the service knows it right now.
+     *
+     * Asked rather than remembered from sign-in: a status changes
+     * without this installation doing anything - somebody is given VIP
+     * while their phone sits in a pocket - and an application showing
+     * yesterday's answer would hide a section its owner has paid for.
+     *
+     * Null when the service could not be reached. Not FREE: silence is
+     * not a downgrade, and treating it as one would take the section
+     * away every time the network hiccuped.
+     */
+    fun tier(): String? {
+        val token = accounts.deviceToken ?: return null
+        val answer = send("/v1/devices", "{}", token)
+        if (answer !is Result.Received) return null
+        return try {
+            org.json.JSONObject(answer.envelopeJson).optString("tier").ifBlank { null }
+        } catch (t: Throwable) {
+            Log.w(TAG, "cannot read the tier", t)
+            null
+        }
+    }
+
+    /** Every external device on this account, with its links. */
+    fun externalDevices(): Result {
+        val token = accounts.deviceToken ?: return Result.Revoked
+        return send("/v1/external/links", "{}", token)
+    }
+
+    /** Connects a router, a television or a computer under a name. */
+    fun addExternalDevice(label: String): Result {
+        val token = accounts.deviceToken ?: return Result.Revoked
+        val body = org.json.JSONObject().put("label", label).toString()
+        return send("/v1/external", body, token)
+    }
+
+    /** Replaces the link of one device, keeping its name and place. */
+    fun replaceExternalLink(deviceId: String): Result {
+        val token = accounts.deviceToken ?: return Result.Revoked
+        val body = org.json.JSONObject().put("device_id", deviceId).toString()
+        return send("/v1/external/rotate", body, token)
+    }
+
+    /** Cuts one device off and leaves every other one alone. */
+    fun revokeDevice(deviceId: String): Result {
+        val token = accounts.deviceToken ?: return Result.Revoked
+        val body = org.json.JSONObject().put("device_id", deviceId).toString()
+        return send("/v1/devices/revoke", body, token)
+    }
+
+    /**
      * Sends what this device saw of the service since the last report.
      *
      * Totals, and outcomes of trying our own addresses. Nothing about what

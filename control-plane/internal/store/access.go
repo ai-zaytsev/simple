@@ -533,3 +533,80 @@ func (s *Store) LimitedCredentials(ctx context.Context) ([]string, int, error) {
 	}
 	return limited, *speed, rows.Err()
 }
+
+// TierOfAccount is the status an account is on, and nothing else about it.
+//
+// Separate from AccountTierByEmail because the caller here is the application
+// on somebody's phone, asking about itself. It has proved a device token, not
+// an address, and it has no business naming one.
+func (s *Store) TierOfAccount(ctx context.Context, accountID uuid.UUID) (string, error) {
+	var tier string
+	if err := s.pool.QueryRow(ctx,
+		`select tier from accounts where id = $1`, accountID).Scan(&tier); err != nil {
+		return "", fmt.Errorf("cannot read the tier: %w", err)
+	}
+	return tier, nil
+}
+
+// ErrNotYours means the device named is not on the caller's account.
+var ErrNotYours = errors.New("that device is not on this account")
+
+// RotateExternalCredential gives one external device a new credential.
+//
+// For the link that stopped working. A person who cannot use their television
+// any more needs a working address for that television - not a new device with
+// a new name and a lost place in their own list.
+//
+// The old credential is revoked in the same transaction that creates the new
+// one, so the two never both work. That is the whole point when the reason for
+// asking is that somebody else has the old link.
+//
+// Refused unless the device belongs to the caller's account and is external.
+// An application installation rotated this way would have its credential
+// replaced while its token stayed valid, and the phone would keep asking for
+// plans built on a credential the nodes no longer accept - a device that looks
+// signed in and carries nothing.
+func (s *Store) RotateExternalCredential(
+	ctx context.Context, accountID, deviceID uuid.UUID,
+) (DeviceSummary, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return DeviceSummary{}, fmt.Errorf("cannot begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var out DeviceSummary
+	err = tx.QueryRow(ctx, `
+		select id, kind, label from devices
+		where id = $1 and account_id = $2 and kind = 'external'`,
+		deviceID, accountID).Scan(&out.ID, &out.Kind, &out.Label)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DeviceSummary{}, ErrNotYours
+	}
+	if err != nil {
+		return DeviceSummary{}, fmt.Errorf("cannot find the device: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		update device_credentials
+		set state = 'REVOKED', revoked_at = now(), updated_seq = next_seq('credentials')
+		where device_id = $1 and state = 'ACTIVE'`, deviceID); err != nil {
+		return DeviceSummary{}, fmt.Errorf("cannot revoke the old credential: %w", err)
+	}
+
+	credential := uuid.New()
+	if _, err := tx.Exec(ctx, `
+		insert into device_credentials (id, device_id, credential_uuid, updated_seq)
+		values ($1, $2, $3, next_seq('credentials'))`,
+		uuid.New(), deviceID, credential); err != nil {
+		return DeviceSummary{}, fmt.Errorf("cannot create the new credential: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return DeviceSummary{}, fmt.Errorf("cannot commit: %w", err)
+	}
+
+	out.Credential = &credential
+	out.State = "ACTIVE"
+	return out, nil
+}

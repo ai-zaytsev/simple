@@ -80,7 +80,25 @@ func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
 			"label": d.Label,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"devices": out})
+
+	// The status, so the application knows which of itself to show.
+	//
+	// The screen for routers and televisions belongs to VIP, and an
+	// application that cannot tell would have to either show it to everybody
+	// and refuse on use - which teaches people the product is broken - or
+	// guess from a failure, which is worse.
+	//
+	// Answered on this call because the application already makes it, and
+	// because this is the call that says what an account has. It carries no
+	// address: the caller proved a device token, and a tier is not personal.
+	tier, err := s.store.TierOfAccount(r.Context(), device.AccountID)
+	if err != nil {
+		s.log.Error("cannot read the tier", "error", err)
+		writeError(w, http.StatusInternalServerError, "cannot read the account")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"devices": out, "tier": tier})
 }
 
 type revokeRequest struct {

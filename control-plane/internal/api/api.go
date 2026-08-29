@@ -132,6 +132,10 @@ func (s *Server) Routes() http.Handler {
 	// somebody to forget.
 	mux.HandleFunc("POST /v1/external", s.addExternal)
 	mux.HandleFunc("POST /v1/external/links", s.externalLinks)
+
+	// Replacing the link of one device, for when the old one stopped working.
+	// Not a delete and an add: that loses the name and the place in the list.
+	mux.HandleFunc("POST /v1/external/rotate", s.rotateExternal)
 	mux.HandleFunc("POST /v1/whereami", s.whereFrom)
 	mux.HandleFunc("POST /v1/plan/failed", s.planFailed)
 	mux.HandleFunc("GET /v1/node/users", s.nodeUsers)
