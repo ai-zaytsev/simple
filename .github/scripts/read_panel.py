@@ -166,11 +166,16 @@ def main(path):
         # workflow that updates one node asks for a name, and there was nowhere
         # to read one.
 
-        say("| сервер | состояние | выдаётся | запас | сессий | CPU | память | задержка | потери |")
-        say("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        # The domain verdict is why a node is or is not offered, and it was
+        # the one column missing when two healthy nodes stopped being handed
+        # out. Everything on the row said the machine was well; nothing said
+        # what devices were finding when they tried to reach it.
+        say("| сервер | состояние | выдаётся | домен | запас | сессий | CPU | память | задержка | потери |")
+        say("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
         for n in sorted(nodes, key=lambda x: x.get("alias") or ""):
-            say("| %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+            say("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
                 n.get("alias"), n.get("verdict"), "да" if n.get("offered") else "нет",
+                n.get("domain_verdict") or "не измерен",
                 pct(n.get("room")), n.get("sessions_online"),
                 rate(n.get("cpu_percent")),
                 rate(n.get("memory_percent")),

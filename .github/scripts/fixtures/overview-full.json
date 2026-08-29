@@ -3,7 +3,7 @@
   "now": {"active_users_hour": 3, "active_users_day": 11, "sessions_online": 7,
           "nodes_reporting": 2, "uplink_bps": 1200000.0, "downlink_bps": 9400000.0},
   "nodes": [
-    {"alias": "b", "verdict": "ok", "offered": true, "room": 0.98,
+    {"alias": "b", "verdict": "ok", "offered": true, "room": 0.98, "domain_verdict": "works",
      "sessions_online": 4, "cpu_percent": 6.0, "memory_percent": 31.0,
      "latency_ms": 512.0, "loss_percent": 0.0},
     {"alias": "a", "verdict": "silent", "offered": false, "room": 1.0,
