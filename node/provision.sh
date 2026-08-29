@@ -219,6 +219,28 @@ server {
 }
 NGINX
 
+# Written is not the same as loaded.
+#
+# This wrote sites-available/default and relied on the package having left a
+# symlink to it, which is true of a Debian nginx and was not true of the image
+# the first automatically built node came up on. The site was written, nginx
+# was happy, and what it served was the distribution's own page - with the
+# distribution's access_log, which is what the privacy audit then refused to
+# accept. The audit caught it; nothing before the audit would have.
+install -d -m 0755 /etc/nginx/sites-enabled
+if [ ! -e /etc/nginx/sites-enabled/default ]; then
+  ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+  echo "  the site was not enabled; it is now"
+fi
+
+# Said out loud rather than assumed, because the failure above was silent: a
+# configuration that is present and not loaded looks exactly like one that is.
+if ! nginx -T 2>/dev/null | grep -q "${NODE_DOMAIN}"; then
+  echo "  nginx does not load a configuration naming ${NODE_DOMAIN}."
+  echo "  It would serve the distribution's page, and its log, instead."
+  exit 1
+fi
+
 # Client addresses and requested paths are recorded by error_log whatever
 # access_log says. On this fleet that once put a real user's address on disk
 # next to the tunnel path.
