@@ -111,6 +111,11 @@ func (s *Server) adminAccounts(w http.ResponseWriter, r *http.Request) {
 			"prefix":  a.Prefix,
 			"tier":    a.Tier,
 			"devices": a.Devices,
+
+			// The day it began, which is the day the free period counts from.
+			// A date is not an identity, and an operator deciding about that
+			// period cannot check it against anything without this.
+			"created": a.Created,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})

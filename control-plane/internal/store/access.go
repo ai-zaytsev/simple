@@ -657,6 +657,16 @@ type AccountBrief struct {
 	Prefix  string
 	Tier    string
 	Devices int
+
+	// The day the account began, which is the day the free period counts
+	// from.
+	//
+	// Here because the first argument about that period was conducted without
+	// it: the application said a date, the Business Owner said it looked
+	// wrong, and neither of us could see the number the date was computed
+	// from. A setting whose effect depends on a value nobody can read is a
+	// setting that gets argued about instead of checked.
+	Created string
 }
 
 // prefixLength is how much of an identifier is enough to pick one out.
@@ -676,7 +686,8 @@ const prefixLength = 8
 func (s *Store) Accounts(ctx context.Context) ([]AccountBrief, error) {
 	rows, err := s.pool.Query(ctx, `
 		select left(a.id::text, $1), a.tier,
-		       (select count(*)::int from devices d where d.account_id = a.id)
+		       (select count(*)::int from devices d where d.account_id = a.id),
+		       to_char(a.created_at at time zone 'UTC', 'YYYY-MM-DD')
 		from accounts a
 		order by a.created_at`, prefixLength)
 	if err != nil {
@@ -687,7 +698,7 @@ func (s *Store) Accounts(ctx context.Context) ([]AccountBrief, error) {
 	out := []AccountBrief{}
 	for rows.Next() {
 		var b AccountBrief
-		if err := rows.Scan(&b.Prefix, &b.Tier, &b.Devices); err != nil {
+		if err := rows.Scan(&b.Prefix, &b.Tier, &b.Devices, &b.Created); err != nil {
 			return nil, fmt.Errorf("cannot read an account: %w", err)
 		}
 		out = append(out, b)
