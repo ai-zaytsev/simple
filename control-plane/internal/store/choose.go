@@ -317,6 +317,11 @@ func (s *Store) NodeStandings(ctx context.Context, kind string, defaultCapacity 
 			where p.target = lower(coalesce(n.params->>'server_name',''))
 			  and p.vantage = 'device'
 			  and p.at > now() - interval '1 hour'
+			  -- And nothing from before this node existed. A domain outlives
+			  -- the machine behind it, so a rebuilt node would otherwise be
+			  -- scored on what devices found while its predecessor was being
+			  -- destroyed.
+			  and p.at > n.state_since
 		) probe on true
 
 		left join lateral (
