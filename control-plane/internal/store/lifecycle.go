@@ -437,8 +437,25 @@ func (s *Store) domainConditions(ctx context.Context, now time.Time) (map[string
 			coalesce(avg(case when vantage = 'device'
 				then (ok::int) end) * 100, -1)::float8,
 			count(*) filter (where vantage = 'device')::int
-		from metrics.endpoint_probes
-		where at >= $2
+		from metrics.endpoint_probes p
+		join domains d on d.name = p.target
+
+		-- Nothing measured before this domain started serving what it serves
+		-- now.
+		--
+		-- A domain outlives the machine behind it. Rebuilding a node leaves
+		-- every check made while the old machine was being destroyed, and
+		-- those checks failed - so the new machine inherited a history of
+		-- failure it had no part in.
+		--
+		-- What that produced was not a wrong number on a screen. Devices could
+		-- not reach the domains during the rebuild and the Control Plane could,
+		-- which is the exact shape of being blocked in Russia; the service
+		-- concluded both new nodes were blocked and refused to hand out either.
+		-- It had locked itself out of its own fleet, and it would not have
+		-- recovered on its own: a device with no plan cannot check anything,
+		-- and the checks are what the judgement waits for.
+		where p.at >= $2 and p.at >= d.since
 		group by target`, now.Add(-time.Hour), now.Add(-24*time.Hour))
 	if err != nil {
 		return nil, fmt.Errorf("cannot read domain checks: %w", err)
