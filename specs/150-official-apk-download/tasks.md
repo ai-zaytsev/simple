@@ -15,9 +15,11 @@
 - [x] Обновить durable docs
 - [x] Выполнить локальную валидацию: site/manifest tests, workflow YAML, cloud-init ASCII, Terraform fmt; provider init передан GitHub runner из-за недоступности registry из локальной сети
 - [x] Запушить feature branch и создать PR #156
-- [ ] Получить green required checks и AI review текущего PR head
-- [ ] Получить human merge authority
-- [ ] После merge создать `site-1`, bucket и DNS
+- [x] Получить green required checks текущего PR head; AI Review workflow завершился штатным fallback на human review, потому что команда внешнего reviewer не настроена
+- [ ] Получить human review и merge authority
+- [ ] После merge создать `site-1` и DNS; использовать согласованный `apk/` namespace в существующем Spaces bucket
+- [ ] Без передачи секретов в чат добавить release-signing key в GitHub Secrets и сохранить Business Owner offline-копию
+- [ ] Закрыть обязательные пункты `docs/release-blockers.md`, которые publication workflow проверяет перед сборкой
 - [ ] Опубликовать первую release-signed APK
 - [ ] Проверить официальный домен, `latest`, versioned link, SHA-256 и подпись
 - [ ] Назвать результат живой сверки и закрыть стадию
