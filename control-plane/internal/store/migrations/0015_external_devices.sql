@@ -42,3 +42,11 @@ update tier_limits set max_external = 0 where tier = 'FREE';
 -- VIP key, and an account able to mint access without end is the same thing
 -- arrived at by a different route.
 update tier_limits set max_external = 5 where tier = 'VIP';
+
+-- Overturned by 0018, which sets both VIP limits to null.
+--
+-- The paragraph above is left standing rather than corrected: it was the
+-- reasoning at the time, the Business Owner has since said VIP has no device
+-- limits at all, and that is their decision to make. The concern it raises did
+-- not become wrong - it became accepted, and it is written down in
+-- docs/tech-debt.md so that accepting it stays visible.

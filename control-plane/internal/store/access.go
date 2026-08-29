@@ -269,13 +269,25 @@ func (s *Store) SetNodeToken(ctx context.Context, alias string, hash []byte) err
 // would let a cut-off device ask for a plan and be handed a fresh credential;
 // leaving the credential would let it keep connecting with the one it has.
 func evictBeyondLimit(ctx context.Context, tx pgx.Tx, accountID, keep uuid.UUID) ([]uuid.UUID, error) {
-	var limit int
+	// Nullable, because a tier may have no limit at all. Null is not zero here
+	// and the difference is the whole of it: zero would mean an account allowed
+	// no devices, and every sign-in would evict everything the person had.
+	// Read into a pointer so the two cannot be confused by a value that looks
+	// like a number either way.
+	var limit *int
 	err := tx.QueryRow(ctx, `
 		select l.max_devices
 		from accounts a join tier_limits l on l.tier = a.tier
 		where a.id = $1`, accountID).Scan(&limit)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read the device limit: %w", err)
+	}
+
+	// No limit, so nothing is over it. Answered before the query rather than
+	// inside it: the query builds its offset by subtracting one from the
+	// limit, and there is no number here to subtract from.
+	if limit == nil {
+		return nil, nil
 	}
 
 	// Only the application's own installations. A television is not competing
@@ -291,7 +303,7 @@ func evictBeyondLimit(ctx context.Context, tx pgx.Tx, accountID, keep uuid.UUID)
 		  and c.state = 'ACTIVE'
 		  and c.device_id <> $2
 		order by c.created_at desc
-		offset $3`, accountID, keep, limit-1)
+		offset $3`, accountID, keep, *limit-1)
 	if err != nil {
 		return nil, fmt.Errorf("cannot find devices over the limit: %w", err)
 	}
@@ -329,11 +341,16 @@ func evictBeyondLimit(ctx context.Context, tx pgx.Tx, accountID, keep uuid.UUID)
 }
 
 // AccountTier is what an account's status is, and what it currently means.
+//
+// The limits are pointers because a tier may have none. An operator asking
+// what VIP grants gets "no limit" and not a number that happens to be large,
+// which is the difference between a policy and a guess about one.
 type AccountTier struct {
-	AccountID  uuid.UUID
-	Tier       string
-	MaxDevices int
-	Devices    int
+	AccountID   uuid.UUID
+	Tier        string
+	MaxDevices  *int
+	MaxExternal *int
+	Devices     int
 }
 
 // ErrNoSuchAccount is returned when nobody has signed in with that address.
@@ -369,10 +386,10 @@ func (s *Store) SetAccountTier(ctx context.Context, email, tier string) (Account
 	// What the new status means and how many devices are on it, so that the
 	// answer says what happened rather than only that something did.
 	if err := s.pool.QueryRow(ctx, `
-		select l.max_devices,
+		select l.max_devices, l.max_external,
 		       (select count(*)::int from devices d where d.account_id = $1)
 		from tier_limits l where l.tier = $2`, out.AccountID, out.Tier).
-		Scan(&out.MaxDevices, &out.Devices); err != nil {
+		Scan(&out.MaxDevices, &out.MaxExternal, &out.Devices); err != nil {
 		return out, fmt.Errorf("cannot read what the tier allows: %w", err)
 	}
 	return out, nil
@@ -382,11 +399,11 @@ func (s *Store) SetAccountTier(ctx context.Context, email, tier string) (Account
 func (s *Store) AccountTierByEmail(ctx context.Context, email string) (AccountTier, error) {
 	var out AccountTier
 	err := s.pool.QueryRow(ctx, `
-		select a.id, a.tier, l.max_devices,
+		select a.id, a.tier, l.max_devices, l.max_external,
 		       (select count(*)::int from devices d where d.account_id = a.id)
 		from accounts a join tier_limits l on l.tier = a.tier
 		where lower(a.email) = lower($1)`, email).
-		Scan(&out.AccountID, &out.Tier, &out.MaxDevices, &out.Devices)
+		Scan(&out.AccountID, &out.Tier, &out.MaxDevices, &out.MaxExternal, &out.Devices)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AccountTier{}, ErrNoSuchAccount
 	}
@@ -416,7 +433,11 @@ func (s *Store) AddExternalDevice(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var allowed, used int
+	// Null allows any number; zero allows none. Both are real answers and they
+	// are opposite ones, which is why this is a pointer rather than a number
+	// with a sentinel value agreed on somewhere else in the file.
+	var allowed *int
+	var used int
 	err = tx.QueryRow(ctx, `
 		select l.max_external,
 		       (select count(*)::int
@@ -429,7 +450,7 @@ func (s *Store) AddExternalDevice(
 	if err != nil {
 		return DeviceSummary{}, fmt.Errorf("cannot read the external limit: %w", err)
 	}
-	if used >= allowed {
+	if allowed != nil && used >= *allowed {
 		return DeviceSummary{}, ErrTooManyExternal
 	}
 
