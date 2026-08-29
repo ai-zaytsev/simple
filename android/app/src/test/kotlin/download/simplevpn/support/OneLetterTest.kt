@@ -46,14 +46,39 @@ class OneLetterTest {
 
     @Test
     fun `the recording goes to mail applications only`() {
-        // ACTION_SEND is what carries an attachment; the selector is what puts
-        // back the restriction ACTION_SENDTO gave for free. Without it this
-        // offers every messenger on the phone a file listing the sites this
-        // phone visited.
+        // ACTION_SEND is what carries an attachment, and it is answered by
+        // every messenger on the phone - which must not be offered a file
+        // listing the sites this phone visited.
+        //
+        // The first attempt put a mailto: selector on the intent and left the
+        // matching to the system. On a real phone nothing opened at all. So
+        // the mail applications are now looked up by the intent that is known
+        // to resolve here - the support button already uses it - and each is
+        // addressed by name.
         assertTrue(
-            "the recording letter has no mailto: selector, so it would be " +
-                "offered to every application that can share a file",
-            mail.contains("""selector = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:"))"""),
+            "the mail applications are not looked up, so this relies on " +
+                "intent matching that was already seen to fail",
+            mail.contains("queryIntentActivities"),
+        )
+        assertTrue(
+            "the letters are not addressed to a package, so any application " +
+                "that can share a file could take one",
+            mail.contains("setPackage("),
+        )
+    }
+
+    @Test
+    fun `a letter that does not open is reported`() {
+        // The defect that mattered was not that it failed. It was that it
+        // failed silently: the dialog closed and nothing else happened, which
+        // is indistinguishable from the application being broken.
+        assertTrue(
+            "nothing tells the person when no letter opened",
+            screen.contains("noMailApplication = true"),
+        )
+        assertTrue(
+            "sending does not report whether anything opened",
+            screen.contains("if (!sendRecordingByMail(context))"),
         )
     }
 

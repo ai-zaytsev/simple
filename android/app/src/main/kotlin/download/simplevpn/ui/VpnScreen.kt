@@ -226,6 +226,7 @@ private fun TraceControls(connected: Boolean, modifier: Modifier = Modifier) {
     var askingToSend by remember { mutableStateOf(false) }
     var destinations by remember { mutableStateOf(0) }
     var saveOutcome by remember { mutableStateOf(0) }
+    var noMailApplication by remember { mutableStateOf(false) }
 
     // Where to save is the system's question, not ours. A picker everybody has
     // already used beats any folder we could choose for them, and it is the
@@ -330,18 +331,25 @@ private fun TraceControls(connected: Boolean, modifier: Modifier = Modifier) {
             // and a paragraph here explaining it would be a paragraph read by
             // everybody to serve the few who were told to look for it.
             text = { Text(text = stringResource(R.string.trace_send_body, destinations)) },
+            // All three in one column, and no dismiss slot at all.
+            //
+            // Split across the two slots, Material lays the confirm button out
+            // beside or above the dismiss group and stretches the gaps to fill
+            // the dialog: the three ended up scattered down the card with the
+            // last one cut off by its bottom edge. A dialog with three choices
+            // is a list of three choices, not a confirm and a pair.
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        askingToSend = false
-                        scope.launch { sendRecordingByMail(context) }
-                    },
-                ) {
-                    Text(text = stringResource(R.string.trace_send_confirm))
-                }
-            },
-            dismissButton = {
-                Column {
+                Column(horizontalAlignment = Alignment.End) {
+                    TextButton(
+                        onClick = {
+                            askingToSend = false
+                            scope.launch {
+                                if (!sendRecordingByMail(context)) noMailApplication = true
+                            }
+                        },
+                    ) {
+                        Text(text = stringResource(R.string.trace_send_confirm))
+                    }
                     TextButton(
                         onClick = {
                             askingToSend = false
@@ -364,6 +372,33 @@ private fun TraceControls(connected: Boolean, modifier: Modifier = Modifier) {
                     ) {
                         Text(text = stringResource(R.string.trace_send_delete))
                     }
+                }
+            },
+        )
+    }
+
+    // Nothing opened, and the person is told so.
+    //
+    // This is the defect that mattered: the letter failed to open, the failure
+    // was caught and dropped, and the dialog simply closed. An application
+    // that does nothing and says nothing is indistinguishable from one that is
+    // broken - and the recording is still here, which is the part somebody
+    // needs to know before they go and make another one.
+    if (noMailApplication) {
+        AlertDialog(
+            onDismissRequest = { noMailApplication = false },
+            title = { Text(text = stringResource(R.string.support_no_mail_title)) },
+            text = {
+                Text(
+                    text = stringResource(
+                        R.string.trace_no_mail_body,
+                        stringResource(R.string.support_email),
+                    ),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { noMailApplication = false }) {
+                    Text(text = stringResource(R.string.support_no_mail_close))
                 }
             },
         )
@@ -416,14 +451,28 @@ private fun RecordingIndicator(stopsAtElapsedMillis: Long) {
  * and somebody who describes one are writing about the same thing and should
  * not arrive looking like two different people.
  */
-private suspend fun sendRecordingByMail(context: android.content.Context) {
-    val file = withContext(Dispatchers.IO) { SessionLog.exportTrace(context) } ?: return
+private suspend fun sendRecordingByMail(context: android.content.Context): Boolean {
+    val file = withContext(Dispatchers.IO) { SessionLog.exportTrace(context) } ?: return false
     val uri = FileProvider.getUriForFile(context, "${context.packageName}.logs", file)
 
+    val letters = SupportMail.withRecording(context, uri)
+    if (letters.isEmpty()) return false
+
     val opened = runCatching {
-        context.startActivity(
-            SupportMail.withRecording(context, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-        )
+        // One mail application: straight there. Several: the system asks
+        // which, and the list holds only the ones asked for by name, so a
+        // messenger cannot appear in it.
+        val start = if (letters.size == 1) {
+            letters.first()
+        } else {
+            Intent.createChooser(letters.first(), null).apply {
+                putExtra(
+                    Intent.EXTRA_INITIAL_INTENTS,
+                    letters.drop(1).toTypedArray(),
+                )
+            }
+        }
+        context.startActivity(start.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }.isSuccess
 
     // Kept when nothing took it. Dropping the recording after a letter that
@@ -433,6 +482,7 @@ private suspend fun sendRecordingByMail(context: android.content.Context) {
         withContext(Dispatchers.IO) { SessionLog.dropTrace(context) }
         VpnController.traceCleared()
     }
+    return opened
 }
 
 @Composable

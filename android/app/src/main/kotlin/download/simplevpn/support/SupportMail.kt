@@ -54,28 +54,46 @@ object SupportMail {
      * Mail is also the channel that works. Everything else we might have used
      * is blockable from outside and has been blocked; a letter is not.
      */
-    fun withRecording(context: Context, attachment: Uri): Intent {
+    fun withRecording(context: Context, attachment: Uri): List<Intent> {
         val address = context.getString(R.string.support_email)
 
-        return Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            fill(context, address)
-            putExtra(Intent.EXTRA_STREAM, attachment)
+        // Which applications actually handle mail on this phone, asked rather
+        // than described.
+        //
+        // The first version set a mailto: selector on an ACTION_SEND intent
+        // and trusted the system to work it out. On the Business Owner's
+        // phone nothing opened at all - the dialog closed and that was the
+        // whole of it - and because the failure was caught and dropped, the
+        // application had nothing to say about why.
+        //
+        // So the applications are looked up by the one intent that is known
+        // to resolve here, since it is what the support button already uses,
+        // and each is then addressed by name. Nothing is left to the matching
+        // rules of an intent shape we cannot test from here.
+        val mail = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:"))
+        val handlers = runCatching {
+            context.packageManager.queryIntentActivities(mail, 0)
+        }.getOrDefault(emptyList())
 
-            // Both, because the grant flag covers the extra in most receivers
-            // and not in all of them. A mail application that reads the URI
-            // off the clip data attaches an empty file without this, which is
-            // the worst way for it to fail: it looks like it worked.
-            clipData = android.content.ClipData.newUri(
-                context.contentResolver,
-                context.getString(R.string.trace_share_title),
-                attachment,
-            )
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        return handlers.mapNotNull { it.activityInfo?.packageName }.distinct().map { name ->
+            Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                setPackage(name)
+                fill(context, address)
+                putExtra(Intent.EXTRA_STREAM, attachment)
 
-            // Answered by mail applications and nothing else, while still
-            // carrying the file.
-            selector = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:"))
+                // Both, because the grant flag covers the extra in most
+                // receivers and not in all of them. A mail application that
+                // reads the URI off the clip data attaches an empty file
+                // without this, which is the worst way for it to fail: it
+                // looks like it worked.
+                clipData = android.content.ClipData.newUri(
+                    context.contentResolver,
+                    context.getString(R.string.trace_share_title),
+                    attachment,
+                )
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
         }
     }
 

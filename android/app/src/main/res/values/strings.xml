@@ -52,6 +52,7 @@
     <string name="trace_send_body">В записи %1$d адресов, к которым обращалось устройство. Отправляйте её только тому, кому готовы это показать.</string>
     <string name="trace_send_confirm">Отправить письмом</string>
     <string name="trace_send_save">Сохранить на устройство</string>
+    <string name="trace_no_mail_body">Не нашлось приложения для почты. Запись не удалена — нажмите «Сохранить на устройство» и отправьте файл на %1$s.</string>
     <string name="trace_saved">Файл сохранён</string>
     <string name="trace_save_failed">Не удалось сохранить файл</string>
     <string name="trace_send_delete">Удалить запись</string>
