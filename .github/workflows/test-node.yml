@@ -210,6 +210,13 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
         run: terraform init -input=false
 
+      - name: Mask addresses already recorded in Terraform state
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: bash ../../.github/scripts/mask-terraform-state-addresses.sh
+
       - name: Remember whether the permanent site already exists
         id: site_state
         working-directory: infra/terraform

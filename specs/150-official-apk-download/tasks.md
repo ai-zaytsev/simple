@@ -5,6 +5,7 @@
 - [x] Запущена живая `Infra Inventory`
 - [x] Записаны `spec.md`, `plan.md`, `tasks.md` и legacy workspace assessment
 - [x] Зафиксировать результат живой инвентаризации: до apply в DigitalOcean ноль Droplet
+- [x] Найти stale test-node state, замаскировать state addresses до plan и подготовить точечное удаление отсутствующих записей перед apply
 - [x] Добавить официальный статический сайт и проверки
 - [x] Добавить release signing configuration Android
 - [x] Добавить неизменяемый manifest и проверенный publication workflow
@@ -13,7 +14,7 @@
 - [x] Добавить штатный workflow provisioning и DNS
 - [x] Обновить durable docs
 - [x] Выполнить локальную валидацию: site/manifest tests, workflow YAML, cloud-init ASCII, Terraform fmt; provider init передан GitHub runner из-за недоступности registry из локальной сети
-- [ ] Запушить feature branch и создать PR
+- [x] Запушить feature branch и создать PR #156
 - [ ] Получить green required checks и AI review текущего PR head
 - [ ] Получить human merge authority
 - [ ] После merge создать `site-1`, bucket и DNS

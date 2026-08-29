@@ -64,6 +64,13 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
         run: terraform init -input=false
 
+      - name: Mask addresses already recorded in Terraform state
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: bash ../../.github/scripts/mask-terraform-state-addresses.sh
+
       - name: Confirm live inventory
         id: inventory
         working-directory: infra/terraform
@@ -96,7 +103,23 @@ jobs:
           fi
 
           echo "known=${known}" >> "${GITHUB_OUTPUT}"
+          echo "droplet_count=${count}" >> "${GITHUB_OUTPUT}"
           echo "Live inventory accepted: droplets=${count}, recorded_site=${known}."
+
+      - name: Remove the state record of the already deleted test node
+        if: ${{ inputs.apply && steps.inventory.outputs.known == 'false' && steps.inventory.outputs.droplet_count == '0' }}
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          for address in 'digitalocean_droplet.test_node[0]' 'digitalocean_project_resources.test_node[0]'; do
+            if terraform state list | grep -Fxq "${address}"; then
+              terraform state rm "${address}"
+            fi
+          done
+          echo "Only stale records for the provider-confirmed absent test node were removed from state."
 
       - name: Plan the approved host
         working-directory: infra/terraform
