@@ -104,8 +104,17 @@ jobs:
 
           echo "=== What the kernel is shaping ==="
           iface=$(ip route show default | awk '/default/ {print $5; exit}')
-          tc class show dev "${iface}" 2>/dev/null | sed 's/^/  /' || echo "  nothing on the way out"
-          tc class show dev ifb-slow 2>/dev/null | sed 's/^/  /' || echo "  nothing on the way in"
+          # With counters. Which class a packet was put in is a fact about the
+          # configuration; how many bytes went through it is a fact about what
+          # happened, and only the second one answers "is the limit working".
+          #
+          # Everything above this line was already right - the rules match, the
+          # mark is set, the filter points at the class - and the speed was
+          # still unlimited. So the question left is whether the packets that
+          # reach that class are actually being held by it.
+          tc -s class show dev "${iface}" 2>/dev/null | grep -A 2 "htb 1:" | sed "s/^/  /" || echo "  nothing on the way out"
+          echo "  --- the way in ---"
+          tc -s class show dev ifb-slow 2>/dev/null | grep -A 2 "htb 1:" | sed "s/^/  /" || echo "  nothing on the way in"
 
           echo "=== Is anything pointed at that class ==="
           # A class with no filter catches nothing, and looks exactly like a
@@ -114,6 +123,11 @@ jobs:
           tc filter show dev "${iface}" 2>/dev/null | sed "s/^/  /" || echo "  no filter on the way out"
           tc filter show dev ifb-slow 2>/dev/null | sed "s/^/  /" || echo "  no filter on the way in"
           echo "  --- and is the way in redirected at all ---"
+          # On the ingress hook specifically. The plain listing shows the root
+          # and says nothing about whether incoming packets are being moved to
+          # the device that shapes them - which is the whole of the download
+          # direction, and the one people notice.
+          tc filter show dev "${iface}" parent ffff: 2>/dev/null | sed "s/^/  /" \n            || echo "  nothing is redirecting the way in"
           tc qdisc show dev "${iface}" 2>/dev/null | sed "s/^/  /"
 
           echo "=== Where the bytes are actually going ==="
