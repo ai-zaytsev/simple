@@ -111,6 +111,10 @@
     <p class="sub">За сутки. Разделение делается на ноде в момент маршрутизации; кто в какой группе — не хранится.</p>
     <div class="card" id="shape"></div>
 
+    <h2>Что даёт тариф</h2>
+    <p class="sub">Читается из строк, а не из миграции: применённая миграция и действующая политика — разные утверждения.</p>
+    <div class="card wrap"><table id="tiers"></table></div>
+
     <h2>Нагрузка по пользователям</h2>
     <p class="sub">Объём за месяц. Кто именно — не хранится.</p>
     <div class="grid" id="usage"></div>
@@ -396,6 +400,28 @@
         "</div>";
     }
     document.getElementById("shape").innerHTML = shape;
+
+    // A ceiling has three answers and they must stay three: absent is
+    // unlimited, zero is none, and a number is a number. Folded together,
+    // a tier that was freed would read as one that was capped, and nobody
+    // would see the difference from anywhere else.
+    function ceiling(v, unit) {
+      if (v === null || v === undefined) return '<span class="ok">без предела</span>';
+      if (v === 0) return '<span class="muted">нет</span>';
+      return v + (unit || "");
+    }
+
+    var tiers = d.tiers || [];
+    var tt = "<tr><th>тариф</th><th>аккаунтов</th><th>устройств</th>" +
+             "<th>внешних</th><th>скорость</th></tr>";
+    tiers.forEach(function (p) {
+      tt += "<tr><td>" + esc(p.tier) + "</td>" +
+        "<td>" + p.accounts + "</td>" +
+        "<td>" + ceiling(p.max_devices) + "</td>" +
+        "<td>" + ceiling(p.max_external) + "</td>" +
+        "<td>" + ceiling(p.speed_mbit, " Мбит/с") + "</td></tr>";
+    });
+    document.getElementById("tiers").innerHTML = tt;
 
     var u = d.usage;
     document.getElementById("usage").innerHTML =

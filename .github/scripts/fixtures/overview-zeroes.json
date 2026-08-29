@@ -25,5 +25,9 @@
     {"target": "dead.example", "verdict": "unreachable", "ok_from_us": 0.0,
      "ok_from_devices": 0.0, "device_checks": 0}
   ],
-  "usage": {"users": 1, "total_bytes": 0}
+  "usage": {"users": 1, "total_bytes": 0},
+  "tiers": [
+    {"tier": "FREE", "max_devices": 1, "max_external": 0, "speed_mbit": 10, "accounts": 1},
+    {"tier": "VIP", "max_devices": null, "max_external": null, "speed_mbit": null, "accounts": 0}
+  ]
 }

@@ -43,6 +43,8 @@ type Overview struct {
 	Usage     UsageShape       `json:"usage"`
 	Connect   ConnectSummary   `json:"connect"`
 	Endpoints []EndpointHealth `json:"endpoints"`
+
+	Tiers []TierPolicy `json:"tiers"`
 }
 
 type NodeHealth struct {
@@ -192,7 +194,57 @@ func (s *Store) Overview(ctx context.Context, now time.Time) (Overview, error) {
 	if o.Endpoints, err = s.endpointHealth(ctx, now); err != nil {
 		return o, err
 	}
+	if o.Tiers, err = s.tierPolicies(ctx); err != nil {
+		return o, err
+	}
 	return o, nil
+}
+
+// TierPolicy is what a tier allows, and how many accounts are on it.
+//
+// The limits are pointers because a tier may have none, and null has to stay
+// null all the way to the panel: rendered as a number, "no limit" would be
+// indistinguishable from a large one, and the panel exists to be compared
+// against what was expected rather than to look plausible.
+type TierPolicy struct {
+	Tier        string `json:"tier"`
+	MaxDevices  *int   `json:"max_devices"`
+	MaxExternal *int   `json:"max_external"`
+	SpeedMbit   *int   `json:"speed_mbit"`
+	Accounts    int    `json:"accounts"`
+}
+
+// tierPolicies reads the policy itself, which is rows rather than code.
+//
+// Put on the panel because until now there was no way to see it. A migration
+// setting VIP's limits to null could be applied, logged and tested against its
+// own text while the rows said something else, and every statement about what
+// VIP grants would have been a statement about a file. This is the difference
+// between "the migration ran" and "the policy is what we think it is".
+//
+// No personal data: the tiers are three or four rows of policy, and the count
+// beside each one is a count.
+func (s *Store) tierPolicies(ctx context.Context) ([]TierPolicy, error) {
+	rows, err := s.pool.Query(ctx, `
+		select l.tier, l.max_devices, l.max_external, l.speed_mbit,
+		       (select count(*)::int from accounts a where a.tier = l.tier)
+		from tier_limits l
+		order by l.tier`)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read the tier policies: %w", err)
+	}
+	defer rows.Close()
+
+	out := []TierPolicy{}
+	for rows.Next() {
+		var t TierPolicy
+		if err := rows.Scan(&t.Tier, &t.MaxDevices, &t.MaxExternal,
+			&t.SpeedMbit, &t.Accounts); err != nil {
+			return nil, fmt.Errorf("cannot read a tier policy: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) nodeHealth(ctx context.Context, now time.Time) ([]NodeHealth, error) {
