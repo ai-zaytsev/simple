@@ -75,7 +75,16 @@ jobs:
           ADDRESS: ${{ steps.node.outputs.address }}
         run: |
           set -euo pipefail
-          bash infra/ssh-retry.sh -J "root@${JUMP}" "root@${ADDRESS}" 'bash -s' <<'REMOTE' | sed 's/^/  /'
+
+          # Written to a file and named, because ssh-retry.sh reads its input
+          # from SSH_STDIN and redirects everything else from nowhere. A
+          # heredoc piped at it is discarded in silence: the first version of
+          # this ran, succeeded, and printed nothing at all.
+          #
+          # That contract exists for a reason - an implicit stdin left an
+          # earlier run hanging on an unclosed pipe - so the fix is to honour
+          # it rather than to work around it.
+          cat > /tmp/inspect.sh <<'REMOTE'
           set -u
 
           echo "=== Who is held to a speed ==="
@@ -103,5 +112,9 @@ jobs:
             || echo "  the connection's mark is not being saved or restored"
 
           echo "=== What the measuring agent last said ==="
-          journalctl -u simple-vpn-metrics -n 12 --no-pager -o cat 2>/dev/null | sed 's/^/  /'
+          journalctl -u simple-vpn-metrics -n 12 --no-pager -o cat 2>/dev/null
           REMOTE
+
+          SSH_STDIN=/tmp/inspect.sh bash infra/ssh-retry.sh \
+            -J "root@${JUMP}" -o StrictHostKeyChecking=accept-new \
+            "root@${ADDRESS}" 'bash -s' | sed 's/^/  /'
