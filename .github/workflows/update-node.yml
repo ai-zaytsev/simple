@@ -149,7 +149,9 @@ jobs:
             -J "root@${JUMP}" -o StrictHostKeyChecking=accept-new \
             node/metrics-agent.py node/xray-observability.py \
             node/check-privacy.sh node/speed-limit.sh \
-            node/install-metrics-agent.sh "root@${ADDRESS}:/tmp/"
+            node/install-metrics-agent.sh \
+            node/certificate-agent.sh node/install-certificate-agent.sh \
+            "root@${ADDRESS}:/tmp/"
           echo "Copied."
 
       - name: Install
@@ -164,6 +166,20 @@ jobs:
           bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes \
             -J "root@${JUMP}" -o StrictHostKeyChecking=accept-new \
             "root@${ADDRESS}" 'bash /tmp/install-metrics-agent.sh'
+
+          # And the one that fetches certificates.
+          #
+          # This workflow is called "bring a node up to date" and updated one
+          # of the two agents. The gap showed the first time the other one
+          # changed: the service had learnt to ask a node who signed what it
+          # serves, and the node had no way of being taught to answer.
+          #
+          # A node partly current is worse than one plainly behind - it looks
+          # updated, and the half that was not is found by whatever depended
+          # on it.
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes \
+            -J "root@${JUMP}" -o StrictHostKeyChecking=accept-new \
+            "root@${ADDRESS}" 'bash /tmp/install-certificate-agent.sh'
 
       - name: See that it is well
         env:
