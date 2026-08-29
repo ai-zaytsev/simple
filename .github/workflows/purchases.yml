@@ -53,6 +53,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # The renderer lives in the repository, and the job needs it before it
+      # can print anything. Without this the settings change, the service
+      # answers, and the run fails on the last line with the answer already
+      # applied - which is the worst shape a failure can have: it looks like
+      # nothing happened and something did.
+      #
+      # panel-check.yml carries this same step with this same note, written
+      # after it failed the same way. I read that note and wrote this file
+      # without it.
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Reach the host
         env:
           DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}

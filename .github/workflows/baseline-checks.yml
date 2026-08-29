@@ -285,6 +285,13 @@ jobs:
           sys.exit(bad)
           PY
 
+      - name: A workflow that runs a repository file must check it out
+        shell: bash
+        # Purchases changed a live setting and then failed on the line
+        # that printed the result. Red run, applied change: the worst
+        # shape a failure can have.
+        run: bash .github/scripts/check-workflows-bring-their-tools.sh
+
       - name: No backslash-n where a line break was meant
         shell: bash
         # A diagnostic broke this way and reported the opposite of the
