@@ -206,6 +206,23 @@ jobs:
           }
           echo "ok: the peaks carry their span"
 
+          # A ceiling has three answers and they must stay three. Absent is
+          # unlimited, zero is none, and a number is a number. Folding any two
+          # together is how a tier that was supposed to be freed reads as one
+          # that was capped - and the panel is the only place that difference
+          # is ever looked at.
+          echo "${zeroes}" | grep -q '| VIP | 0 | без предела | без предела | без предела |' || {
+            echo "An absent limit is not being printed as unlimited."
+            echo "${zeroes}" | grep -A 5 'Что даёт тариф' || echo "(no tier section at all)"
+            exit 1
+          }
+          echo "${zeroes}" | grep -q '| FREE | 1 | 1 | нет | 10 Мбит/с |' || {
+            echo "A real limit is not being printed as itself."
+            echo "${zeroes}" | grep -A 5 'Что даёт тариф' || echo "(no tier section at all)"
+            exit 1
+          }
+          echo "ok: unlimited, none and a number read as three different things"
+
       - name: Every workflow must still parse
         shell: bash
         run: |

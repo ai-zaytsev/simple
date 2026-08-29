@@ -45,6 +45,22 @@ def number(value, scale=1.0, digits=1):
     return ("%." + str(digits) + "f") % (value / scale)
 
 
+def limit(value, unit=""):
+    """A ceiling, where absent means unlimited and zero means none.
+
+    Written out in words rather than left as a dash. Elsewhere in this file a
+    dash means "not measured", and a tier having no limit is the opposite of
+    an unknown - it is the policy. Zero is a third answer again: no external
+    devices is what FREE is actually allowed, and reading it as unlimited
+    would invert the whole point of the tiers.
+    """
+    if value is None:
+        return "без предела"
+    if value == 0:
+        return "нет"
+    return "%s%s" % (value, unit)
+
+
 def main(path):
     with open(path, encoding="utf-8") as handle:
         d = json.load(handle)
@@ -249,6 +265,25 @@ def main(path):
     say("Пользователей: %s. Всего: %.1f ГБ." % (
         u.get("users"), (u.get("total_bytes") or 0) / 1e9))
     say("")
+
+    # What the tiers actually allow, read from the rows rather than believed
+    # from a migration. A limit that was supposed to be lifted and was not
+    # looks identical from every other angle: the migration is logged as
+    # applied, the tests pass against its own text, and the service starts.
+    tiers = d.get("tiers") or []
+    if tiers:
+        say("### Что даёт тариф")
+        say("")
+        say("| тариф | аккаунтов | устройств | внешних | скорость |")
+        say("| --- | --- | --- | --- | --- |")
+        for t in tiers:
+            say("| %s | %s | %s | %s | %s |" % (
+                t.get("tier"),
+                t.get("accounts"),
+                limit(t.get("max_devices")),
+                limit(t.get("max_external")),
+                limit(t.get("speed_mbit"), " Мбит/с")))
+        say("")
 
     print("\n".join(out))
 

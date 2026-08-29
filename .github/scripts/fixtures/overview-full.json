@@ -36,5 +36,9 @@
     {"target": "x.example", "verdict": "works", "ok_from_us": 100.0,
      "ok_from_devices": -1, "device_checks": 0}
   ],
-  "usage": {"users": 4, "total_bytes": 3400000000}
+  "usage": {"users": 4, "total_bytes": 3400000000},
+  "tiers": [
+    {"tier": "FREE", "max_devices": 1, "max_external": 0, "speed_mbit": 10, "accounts": 3},
+    {"tier": "VIP", "max_devices": null, "max_external": null, "speed_mbit": null, "accounts": 1}
+  ]
 }
