@@ -22,6 +22,7 @@
 | Email login | Transactional email provider + magic links |
 | APK testing | Firebase App Distribution + signed APK |
 | CI/CD | GitHub Actions |
+| Официальный APK-сайт | Nginx на DigitalOcean `site-1`, Cloudflare, APK в Spaces |
 | VPN nodes | Ubuntu 24.04 + Xray + node-agent |
 
 ## Что Из Этого Следует Для Process-Layer

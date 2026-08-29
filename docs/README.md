@@ -19,6 +19,7 @@
 
 - `docs/integrations/brevo.md` — email-провайдер для magic link: секреты, требования к домену отправителя, проверка доставляемости
 - `docs/integrations/dns.md` — DNS: провайдеры, роли доменов, конвенции записей, запрет проксирования на точках входа
+- `docs/release-apk.md` — официальный APK: release signing, неизменяемая история, `latest` и штатная публикация
 - `docs/integrations/digitalocean.md` — DigitalOcean: фактическая область токена, Spaces, retention, границы бюджета
 - `docs/integrations/libxray.md` — транспортный движок: закреплённая версия, контрольная сумма, публичная сигнатура
 

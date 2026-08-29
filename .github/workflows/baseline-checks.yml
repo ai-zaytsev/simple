@@ -292,6 +292,10 @@ jobs:
         # shape a failure can have.
         run: bash .github/scripts/check-workflows-bring-their-tools.sh
 
+      - name: Official APK site keeps latest and history separate
+        shell: bash
+        run: bash sites/official/tools/check-site.sh
+
       - name: No backslash-n where a line break was meant
         shell: bash
         # A diagnostic broke this way and reported the opposite of the

@@ -1,0 +1,294 @@
+name: Deploy APK Site
+
+# Creates and maintains the one permanent public host approved for stage 25.
+# The first apply is guarded by a live DigitalOcean inventory: site-1 must be
+# the first droplet. Later applies accept exactly that one named host and no
+# unknown neighbours. The public repository never prints its address.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Apply the reviewed plan. False only shows what would change.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-apk-site
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "1"
+  SITE_DOMAIN: simple-vpn.download
+
+jobs:
+  deploy:
+    name: Deploy APK Site
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Check configuration
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          SPACES_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          SPACES_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in DIGITALOCEAN_TOKEN SPACES_ACCESS_KEY_ID SPACES_SECRET_ACCESS_KEY CLOUDFLARE_API_TOKEN; do
+            [ -n "${!name:-}" ] || missing="${missing} ${name}"
+          done
+          if [ -n "${missing}" ]; then
+            echo "Missing configuration:${missing}"
+            exit 1
+          fi
+          echo "Configuration is complete."
+
+      - name: Terraform init
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: terraform init -input=false
+
+      - name: Confirm live inventory
+        id: inventory
+        working-directory: infra/terraform
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -euo pipefail
+          known=false
+          if terraform state list 2>/dev/null | grep -q '^digitalocean_droplet.site\[0\]$'; then
+            known=true
+          fi
+
+          token=$(printf '%s' "${DIGITALOCEAN_TOKEN}" | tr -d '[:space:]')
+          code=$(curl -sS -o /tmp/droplets.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${token}" \
+            -H "accept: application/json" \
+            'https://api.digitalocean.com/v2/droplets?per_page=100' || echo 000)
+          [ "${code}" = "200" ] || { echo "Droplet inventory failed: HTTP ${code}."; exit 1; }
+
+          count=$(jq -r '(.droplets // []) | length' /tmp/droplets.json)
+          site_count=$(jq -r '(.droplets // []) | map(select(.name == "site-1")) | length' /tmp/droplets.json)
+
+          if [ "${known}" = "false" ] && [ "${count}" != "0" ]; then
+            echo "First apply refused: Business Owner said site-1 must be the first DigitalOcean droplet, but live inventory is not empty."
+            exit 1
+          fi
+          if [ "${known}" = "true" ] && { [ "${count}" != "1" ] || [ "${site_count}" != "1" ]; }; then
+            echo "Maintenance refused: live inventory must contain only the recorded site-1."
+            exit 1
+          fi
+
+          echo "known=${known}" >> "${GITHUB_OUTPUT}"
+          echo "Live inventory accepted: droplets=${count}, recorded_site=${known}."
+
+      - name: Plan the approved host
+        working-directory: infra/terraform
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive
+          terraform validate
+          terraform plan -input=false -out=/tmp/site.tfplan
+          terraform show -json /tmp/site.tfplan > /tmp/site-plan.json
+
+          jq -e '
+            [
+              .resource_changes[]
+              | select(.mode == "managed")
+              | select(.change.actions != ["no-op"])
+              | select(
+                  (.address | test("^(digitalocean_droplet|digitalocean_firewall|digitalocean_project_resources)\\.site\\[0\\]$")) | not
+                )
+            ] | length == 0
+          ' /tmp/site-plan.json >/dev/null || {
+            echo "Plan changes a resource outside the approved site-1 boundary."
+            terraform show -no-color /tmp/site.tfplan
+            exit 1
+          }
+
+          jq -e '
+            [
+              .resource_changes[]
+              | select(.mode == "managed")
+              | select(.change.actions | index("delete"))
+            ] | length == 0
+          ' /tmp/site-plan.json >/dev/null || {
+            echo "Plan includes a delete or replacement. site-1 is permanent; refusing."
+            exit 1
+          }
+
+          terraform show -no-color /tmp/site.tfplan
+
+      - name: Apply
+        if: ${{ inputs.apply }}
+        working-directory: infra/terraform
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          terraform apply -input=false -auto-approve /tmp/site.tfplan
+          ip=$(terraform output -raw site_ip)
+          [ -n "${ip}" ] || { echo "Terraform returned no site address."; exit 1; }
+          echo "::add-mask::${ip}"
+          echo "SITE_IP=${ip}" >> "${GITHUB_ENV}"
+          echo "site-1 is recorded in Terraform state."
+
+      - name: Point the official domain at the origin
+        if: ${{ inputs.apply }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          token=$(printf '%s' "${CLOUDFLARE_API_TOKEN}" | tr -d '[:space:]')
+          zone_id=$(curl -fsS -G \
+            -H "Authorization: Bearer ${token}" \
+            -H 'accept: application/json' \
+            --data-urlencode "name=${SITE_DOMAIN}" \
+            https://api.cloudflare.com/client/v4/zones \
+            | jq -r '(.result // [])[0].id // empty')
+          [ -n "${zone_id}" ] || { echo "Cloudflare zone was not found."; exit 1; }
+
+          curl -fsS -G \
+            -H "Authorization: Bearer ${token}" \
+            -H 'accept: application/json' \
+            --data-urlencode type=A \
+            --data-urlencode "name=${SITE_DOMAIN}" \
+            "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" > /tmp/site-records.json
+          count=$(jq -r '(.result // []) | length' /tmp/site-records.json)
+          [ "${count}" -le 1 ] || { echo "More than one apex A record exists; refusing an ambiguous update."; exit 1; }
+
+          jq -n --arg name "${SITE_DOMAIN}" --arg content "${SITE_IP}" \
+            '{type:"A", name:$name, content:$content, ttl:60, proxied:false}' > /tmp/site-record.json
+          if [ "${count}" = "0" ]; then
+            answer=$(curl -fsS -X POST \
+              -H "Authorization: Bearer ${token}" \
+              -H 'content-type: application/json' \
+              --data-binary @/tmp/site-record.json \
+              "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records")
+          else
+            record_id=$(jq -r '.result[0].id' /tmp/site-records.json)
+            answer=$(curl -fsS -X PUT \
+              -H "Authorization: Bearer ${token}" \
+              -H 'content-type: application/json' \
+              --data-binary @/tmp/site-record.json \
+              "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${record_id}")
+          fi
+          printf '%s' "${answer}" | jq -e '.success == true' >/dev/null
+          echo "Official domain now resolves directly to the origin while ACME starts."
+
+      - name: Wait for cloud-init and HTTPS
+        if: ${{ inputs.apply }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if curl -fsS --max-time 8 --resolve "${SITE_DOMAIN}:80:${SITE_IP}" \
+                 "http://${SITE_DOMAIN}/healthz" -o /dev/null; then
+              echo "Origin HTTP is ready."
+              break
+            fi
+            [ "${attempt}" -lt 30 ] || { echo "Origin did not finish cloud-init."; exit 1; }
+            sleep 10
+          done
+
+          for attempt in $(seq 1 40); do
+            resolved=$(getent ahostsv4 "${SITE_DOMAIN}" | awk '{print $1}' | sort -u || true)
+            if printf '%s\n' "${resolved}" | grep -Fxq "${SITE_IP}"; then
+              echo "DNS has reached the origin."
+              break
+            fi
+            [ "${attempt}" -lt 40 ] || { echo "DNS did not reach the origin."; exit 1; }
+            sleep 10
+          done
+
+          for attempt in $(seq 1 40); do
+            if curl -fsS --max-time 12 "https://${SITE_DOMAIN}/healthz" -o /dev/null; then
+              echo "Origin certificate is valid."
+              break
+            fi
+            [ "${attempt}" -lt 40 ] || { echo "The ACME certificate was not obtained."; exit 1; }
+            sleep 15
+          done
+
+      - name: Put Cloudflare in front
+        if: ${{ inputs.apply }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          token=$(printf '%s' "${CLOUDFLARE_API_TOKEN}" | tr -d '[:space:]')
+          zone_id=$(curl -fsS -G \
+            -H "Authorization: Bearer ${token}" \
+            -H 'accept: application/json' \
+            --data-urlencode "name=${SITE_DOMAIN}" \
+            https://api.cloudflare.com/client/v4/zones \
+            | jq -r '(.result // [])[0].id // empty')
+          [ -n "${zone_id}" ] || { echo "Cloudflare zone was not found."; exit 1; }
+          record_id=$(curl -fsS -G \
+            -H "Authorization: Bearer ${token}" \
+            -H 'accept: application/json' \
+            --data-urlencode type=A \
+            --data-urlencode "name=${SITE_DOMAIN}" \
+            "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
+            | jq -r 'if (.result | length) == 1 then .result[0].id else empty end')
+          [ -n "${record_id}" ] || { echo "The single apex A record was not found."; exit 1; }
+          jq -n --arg name "${SITE_DOMAIN}" --arg content "${SITE_IP}" \
+            '{type:"A", name:$name, content:$content, ttl:1, proxied:true}' > /tmp/site-record.json
+          curl -fsS -X PUT \
+            -H "Authorization: Bearer ${token}" \
+            -H 'content-type: application/json' \
+            --data-binary @/tmp/site-record.json \
+            "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${record_id}" \
+            | jq -e '.success == true and .result.proxied == true' >/dev/null
+
+          for attempt in $(seq 1 30); do
+            page=$(curl -fsS --max-time 12 "https://${SITE_DOMAIN}/" || true)
+            if printf '%s' "${page}" | grep -q 'Официальная загрузка'; then
+              echo "The public HTTPS site answers through Cloudflare."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Public site did not become ready through Cloudflare."
+          exit 1
+
+      - name: Summary
+        if: always()
+        env:
+          APPLIED: ${{ inputs.apply }}
+          INVENTORY_KNOWN: ${{ steps.inventory.outputs.known }}
+        run: |
+          {
+            echo "## APK Site"
+            echo ""
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| Apply | ${APPLIED} |"
+            echo "| Existing site in state before run | ${INVENTORY_KNOWN:-unknown} |"
+            echo "| Provider | DigitalOcean |"
+            echo "| Region | ams3 |"
+            echo "| Size | 1 vCPU / 512 MB / 10 GB |"
+            echo "| Recurring site cost | 4 USD/month |"
+            echo "| Official domain | https://${SITE_DOMAIN}/ |"
+          } >> "${GITHUB_STEP_SUMMARY}"

@@ -210,6 +210,19 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
         run: terraform init -input=false
 
+      - name: Remember whether the permanent site already exists
+        id: site_state
+        working-directory: infra/terraform
+        run: |
+          set -euo pipefail
+          if terraform state list 2>/dev/null | grep -q '^digitalocean_droplet.site\[0\]$'; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+            echo "The permanent site is in state and every test-node apply must preserve it."
+          else
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+            echo "No permanent site is in state; this test must not create one."
+          fi
+
       - name: Read the node that already exists
         id: existing
         if: ${{ inputs.reuse_node }}
@@ -249,6 +262,7 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
           TF_VAR_test_node_enabled: "true"
+          TF_VAR_site_enabled: ${{ steps.site_state.outputs.enabled }}
           TF_VAR_region: ${{ inputs.region }}
           TF_VAR_test_node_domain: ${{ inputs.reuse_node && steps.existing.outputs.domain || inputs.domain }}
           TF_VAR_test_node_ws_uuid: ${{ inputs.reuse_node && steps.existing.outputs.ws_uuid || steps.creds.outputs.ws_uuid }}
@@ -1014,6 +1028,7 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
           TF_VAR_test_node_enabled: "false"
+          TF_VAR_site_enabled: ${{ steps.site_state.outputs.enabled }}
         run: |
           set -euo pipefail
           terraform apply -input=false -auto-approve
@@ -1023,17 +1038,21 @@ jobs:
         if: ${{ always() && !inputs.keep_node }}
         env:
           DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          SITE_ENABLED: ${{ steps.site_state.outputs.enabled }}
         run: |
           set -euo pipefail
           # Terraform reporting success is not the same as the provider having
           # no droplets. This asks the provider directly.
           token=$(printf '%s' "${DIGITALOCEAN_TOKEN}" | tr -d '[:space:]')
-          count=$(curl -sS -H "Authorization: Bearer ${token}" \
-            "https://api.digitalocean.com/v2/droplets?per_page=100" | jq -r '(.droplets // []) | length')
-          echo "Droplets remaining in the account: ${count}"
-          echo "| Droplets remaining | ${count} |" >> "${GITHUB_STEP_SUMMARY}"
+          curl -sS -H "Authorization: Bearer ${token}" \
+            "https://api.digitalocean.com/v2/droplets?per_page=100" > /tmp/droplets-after-test.json
+          count=$(jq -r '(.droplets // []) | length' /tmp/droplets-after-test.json)
+          site_count=$(jq -r '(.droplets // []) | map(select(.name == "site-1")) | length' /tmp/droplets-after-test.json)
+          expected=$([ "${SITE_ENABLED}" = "true" ] && echo 1 || echo 0)
+          echo "Droplets remaining in the account: ${count}; expected permanent hosts: ${expected}"
+          echo "| Droplets remaining / expected | ${count} / ${expected} |" >> "${GITHUB_STEP_SUMMARY}"
 
-          if [ "${count}" != "0" ]; then
-            echo "Something is still running. Check the account before the next run."
+          if [ "${count}" != "${expected}" ] || [ "${site_count}" != "${expected}" ]; then
+            echo "Something other than the previously recorded permanent site is still running."
             exit 1
           fi

@@ -1,0 +1,277 @@
+name: Publish APK
+
+# The normal release path. It builds one release-signed APK, verifies the
+# signature before any upload, writes a new immutable versioned object, and
+# only then advances latest and releases.json. It contains no delete command.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_publish:
+        description: Publish the version currently recorded in build.gradle.kts.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-official-apk
+  cancel-in-progress: false
+
+env:
+  GEOIP_TAG: '202608050239'
+  SPACES_BUCKET: simple-vpn-infra-backups
+  SPACES_PREFIX: apk
+  SPACES_ENDPOINT: https://ams3.digitaloceanspaces.com
+  SITE_DOMAIN: simple-vpn.download
+
+jobs:
+  publish:
+    name: Publish APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Refuse an accidental or blocked release
+        env:
+          CONFIRM: ${{ inputs.confirm_publish }}
+        run: |
+          set -euo pipefail
+          [ "${GITHUB_REF}" = "refs/heads/main" ] || { echo "Official APKs are built only from merged main."; exit 1; }
+          [ "${CONFIRM}" = "true" ] || { echo "Publication was not confirmed."; exit 1; }
+          if grep -q '^\*\*Статус:\*\* открыт' docs/release-blockers.md; then
+            echo "Release blockers are still open. The official channel must not publish around them."
+            grep -B 2 '^\*\*Статус:\*\* открыт' docs/release-blockers.md | grep '^## ' || true
+            exit 1
+          fi
+
+      - name: Take the release signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_B64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            [ -n "${!name:-}" ] || { echo "Release signing secret ${name} is not configured."; exit 1; }
+          done
+          mkdir -p "${RUNNER_TEMP}/signing"
+          printf %s "${KEYSTORE_B64}" | base64 -d > "${RUNNER_TEMP}/signing/release.p12"
+          chmod 0600 "${RUNNER_TEMP}/signing/release.p12"
+          {
+            echo "RELEASE_KEYSTORE=${RUNNER_TEMP}/signing/release.p12"
+            echo "RELEASE_STORE_PASSWORD=${STORE_PASSWORD}"
+            echo "RELEASE_KEY_ALIAS=${KEY_ALIAS}"
+            echo "RELEASE_KEY_PASSWORD=${KEY_PASSWORD}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Restore the routing database
+        id: geoip
+        uses: actions/cache@v4
+        with:
+          path: android/app/src/main/assets/geoip.dat
+          key: geoip-${{ env.GEOIP_TAG }}
+
+      - name: Download the routing database
+        if: steps.geoip.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/v2fly/geoip/releases/download/${GEOIP_TAG}"
+          mkdir -p android/app/src/main/assets
+          curl -fsSL -o /tmp/geoip.dat "${base}/geoip.dat"
+          curl -fsSL -o /tmp/geoip.dat.sha256sum "${base}/geoip.dat.sha256sum"
+          expected=$(awk '{print $1}' /tmp/geoip.dat.sha256sum | head -1)
+          actual=$(sha256sum /tmp/geoip.dat | awk '{print $1}')
+          [ "${expected}" = "${actual}" ] || { echo "Routing database checksum mismatch."; exit 1; }
+          mv /tmp/geoip.dat android/app/src/main/assets/geoip.dat
+
+      - name: Restore the native library
+        id: native
+        uses: actions/cache@v4
+        with:
+          path: android/app/libs/vpncore.aar
+          key: vpncore-${{ hashFiles('vpncore/**') }}
+
+      - name: Setup Go
+        if: steps.native.outputs.cache-hit != 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build the native library
+        if: steps.native.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          export PATH="$(go env GOPATH)/bin:${PATH}"
+          gomobile init
+          mkdir -p "${GITHUB_WORKSPACE}/android/app/libs"
+          cd vpncore
+          go mod tidy
+          gomobile bind -target=android/arm64 -androidapi 24 \
+            -ldflags="-checklinkname=0" \
+            -o "${GITHUB_WORKSPACE}/android/app/libs/vpncore.aar" .
+
+      - name: Check and assemble the release
+        working-directory: android
+        run: |
+          set -euo pipefail
+          bash tools/check-format-strings.sh
+          gradle --no-daemon testDebugUnitTest
+          gradle --no-daemon assembleRelease
+
+      - name: Read and verify artifact identity
+        id: artifact
+        run: |
+          set -euo pipefail
+          version_name=$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)"/\1/p' android/app/build.gradle.kts | head -1)
+          version_code=$(sed -nE 's/^[[:space:]]*versionCode = ([0-9]+)/\1/p' android/app/build.gradle.kts | head -1)
+          [[ "${version_name}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || { echo "Invalid versionName."; exit 1; }
+          [[ "${version_code}" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid versionCode."; exit 1; }
+
+          built=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          [ -n "${built}" ] || { echo "No release APK was produced."; exit 1; }
+          file="${RUNNER_TEMP}/simple-vpn-${version_name}.apk"
+          cp "${built}" "${file}"
+
+          apksigner=$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)
+          [ -n "${apksigner}" ] || { echo "Android build tools contain no apksigner."; exit 1; }
+          "${apksigner}" verify --verbose --print-certs "${file}" > /tmp/apksigner.txt
+          cert=$(sed -nE 's/^Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]+)$/\1/p' /tmp/apksigner.txt | head -1 | tr 'A-F' 'a-f')
+          [[ "${cert}" =~ ^[0-9a-f]{64}$ ]] || { echo "Could not read the signing certificate fingerprint."; exit 1; }
+          sha=$(sha256sum "${file}" | cut -d' ' -f1)
+          size=$(stat -c%s "${file}")
+
+          echo "version_name=${version_name}" >> "${GITHUB_OUTPUT}"
+          echo "version_code=${version_code}" >> "${GITHUB_OUTPUT}"
+          echo "file=${file}" >> "${GITHUB_OUTPUT}"
+          echo "file_name=$(basename "${file}")" >> "${GITHUB_OUTPUT}"
+          echo "sha256=${sha}" >> "${GITHUB_OUTPUT}"
+          echo "size=${size}" >> "${GITHUB_OUTPUT}"
+          echo "certificate_sha256=${cert}" >> "${GITHUB_OUTPUT}"
+          echo "APKSIGNER=${apksigner}" >> "${GITHUB_ENV}"
+          echo "Release APK is signed and its identity is recorded."
+
+      - name: Prepare the next immutable manifest
+        id: manifest
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          VERSION_NAME: ${{ steps.artifact.outputs.version_name }}
+          VERSION_CODE: ${{ steps.artifact.outputs.version_code }}
+          APK_FILE: ${{ steps.artifact.outputs.file }}
+          APK_SHA256: ${{ steps.artifact.outputs.sha256 }}
+          CERTIFICATE_SHA256: ${{ steps.artifact.outputs.certificate_sha256 }}
+        run: |
+          set -euo pipefail
+          : > /tmp/releases.json
+          aws s3 cp "s3://${SPACES_BUCKET}/${SPACES_PREFIX}/releases.json" /tmp/releases.json \
+            --endpoint-url "${SPACES_ENDPOINT}" >/dev/null 2>&1 || : > /tmp/releases.json
+
+          key="${SPACES_PREFIX}/releases/${VERSION_NAME}/$(basename "${APK_FILE}")"
+          if aws s3api head-object --bucket "${SPACES_BUCKET}" --key "${key}" \
+               --endpoint-url "${SPACES_ENDPOINT}" >/dev/null 2>&1; then
+            echo "Immutable object already exists for ${VERSION_NAME}; refusing to overwrite it."
+            exit 1
+          fi
+
+          published_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          python3 sites/official/tools/update_release_manifest.py \
+            --manifest /tmp/releases.json \
+            --output /tmp/releases.next.json \
+            --version-name "${VERSION_NAME}" \
+            --version-code "${VERSION_CODE}" \
+            --published-at "${published_at}" \
+            --file "${APK_FILE}" \
+            --sha256 "${APK_SHA256}" \
+            --certificate-sha256 "${CERTIFICATE_SHA256}" \
+            --commit "${GITHUB_SHA}"
+          echo "versioned_key=${key}" >> "${GITHUB_OUTPUT}"
+
+      - name: Publish version, then latest, then manifest
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          APK_FILE: ${{ steps.artifact.outputs.file }}
+          VERSIONED_KEY: ${{ steps.manifest.outputs.versioned_key }}
+        run: |
+          set -euo pipefail
+          content_type='application/vnd.android.package-archive'
+          disposition="attachment; filename=\"$(basename "${APK_FILE}")\""
+
+          aws s3 cp "${APK_FILE}" "s3://${SPACES_BUCKET}/${VERSIONED_KEY}" \
+            --endpoint-url "${SPACES_ENDPOINT}" --acl public-read \
+            --content-type "${content_type}" --content-disposition "${disposition}" \
+            --cache-control 'public, max-age=31536000, immutable' --only-show-errors
+
+          aws s3 cp "${APK_FILE}" "s3://${SPACES_BUCKET}/${SPACES_PREFIX}/latest/simple-vpn.apk" \
+            --endpoint-url "${SPACES_ENDPOINT}" --acl public-read \
+            --content-type "${content_type}" --content-disposition "${disposition}" \
+            --cache-control 'no-cache' --only-show-errors
+
+          aws s3 cp /tmp/releases.next.json "s3://${SPACES_BUCKET}/${SPACES_PREFIX}/releases.json" \
+            --endpoint-url "${SPACES_ENDPOINT}" --acl public-read \
+            --content-type 'application/json; charset=utf-8' --cache-control 'no-store' --only-show-errors
+          echo "Versioned object is durable; latest and manifest now point to it."
+
+      - name: Verify through the official domain
+        env:
+          VERSION_NAME: ${{ steps.artifact.outputs.version_name }}
+          FILE_NAME: ${{ steps.artifact.outputs.file_name }}
+          EXPECTED_SHA256: ${{ steps.artifact.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 20 "https://${SITE_DOMAIN}/releases.json" > /tmp/public-releases.json
+          jq -e --arg version "${VERSION_NAME}" \
+            '.latest == $version and any(.releases[]; .versionName == $version)' \
+            /tmp/public-releases.json >/dev/null
+
+          curl -fsSL --max-time 180 "https://${SITE_DOMAIN}/download/latest.apk" -o /tmp/latest.apk
+          actual=$(sha256sum /tmp/latest.apk | cut -d' ' -f1)
+          [ "${actual}" = "${EXPECTED_SHA256}" ] || { echo "Latest APK checksum mismatch."; exit 1; }
+          "${APKSIGNER}" verify --verbose --print-certs /tmp/latest.apk >/dev/null
+
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+            "https://${SITE_DOMAIN}/download/releases/${VERSION_NAME}/${FILE_NAME}")
+          [ "${code}" = "200" ] || { echo "Versioned link returned HTTP ${code}."; exit 1; }
+          echo "Official latest and immutable version links both answer with the signed APK."
+
+      - name: Summary
+        env:
+          VERSION_NAME: ${{ steps.artifact.outputs.version_name }}
+          VERSION_CODE: ${{ steps.artifact.outputs.version_code }}
+          APK_SIZE: ${{ steps.artifact.outputs.size }}
+          APK_SHA256: ${{ steps.artifact.outputs.sha256 }}
+          FILE_NAME: ${{ steps.artifact.outputs.file_name }}
+        run: |
+          {
+            echo "## Official APK"
+            echo ""
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| Version | ${VERSION_NAME} (${VERSION_CODE}) |"
+            echo "| Size | ${APK_SIZE} bytes |"
+            echo "| SHA-256 | \`${APK_SHA256}\` |"
+            echo "| Latest | https://${SITE_DOMAIN}/download/latest.apk |"
+            echo "| Permanent | https://${SITE_DOMAIN}/download/releases/${VERSION_NAME}/${FILE_NAME} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
