@@ -264,9 +264,15 @@ jobs:
             /tmp/servers.json | grep -vE '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)' | head -1)
 
           [ -n "${address}" ] && echo "::add-mask::${address}"
-          echo "Address: ${address:+recorded}${address:-unknown}"
-          echo "| Candidate machine | ${address:+address recorded}${address:-unknown} |" \
-            >> "${GITHUB_STEP_SUMMARY}"
+
+          # An if, not ${address:-...}. That form prints the value whenever
+          # there is one, which is the opposite of what it looks like it does
+          # here - written while removing an address from a log, it put one
+          # back. The mask above hid it; the mask is not the reason it should
+          # not be there.
+          if [ -n "${address}" ]; then said="recorded"; else said="unknown"; fi
+          echo "Address: ${said}"
+          echo "| Candidate machine | ${said} |" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Remove the machine
         if: ${{ inputs.action == 'destroy' }}

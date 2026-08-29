@@ -70,6 +70,9 @@ jobs:
           # impostor host would receive a binary that is public anyway, and
           # the seed travels only after the connection is established.
           ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          # address-in-the-clear: HOST comes from a secret, which the platform
+          # masks on its own; and what is printed is the machine's hostname,
+          # not its address.
           echo "Host reachable: $(ssh -i ~/.ssh/deploy -o BatchMode=yes root@${HOST} 'hostname')"
 
       - name: Install and start

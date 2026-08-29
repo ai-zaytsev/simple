@@ -32,9 +32,15 @@ for workflow in .github/workflows/*.yml; do
         text=$(sed -n "${line}p" "${workflow}")
 
         # The variable this line would put in front of somebody.
+        #
+        # Case-insensitively, which it was not at first: workflows name their
+        # environment in capitals, so the version that looked only for lower
+        # case walked straight past a step printing ADDRESS into the summary of
+        # every run. A guard that reads source has to read it the way it is
+        # written, not the way the example that prompted it was written.
         variable=$(printf '%s' "${text}" \
-            | grep -oE '\$\{?('"${names}"')\}?' | head -1 \
-            | tr -d '${}')
+            | grep -oiE '\$\{?('"${names}"')[:}]' | head -1 \
+            | tr -d '${}:')
         [ -n "${variable}" ] || continue
 
         # A line that only masks is the fix, not the fault.
@@ -54,16 +60,21 @@ for workflow in .github/workflows/*.yml; do
             continue
         fi
 
-        from=$((line > 15 ? line - 15 : 1))
-        if sed -n "${from},${line}p" "${workflow}" \
-             | grep -q "add-mask::\${\?${variable}"; then
+        # Anywhere above, rather than within a handful of lines.
+        #
+        # A mask applies to everything the job prints afterwards, later steps
+        # included, so demanding that it sit beside the print was a rule about
+        # tidiness wearing the clothes of a rule about safety. It reported five
+        # places that were masked perfectly well from another step.
+        if sed -n "1,${line}p" "${workflow}" \
+             | grep -qi "add-mask::\${\?${variable}"; then
             continue
         fi
 
         echo "${workflow}:${line}: an address is shown without being masked first"
         echo "  ${text}"
         failed=1
-    done < <(grep -nE '(echo|printf).*\$\{?('"${names}"')\}?' "${workflow}" \
+    done < <(grep -niE '(echo|printf).*\$\{?('"${names}"')[:}]' "${workflow}" \
              | grep -E 'GITHUB_OUTPUT|GITHUB_STEP_SUMMARY|echo "|printf ' \
              | cut -d: -f1)
 done

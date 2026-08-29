@@ -125,8 +125,11 @@ jobs:
               "https://api.digitalocean.com/v2/droplets/${id}" \
               | jq -r '[.droplet.networks.v4[] | select(.type == "public") | .ip_address] | .[0] // empty')
             [ -n "${address}" ] && echo "::add-mask::${address}"
-            printf '%-6s %s\n' "${region}" "${address:+ready}${address:-pending}"
-            echo "| ${region} | ${address:+ready}${address:-pending} |" >> "${GITHUB_STEP_SUMMARY}"
+            # An if, not ${address:-...}: that form prints the value whenever
+            # there is one, which is the opposite of what it looks like here.
+            if [ -n "${address}" ]; then said="ready"; else said="pending"; fi
+            printf '%-6s %s\n' "${region}" "${said}"
+            echo "| ${region} | ${said} |" >> "${GITHUB_STEP_SUMMARY}"
           done < /tmp/probes.txt
 
           echo ""

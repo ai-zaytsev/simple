@@ -290,6 +290,8 @@ jobs:
           # One place decides where the values came from. Every step below reads
           # these, so a reused node and a fresh one are indistinguishable to the
           # checks and to the build.
+          # address-in-the-clear: this block is written to the job environment,
+          # not printed. The value reaches later steps, never a reader.
           {
             echo "NODE_IP=${NODE_IP}"
             echo "NODE_DOMAIN=${DOMAIN}"
@@ -582,6 +584,9 @@ jobs:
             exit 1
           fi
           if [ "${out}" != "${NODE_IP}" ]; then
+            # address-in-the-clear: masked when it was created, under the name
+            # it had then. Masking follows the value, not the name it is
+            # carried under, so this is already hidden.
             echo "Traffic exited from ${out}, expected ${NODE_IP}."
             exit 1
           fi
@@ -853,6 +858,9 @@ jobs:
             exit 1
           fi
           if [ "${out}" != "${NODE_IP}" ]; then
+            # address-in-the-clear: masked when it was created, under the name
+            # it had then. Masking follows the value, not the name it is
+            # carried under, so this is already hidden.
             echo "Traffic exited from ${out}, expected ${NODE_IP}."
             exit 1
           fi
