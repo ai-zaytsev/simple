@@ -433,6 +433,34 @@ func (s *Store) AddExternalDevice(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Asked for again, rather than made again.
+	//
+	// The application walks every way in until one answers, which is what
+	// makes it survive a blocked address - and it means a request that
+	// succeeded here and lost its answer on the way back is sent again. The
+	// first live use of this produced two devices called "ноут" from one
+	// press, and nothing on the screen could explain why.
+	//
+	// The name is the handle: it is what a person reads to tell one device
+	// from another, and two rows sharing it are two rows nobody can revoke the
+	// right one of. So the same name on the same account is the same device,
+	// and a retry gets back what the first attempt made.
+	var existing DeviceSummary
+	err = tx.QueryRow(ctx, `
+		select d.id, d.kind, d.label, c.credential_uuid
+		from devices d
+		join device_credentials c on c.device_id = d.id and c.state = 'ACTIVE'
+		where d.account_id = $1 and d.kind = 'external' and d.label = $2`,
+		accountID, label).Scan(&existing.ID, &existing.Kind, &existing.Label,
+		&existing.Credential)
+	if err == nil {
+		existing.State = "ACTIVE"
+		return existing, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return DeviceSummary{}, fmt.Errorf("cannot look for an existing device: %w", err)
+	}
+
 	// Null allows any number; zero allows none. Both are real answers and they
 	// are opposite ones, which is why this is a pointer rather than a number
 	// with a sentinel value agreed on somewhere else in the file.

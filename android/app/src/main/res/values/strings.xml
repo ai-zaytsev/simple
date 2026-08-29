@@ -64,24 +64,24 @@
          обещание, которого нет. -->
     <string name="devices">Устройства</string>
     <string name="devices_title">Роутеры, ТВ и другие устройства</string>
-    <string name="devices_explain">Каждому устройству — своя ссылка. Отзыв одной не трогает остальные.</string>
+    <string name="devices_explain">Одно устройство — одна ссылка. Нужно ещё подключение — добавьте устройство. Отзыв одного не трогает остальные.</string>
     <string name="devices_empty">Пока ни одного. Добавьте роутер, телевизор или компьютер.</string>
     <string name="devices_add">Добавить устройство</string>
     <string name="devices_name_title">Как называется устройство</string>
     <string name="devices_name_hint">Например, роутер в гостиной</string>
     <string name="devices_name_save">Добавить</string>
     <string name="devices_cancel">Отмена</string>
-    <string name="devices_copy">Скопировать ссылки</string>
+    <string name="devices_copy">Копировать</string>
     <string name="devices_copied">Скопировано</string>
-    <string name="devices_links_count">%1$d адрес(а) — по одному на сервер</string>
+    <string name="devices_no_link">Ссылки сейчас нет — нажмите «Новая ссылка»</string>
     <string name="devices_replace">Новая ссылка</string>
     <string name="devices_replace_title">Заменить ссылку</string>
     <string name="devices_replace_body">Старая ссылка перестанет работать сразу. Устройству нужно будет вписать новую.</string>
     <string name="devices_replace_yes">Заменить</string>
-    <string name="devices_revoke">Отозвать</string>
-    <string name="devices_revoke_title">Отозвать доступ</string>
-    <string name="devices_revoke_body">Это устройство перестанет подключаться. Остальные продолжат работать.</string>
-    <string name="devices_revoke_yes">Отозвать</string>
+    <string name="devices_revoke">Удалить</string>
+    <string name="devices_revoke_title">Удалить устройство</string>
+    <string name="devices_revoke_body">Устройство и его ссылка исчезнут. Остальные устройства продолжат работать.</string>
+    <string name="devices_revoke_yes">Удалить</string>
     <string name="devices_back">Назад</string>
     <string name="devices_unreachable">Не удалось связаться с сервисом. Попробуйте ещё раз.</string>
 </resources>
