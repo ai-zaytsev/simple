@@ -160,6 +160,22 @@ if [ "${code}" != "200" ]; then
   said=$(python3 -c "import json,sys;print(json.load(open('/tmp/cert-answer.json')).get('error',''))" 2>/dev/null || true)
   rm -f /tmp/cert-answer.json
   echo "Not issued. HTTP ${code}. ${said}"
+
+  # A refusal is not a fault when there is already a good certificate here.
+  #
+  # This agent now asks on every run, because only the service knows which
+  # authority this node is meant to use and the node cannot decide alone. The
+  # ordinary answer to most of those asks is "not yet, it has months left" -
+  # which is the service working, not failing.
+  #
+  # So the question is not whether the ask was refused but whether this node is
+  # serving something usable. If it is, there is nothing wrong here; if it is
+  # not, the refusal is the reason and the run should say so.
+  if [ "${code}" = "409" ] && [ -s "${CRT}" ]; then
+    echo "Nothing to do: what is being served is still good."
+    confirm_being_served
+    exit $?
+  fi
   exit 1
 fi
 
