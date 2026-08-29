@@ -76,9 +76,19 @@ jobs:
 
           kamatera_servers /tmp/servers.json
           id=$(kamatera_id_of /tmp/servers.json "${MACHINE}")
+
+          # A machine that is not there is not a failure.
+          #
+          # Retiring is a state to arrive at, not an event to perform once:
+          # asked about something already gone, this should finish the parts
+          # that are not about the machine and say so. The database repair
+          # below is exactly such a part, and refusing to run it left the
+          # records of an earlier retirement uncleaned with no way to reach
+          # them - the machine they named no longer existed to be named again.
           if [ -z "${id}" ]; then
-            echo "No machine called '${MACHINE}' at this provider."
-            exit 1
+            echo "No machine called '${MACHINE}' at this provider; it is already gone."
+            echo "found=false" >> "${GITHUB_OUTPUT}"
+            exit 0
           fi
 
           kamatera_info "${id}" /tmp/one.json
@@ -89,6 +99,7 @@ jobs:
           fi
 
           echo "::add-mask::${address}"
+          echo "found=true" >> "${GITHUB_OUTPUT}"
           echo "id=${id}" >> "${GITHUB_OUTPUT}"
           echo "address=${address}" >> "${GITHUB_OUTPUT}"
           echo "Found '${MACHINE}'."
@@ -159,6 +170,9 @@ jobs:
             'psql "$(cat /etc/simple-vpn-cp.dsn)" -tA -P pager=off -f -'
 
       - name: Remove the machine
+        # Only when there is one. The step above already said so, and the
+        # database repair before it does not depend on the machine existing.
+        if: steps.machine.outputs.found == 'true'
         env:
           KAMATERA_ACCESS_KEY: ${{ secrets.KAMATERA_ACCESS_KEY }}
           KAMATERA_SECRET_KEY: ${{ secrets.KAMATERA_SECRET_KEY }}
