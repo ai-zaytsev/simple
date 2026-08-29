@@ -105,6 +105,26 @@ jobs:
             exit 1
           fi
 
+          # And refused again if it is a way in to the Control Plane.
+          #
+          # A domain with no node behind it looks free to the check above and is
+          # not: some of them are the addresses devices try when they need to be
+          # told where to go next. Pointing one at a new machine halfway through
+          # this run would break the path every recovery depends on, and it
+          # would break it quietly - the node would work, and the way back to
+          # us would be gone.
+          #
+          # This is the same domain the lifecycle stage found could have no
+          # condition of its own, for the same reason: nothing was looking at
+          # domains that carry no node.
+          entry=$(bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "psql \"\$(cat /etc/simple-vpn-cp.dsn)\" -tAc \"select count(*) from bootstrap_entries where lower(host) = lower('${DOMAIN}') and enabled\"")
+          if [ "${entry}" != "0" ]; then
+            echo "${DOMAIN} is a way in to the Control Plane, not a spare cover."
+            echo "Pointing it at a node would take that way in away."
+            exit 1
+          fi
+
           alias="n-$(openssl rand -hex 2)"
           token=$(openssl rand -base64 32 | tr -d '\n')
           token_hash=$(printf '%s' "${token}" | sha256sum | cut -d' ' -f1)
