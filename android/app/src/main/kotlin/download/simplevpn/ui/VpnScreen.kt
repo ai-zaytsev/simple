@@ -2,6 +2,8 @@ package download.simplevpn.ui
 
 import android.content.Intent
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -223,6 +225,37 @@ private fun TraceControls(connected: Boolean, modifier: Modifier = Modifier) {
     var askingToStart by remember { mutableStateOf(false) }
     var askingToSend by remember { mutableStateOf(false) }
     var destinations by remember { mutableStateOf(0) }
+    var saveOutcome by remember { mutableStateOf(0) }
+
+    // Where to save is the system's question, not ours. A picker everybody has
+    // already used beats any folder we could choose for them, and it is the
+    // difference between "saved" and "saved somewhere they will have to find".
+    val saveTo = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain"),
+    ) { destination ->
+        if (destination == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    val file = SessionLog.exportTrace(context) ?: return@runCatching false
+                    context.contentResolver.openOutputStream(destination)?.use { out ->
+                        file.inputStream().use { it.copyTo(out) }
+                    } ?: return@runCatching false
+                    true
+                }.getOrDefault(false)
+            }
+            saveOutcome = if (ok) R.string.trace_saved else R.string.trace_save_failed
+
+            // Removed only once it is somewhere else. The send path can drop
+            // it as soon as the letter is handed over, because the letter
+            // carries it; this one has to wait for the copy to have worked, or
+            // a failed save would take the recording with it.
+            if (ok) {
+                withContext(Dispatchers.IO) { SessionLog.dropTrace(context) }
+                VpnController.traceCleared()
+            }
+        }
+    }
 
     Column(modifier = modifier) {
         when (val current = trace) {
@@ -284,46 +317,65 @@ private fun TraceControls(connected: Boolean, modifier: Modifier = Modifier) {
     }
 
     if (askingToSend) {
-        val title = stringResource(R.string.trace_share_title)
         AlertDialog(
             onDismissRequest = { askingToSend = false },
             title = { Text(text = stringResource(R.string.trace_send_title)) },
             // The number is the point. "May contain information about services
             // you used" is understood by nobody; "74 sites" is understood by
             // everybody, immediately.
+            //
+            // And nothing else. Saving instead of sending is what somebody
+            // does when support has asked them to attach the file to a letter
+            // they already sent - so the instruction arrives from a person,
+            // and a paragraph here explaining it would be a paragraph read by
+            // everybody to serve the few who were told to look for it.
             text = { Text(text = stringResource(R.string.trace_send_body, destinations)) },
             confirmButton = {
                 TextButton(
                     onClick = {
                         askingToSend = false
-                        scope.launch {
-                            val file = withContext(Dispatchers.IO) {
-                                SessionLog.exportTrace(context)
-                            } ?: return@launch
-                            shareFile(context, file, title)
-
-                            // Gone from the device the moment it has been
-                            // handed over. Whoever holds it now holds the only
-                            // copy, which is the person who chose to.
-                            withContext(Dispatchers.IO) { SessionLog.dropTrace(context) }
-                            VpnController.traceCleared()
-                        }
+                        scope.launch { sendRecordingByMail(context) }
                     },
                 ) {
                     Text(text = stringResource(R.string.trace_send_confirm))
                 }
             },
             dismissButton = {
-                TextButton(
-                    onClick = {
-                        askingToSend = false
-                        scope.launch {
-                            withContext(Dispatchers.IO) { SessionLog.dropTrace(context) }
-                            VpnController.traceCleared()
-                        }
-                    },
-                ) {
-                    Text(text = stringResource(R.string.trace_send_delete))
+                Column {
+                    TextButton(
+                        onClick = {
+                            askingToSend = false
+                            // Named for the person, not for the file. The
+                            // system picker asks where; this only has to say
+                            // what it is called.
+                            saveTo.launch("simple-vpn-log.txt")
+                        },
+                    ) {
+                        Text(text = stringResource(R.string.trace_send_save))
+                    }
+                    TextButton(
+                        onClick = {
+                            askingToSend = false
+                            scope.launch {
+                                withContext(Dispatchers.IO) { SessionLog.dropTrace(context) }
+                                VpnController.traceCleared()
+                            }
+                        },
+                    ) {
+                        Text(text = stringResource(R.string.trace_send_delete))
+                    }
+                }
+            },
+        )
+    }
+
+    if (saveOutcome != 0) {
+        AlertDialog(
+            onDismissRequest = { saveOutcome = 0 },
+            text = { Text(text = stringResource(saveOutcome)) },
+            confirmButton = {
+                TextButton(onClick = { saveOutcome = 0 }) {
+                    Text(text = stringResource(R.string.support_no_mail_close))
                 }
             },
         )
@@ -351,36 +403,35 @@ private fun RecordingIndicator(stopsAtElapsedMillis: Long) {
 }
 
 /**
- * Hands a file to whatever the user picks to send it with.
+ * Sends the recording as the same letter the support button writes.
  *
- * The type is declared twice over and neither declaration is redundant. This
- * intent says text/plain, which is what the chooser reads to decide who to
- * offer; the receiving application then resolves the content URI and asks the
- * provider, which derives its answer from the file name. The two disagreed
- * while the export was called .log - Android's MIME table has no entry for it,
- * so the provider answered application/octet-stream - and a messenger called
- * it an unsupported attachment while a mail client simply could not add it.
- * Both were right, about a file that is plain text. The export is .txt now.
+ * Not a chooser. The first version offered every application that can share a
+ * file, which was wrong twice over: the recording lists the sites this phone
+ * visited and should not be one tap from a messenger, and mail is the channel
+ * that actually works - everything else we might have used is blockable from
+ * outside and has been blocked. A letter is not.
  *
- * The ClipData is the same story about permission rather than type. The grant
- * flag covers EXTRA_STREAM on its own in most receivers and not in all of
- * them; a receiver that reads the URI off the clip data gets the grant this
- * way and an empty file otherwise, which is the worst of the failures here
- * because it looks like it worked.
+ * The address, the subject and the body come from SupportMail, which is to say
+ * from the same lines the support button uses. Somebody who records a fault
+ * and somebody who describes one are writing about the same thing and should
+ * not arrive looking like two different people.
  */
-private fun shareFile(context: android.content.Context, file: java.io.File, title: String) {
+private suspend fun sendRecordingByMail(context: android.content.Context) {
+    val file = withContext(Dispatchers.IO) { SessionLog.exportTrace(context) } ?: return
     val uri = FileProvider.getUriForFile(context, "${context.packageName}.logs", file)
-    val send = Intent(Intent.ACTION_SEND).apply {
-        type = "text/plain"
-        putExtra(Intent.EXTRA_STREAM, uri)
-        putExtra(Intent.EXTRA_SUBJECT, title)
-        clipData = android.content.ClipData.newUri(context.contentResolver, file.name, uri)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    runCatching {
+
+    val opened = runCatching {
         context.startActivity(
-            Intent.createChooser(send, title).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            SupportMail.withRecording(context, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
+    }.isSuccess
+
+    // Kept when nothing took it. Dropping the recording after a letter that
+    // never opened would destroy the one thing the person spent five minutes
+    // producing, and leave them with nothing to try again with.
+    if (opened) {
+        withContext(Dispatchers.IO) { SessionLog.dropTrace(context) }
+        VpnController.traceCleared()
     }
 }
 
