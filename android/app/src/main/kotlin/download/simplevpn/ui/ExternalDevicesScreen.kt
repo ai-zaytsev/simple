@@ -1,5 +1,6 @@
 package download.simplevpn.ui
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
@@ -37,11 +39,22 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
-/** One router, television or computer, and the addresses it can use. */
+/**
+ * One router, television or computer, and the one address it uses.
+ *
+ * One, not a list. The first version handed back a link per node, so that a
+ * client holding several would survive one of them being retired. With a
+ * hundred nodes that is a hundred links for one television, and nobody pastes
+ * a hundred of anything. Somebody wanting a second connection adds a second
+ * device and names it.
+ *
+ * Empty when the service could not build one just now. That row still has to
+ * appear: it is the one its owner presses "new link" on.
+ */
 data class ExternalDevice(
     val id: String,
     val label: String,
-    val links: List<String>,
+    val link: String,
 )
 
 /**
@@ -124,11 +137,7 @@ fun ExternalDevicesScreen(onBack: () -> Unit) {
                         device = device,
                         enabled = !busy,
                         onCopy = {
-                            // Every address, not the first one. A link lives as
-                            // long as the node it names; a client given all of
-                            // them keeps working through a node being retired,
-                            // and that is why there is more than one.
-                            clipboard.setText(AnnotatedString(device.links.joinToString("\n")))
+                            clipboard.setText(AnnotatedString(device.link))
                             copied = true
                         },
                         onReplace = { replacing = device },
@@ -272,12 +281,36 @@ private fun DeviceRow(
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
         Text(text = device.label, style = MaterialTheme.typography.titleMedium)
+
+        // The address itself, shortened. Shown rather than only copied,
+        // because a person setting up a router needs to see that the thing
+        // exists before trusting a button to have put it somewhere - and
+        // because two devices should visibly differ.
         Text(
-            text = stringResource(R.string.devices_links_count, device.links.size),
+            text = if (device.link.isBlank()) {
+                stringResource(R.string.devices_no_link)
+            } else {
+                device.link.take(28) + "…"
+            },
             style = MaterialTheme.typography.bodySmall,
         )
-        Row(modifier = Modifier.padding(top = 4.dp)) {
-            TextButton(onClick = onCopy, enabled = enabled && device.links.isNotEmpty()) {
+        // Scrollable sideways, and that is not decoration.
+        //
+        // The first version put three buttons in a plain Row and the third
+        // one - delete - fell off the edge of the screen. Not greyed out, not
+        // cut in half: absent. The Business Owner asked where deleting a
+        // device was, and the answer was that it had been there all along,
+        // eleven pixels past the right margin.
+        //
+        // A row that can scroll cannot hide its last child. The labels are
+        // short enough to fit on an ordinary phone anyway; this is what
+        // happens on the phone that is not ordinary.
+        Row(
+            modifier = Modifier
+                .padding(top = 4.dp)
+                .horizontalScroll(rememberScrollState()),
+        ) {
+            TextButton(onClick = onCopy, enabled = enabled && device.link.isNotBlank()) {
                 Text(text = stringResource(R.string.devices_copy))
             }
             TextButton(onClick = onReplace, enabled = enabled) {
@@ -304,13 +337,13 @@ private fun readDevices(json: String): List<ExternalDevice> {
         val item = array.optJSONObject(i) ?: continue
         val id = item.optString("device_id")
         if (id.isBlank()) continue
-        val links = mutableListOf<String>()
-        item.optJSONArray("links")?.let { raw ->
-            for (j in 0 until raw.length()) {
-                raw.optString(j).takeIf { it.isNotBlank() }?.let { links.add(it) }
-            }
-        }
-        out.add(ExternalDevice(id = id, label = item.optString("label"), links = links))
+        out.add(
+            ExternalDevice(
+                id = id,
+                label = item.optString("label"),
+                link = item.optString("link"),
+            )
+        )
     }
     return out
 }

@@ -17,9 +17,9 @@ import (
 func TestOnlyAnExternalDeviceHasALink(t *testing.T) {
 	source := readHandler(t, "external.go")
 
-	building := between(source, "func (s *Server) linksFor", "\nfunc ")
+	building := between(source, "func (s *Server) linkFor", "\nfunc ")
 	if building == "" {
-		t.Fatal("cannot find where links are built")
+		t.Fatal("cannot find where the link is built")
 	}
 	if !regexp.MustCompile(`device\.Kind\s*!=\s*"external"`).MatchString(building) {
 		t.Error("a link can be built for a device that is not external, " +

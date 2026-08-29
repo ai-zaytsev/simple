@@ -53,10 +53,10 @@ func (s *Server) addExternal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	links, err := s.linksFor(r, added)
+	connection, err := s.linkFor(r, added)
 	if err != nil {
-		s.log.Error("cannot build links", "error", err)
-		writeError(w, http.StatusInternalServerError, "cannot build the links")
+		s.log.Error("cannot build a link", "error", err)
+		writeError(w, http.StatusInternalServerError, "cannot build the link")
 		return
 	}
 
@@ -67,17 +67,30 @@ func (s *Server) addExternal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"device_id": added.ID.String(),
 		"label":     added.Label,
-		"links":     links,
+		"link":      connection,
 	})
 }
 
-// linksFor builds one address per node this device could use.
+// linkFor builds the one address this device uses.
 //
-// One link per node rather than one link, because a pasted link lives exactly
-// as long as the node it names. A list is what lets a router keep working
-// through a node being retired, and third-party clients import several without
-// complaint.
-func (s *Server) linksFor(r *http.Request, device store.DeviceSummary) ([]string, error) {
+// One, not one per node. The first version handed back a link for every node
+// in the fleet, reasoning that a client holding several survives one of them
+// being retired. The Business Owner refused it, and the arithmetic is the
+// argument: with a hundred nodes that is a hundred links for one television,
+// and nobody pastes a hundred of anything. A person who wants a second
+// connection adds a second device and names it.
+//
+// So the node is drawn, once, from the same weighted ranking that decides
+// where a phone goes - by room and by quality, so a busy or unwell node is
+// drawn rarely and never for everybody at once.
+//
+// Drawn from the credential rather than from the device, and that is the whole
+// mechanism behind "new link". The draw is stable while the credential is, so
+// a router keeps the address it was given and does not silently move; and
+// replacing the credential draws again, which is exactly what somebody asking
+// for a new link wants - a different node, because the reason they are asking
+// is usually that the old one stopped answering.
+func (s *Server) linkFor(r *http.Request, device store.DeviceSummary) (string, error) {
 	// A link is built for an external device and for nothing else.
 	//
 	// Checked here rather than left to the callers, because it is the rule the
@@ -87,33 +100,33 @@ func (s *Server) linksFor(r *http.Request, device store.DeviceSummary) ([]string
 	// link - but that is a chain of three facts, and a chain is worth one
 	// explicit link at the end of it.
 	if device.Kind != "external" {
-		return nil, errors.New("only an external device has a link")
+		return "", errors.New("only an external device has a link")
 	}
 	if device.Credential == nil {
-		return nil, errors.New("the device has no credential")
+		return "", errors.New("the device has no credential")
 	}
 
 	standings, err := s.store.NodeStandings(r.Context(), "", s.nodeCapacity)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	now := time.Now().UTC()
-	links := []string{}
-	for _, standing := range standings {
+	for _, standing := range store.Rank(standings, device.Credential.String(), now) {
 		if !standing.Usable(now) {
 			continue
 		}
 		built, err := link.For(standing.Node, device.Credential.String(), device.Label)
 		if err != nil {
-			// A transport with no link form is skipped rather than fatal: the
-			// others are still usable, and refusing everything because one
-			// node speaks something else would be the wrong trade.
+			// A transport with no link form is passed over rather than fatal.
+			// The ranking has others behind it, and refusing everything
+			// because the first node speaks something else would be the wrong
+			// trade.
 			continue
 		}
-		links = append(links, built)
+		return built, nil
 	}
-	return links, nil
+	return "", errors.New("no node can be linked to right now")
 }
 
 // externalLinks hands back the links for devices the caller already has.
@@ -138,15 +151,18 @@ func (s *Server) externalLinks(w http.ResponseWriter, r *http.Request) {
 		if d.Kind != "external" || d.State != "ACTIVE" {
 			continue
 		}
-		links, err := s.linksFor(r, d)
+		connection, err := s.linkFor(r, d)
 		if err != nil {
-			s.log.Error("cannot build links", "error", err)
-			continue
+			// Listed anyway, with no link. A device the service cannot
+			// build an address for right now is the one its owner most
+			// needs to see: it is the row they press "new link" on.
+			s.log.Error("cannot build a link", "error", err)
+			connection = ""
 		}
 		out = append(out, map[string]any{
 			"device_id": d.ID.String(),
 			"label":     d.Label,
-			"links":     links,
+			"link":      connection,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"devices": out})
@@ -196,10 +212,10 @@ func (s *Server) rotateExternal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	links, err := s.linksFor(r, rotated)
+	connection, err := s.linkFor(r, rotated)
 	if err != nil {
-		s.log.Error("cannot build links", "error", err)
-		writeError(w, http.StatusInternalServerError, "cannot build the links")
+		s.log.Error("cannot build a link", "error", err)
+		writeError(w, http.StatusInternalServerError, "cannot build the link")
 		return
 	}
 
@@ -208,6 +224,6 @@ func (s *Server) rotateExternal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"device_id": rotated.ID.String(),
 		"label":     rotated.Label,
-		"links":     links,
+		"link":      connection,
 	})
 }
