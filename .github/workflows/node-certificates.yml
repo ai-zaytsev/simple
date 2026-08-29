@@ -118,8 +118,14 @@ jobs:
              | openssl x509 -noout -issuer 2>/dev/null" || echo "")
           echo "issuer: ${issuer:-could not be read}"
 
-          case "${issuer}" in
-            *[Ss]taging*) echo "Still the test authority. A phone will not trust this." ;;
-            *"Let's Encrypt"*) echo "The real authority. A phone will trust this." ;;
+          # Lower-cased before comparing, because the test authority writes
+          # STAGING in capitals and the first version of this looked for
+          # Staging. It read a test certificate as a real one and said a phone
+          # would trust it - a check reporting success on a failure, which is
+          # worse than no check.
+          lowered=$(printf '%s' "${issuer}" | tr '[:upper:]' '[:lower:]')
+          case "${lowered}" in
+            *staging*) echo "Still the test authority. A phone will not trust this." ;;
+            *"let's encrypt"*) echo "The real authority. A phone will trust this." ;;
             *) echo "Neither authority is named in what it serves. Look at the agent's words above." ;;
           esac

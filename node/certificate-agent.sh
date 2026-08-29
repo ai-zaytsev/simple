@@ -98,13 +98,27 @@ if [ ! -s "${KEY}" ]; then
 fi
 
 expires_at=""
+issuer=""
 if [ -s "${CRT}" ]; then
+  # Who signed what is being served, sent along with when it runs out.
+  #
+  # A certificate can be perfectly fresh and still be the wrong one: a node
+  # proved out against the test authority holds thirty days of a certificate no
+  # phone will accept. Only the service knows which authority that node is
+  # meant to use now, so it is the service that has to decide - and it cannot
+  # decide without being told what is there.
+  issuer=$(openssl x509 -in "${CRT}" -noout -issuer 2>/dev/null | sed 's/^issuer=//' || true)
+
   end=$(openssl x509 -in "${CRT}" -noout -enddate 2>/dev/null | cut -d= -f2 || true)
   if [ -n "${end}" ]; then
     expires_at=$(date -u -d "${end}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
     left=$(( ( $(date -u -d "${end}" +%s) - $(date -u +%s) ) / 86400 ))
     echo "Current certificate has ${left} day(s) left."
-    if [ "${left}" -gt "${RENEW_WITHIN_DAYS}" ]; then
+
+    # Asked anyway when the authority might have changed. The service refuses
+    # early renewals, so this costs a refusal rather than an issuance when
+    # nothing has changed - and that refusal is cheap and says why.
+    if [ "${left}" -gt "${RENEW_WITHIN_DAYS}" ] && [ -z "${issuer}" ]; then
       echo "No renewal needed."
       confirm_being_served
       exit $?
@@ -118,13 +132,15 @@ openssl req -new -key "${KEY}" -out "${CSR}" -subj "/CN=${NODE_DOMAIN}" \
   -addext "subjectAltName=DNS:${NODE_DOMAIN}"
 chmod 600 "${CSR}"
 
-body=$(python3 - "${CSR}" "${expires_at}" <<'PY'
+body=$(python3 - "${CSR}" "${expires_at}" "${issuer}" <<'PY'
 import json, sys
 csr = open(sys.argv[1]).read()
-expires = sys.argv[2]
+expires, issuer = sys.argv[2], sys.argv[3]
 payload = {"csr": csr}
 if expires:
     payload["expires_at"] = expires
+if issuer:
+    payload["issuer"] = issuer
 print(json.dumps(payload))
 PY
 )
