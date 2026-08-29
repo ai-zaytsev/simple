@@ -24,6 +24,29 @@ type certificateRequest struct {
 	// the authority counts issuances, and spending the count on a certificate
 	// nobody needed is how a renewal that matters gets refused.
 	ExpiresAt string `json:"expires_at,omitempty"`
+
+	// Issuer names whoever signed what the node is serving now, empty when it
+	// has nothing. Sent because "does it need one" and "is it the right one"
+	// are different questions, and the second cannot be answered without it: a
+	// node proved out against the test authority holds thirty perfectly fresh
+	// days of a certificate no phone will accept.
+	Issuer string `json:"issuer,omitempty"`
+}
+
+// wrongAuthority is whether what a node serves was signed by somebody other
+// than the authority it is meant to use.
+//
+// The test authority puts STAGING in the name it signs with, in capitals, and
+// its organisation is still Let's Encrypt - so the two are told apart by that
+// word and nothing else. Matched without regard to case, because a check of
+// this kind that reads STAGING as anything but staging reports success on a
+// failure, which is worse than not checking.
+func wrongAuthority(issuer, wanted string) bool {
+	if issuer == "" {
+		return false
+	}
+	staging := strings.Contains(strings.ToLower(issuer), "staging")
+	return staging != (wanted == "test")
 }
 
 // How much life left still counts as "does not need one yet". Thirty days is
@@ -167,7 +190,24 @@ func (s *Server) mayIssue(ctx context.Context, alias, expected string, req certi
 		return fmt.Errorf("this node may only be certified for %s", expected)
 	}
 
-	if remaining := timeLeft(req.ExpiresAt); remaining > renewWithin {
+	// Changing authority is not renewing.
+	//
+	// The window exists so that a certificate nobody needs is not issued, and
+	// that is about time. A node holding a certificate from the wrong
+	// authority needs one now however long it has left: what it is serving
+	// cannot be used, and waiting a month does not make it usable.
+	//
+	// This is what a promotion from the test authority runs into. Building a
+	// node cheaply and proving it out leaves it holding thirty fresh days of
+	// something no phone accepts, and without this the only way past that was
+	// to build the machine again.
+	wanted := "real"
+	if rehearsal, err := s.store.NodeWantsTestCertificates(ctx, alias); err == nil && rehearsal {
+		wanted = "test"
+	}
+	changing := wrongAuthority(req.Issuer, wanted)
+
+	if remaining := timeLeft(req.ExpiresAt); remaining > renewWithin && !changing {
 		return fmt.Errorf(
 			"the current certificate has %d days left; renewal starts at %d",
 			int(remaining.Hours()/24), int(renewWithin.Hours()/24),
