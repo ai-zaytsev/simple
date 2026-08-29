@@ -35,6 +35,15 @@ const renewWithin = 30 * 24 * time.Hour
 // below the real limit of five, so that a genuine emergency has one left.
 const issuesPerWeek = 4
 
+// How long an issuance may take before this service gives up on it.
+//
+// A DNS challenge is written, waited on until the authority's own resolvers
+// can see it, and only then answered. Two minutes covers a slow provider and
+// still ends: a node that hears nothing retries on its next round, and an
+// answer that never comes would otherwise hold a connection until something
+// else closed it.
+const issuanceMayTake = 2 * time.Minute
+
 // nodeCertificate signs a node's request without ever seeing its key.
 //
 // The name is taken from what the node was configured with, never from what it
@@ -45,6 +54,26 @@ func (s *Server) nodeCertificate(w http.ResponseWriter, r *http.Request) {
 	if s.certs == nil {
 		writeError(w, http.StatusServiceUnavailable, "certificates are not configured")
 		return
+	}
+
+	// This one answer is allowed to take minutes.
+	//
+	// Every other answer this service gives is a lookup, and fifteen seconds is
+	// a generous limit for a lookup - long enough for anything honest, short
+	// enough that a stuck request does not hold a connection open. Issuing a
+	// certificate is not a lookup: a name has to be written into DNS, the
+	// authority has to see it from its own resolvers, and none of that is ours
+	// to hurry.
+	//
+	// Without this the server closed the connection mid-issuance and the node
+	// was told 502 by the reverse proxy - a failure with no body, no reason,
+	// and nothing in it to suggest that the certificate was on its way and the
+	// deadline was ours. It had been working by luck: the earlier successes
+	// finished inside the fifteen seconds.
+	if controller := http.NewResponseController(w); controller != nil {
+		deadline := time.Now().Add(issuanceMayTake)
+		_ = controller.SetWriteDeadline(deadline)
+		_ = controller.SetReadDeadline(deadline)
 	}
 
 	token := bearer(r)

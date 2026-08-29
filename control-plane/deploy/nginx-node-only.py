@@ -38,6 +38,24 @@ INCLUDE = (
 
 HIDDEN = "    location @hidden { return 404; }\n"
 
+CERT_LOCATION_ANCHOR = "location = /v1/node/certificate {"
+
+# Three minutes, against the service's own two. The proxy has to outlast what
+# it is waiting for, or the node is told a proxy error instead of whatever the
+# service was about to say.
+CERT_BLOCK = (
+    "    # Issuance is not a lookup: DNS has to be written and seen.\n"
+    "    location = /v1/node/certificate {\n"
+    f"{INCLUDE}\n"
+    "        proxy_pass http://127.0.0.1:8080;\n"
+    "        proxy_http_version 1.1;\n"
+    "        proxy_set_header Host $host;\n"
+    "        proxy_read_timeout 180s;\n"
+    "        proxy_send_timeout 180s;\n"
+    "        client_max_body_size 16k;\n"
+    "    }\n\n"
+)
+
 
 def node_addresses():
     out = subprocess.run(
@@ -109,6 +127,21 @@ def main():
         if INCLUDE not in body[start:start + 400]:
             body = body[:start + len(anchor)] + "\n" + INCLUDE + body[start + len(anchor):]
             changed = True
+
+    # Issuing a certificate is the one request here that is not a lookup.
+    #
+    # A name is written into DNS, the authority waits until its own resolvers
+    # can see it, and only then is there an answer. Thirty seconds - fine for
+    # the other two endpoints - cuts that off partway, and what the node hears
+    # is a bare 502 from this proxy: no body, no reason, nothing to say that
+    # the certificate was on its way and the deadline was ours.
+    #
+    # An exact match so the longer wait applies to this one path and not to the
+    # metrics report, where a request that hangs for minutes should not.
+    if CERT_LOCATION_ANCHOR not in body:
+        body = body.replace(
+            "    location /v1/node/ {", CERT_BLOCK + "    location /v1/node/ {", 1)
+        changed = True
 
     if "location @hidden" not in body:
         body = body.replace(CATCH_ALL_ANCHOR, HIDDEN + "\n" + CATCH_ALL_ANCHOR, 1)
