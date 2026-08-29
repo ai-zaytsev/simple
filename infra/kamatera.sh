@@ -127,3 +127,57 @@ kamatera_gone() {
     done
     return 1
 }
+
+# kamatera_wait_for_address <name> <attempts> <file>
+#
+# Waits until a machine has an address, and prints it.
+#
+# This replaced following the provider's command queue, which answered with
+# {error, message} on every poll while the machine was being built perfectly
+# well. Two things were wrong with that: the queue endpoint was guessed, and
+# the thing being waited for was not the thing that was needed.
+#
+# What a build actually needs is an address. Asking for it directly removes a
+# guess and shortens the chain: the machine is ready when it can be reached,
+# not when a queue says a word.
+kamatera_wait_for_address() {
+    local name="$1" attempts="${2:-40}" out="${3:-/tmp/kamatera-one.json}"
+    local attempt id address
+
+    for attempt in $(seq 1 "${attempts}"); do
+        kamatera_servers /tmp/kamatera-servers.json
+        id=$(kamatera_id_of /tmp/kamatera-servers.json "${name}")
+
+        if [ -n "${id}" ]; then
+            kamatera_info "${id}" "${out}"
+            address=$(kamatera_address_of "${out}")
+            if [ -n "${address}" ]; then
+                printf '%s' "${address}"
+                return 0
+            fi
+            echo "  built, waiting for an address (${attempt}/${attempts})" >&2
+        else
+            echo "  not listed yet (${attempt}/${attempts})" >&2
+        fi
+        sleep 15
+    done
+    return 1
+}
+
+# kamatera_say_refusal <file>
+#
+# Every string the provider sent, wherever in the answer it put it, except
+# anything whose name suggests a secret.
+#
+# Printing field names only is what this replaces. A run that fails has to say
+# why: the first time this mattered, the reason - the account's active server
+# quota was full - arrived by email, to a person, hours later.
+kamatera_say_refusal() {
+    jq -r '
+        [paths(strings) as $p | {k: ($p | map(tostring) | join(".")), v: getpath($p)}]
+        | map(select((.k | test("password|secret|key|token"; "i")) | not))
+        | map(select((.v | length) > 0))
+        | .[:12][] | "  \(.k): \(.v)"' "$1" 2>/dev/null \
+    || jq -r '"  fields: " + (keys_unsorted | join(", "))' "$1" 2>/dev/null \
+    || echo "  the answer could not be read"
+}
