@@ -107,6 +107,41 @@ jobs:
           tc class show dev "${iface}" 2>/dev/null | sed 's/^/  /' || echo "  nothing on the way out"
           tc class show dev ifb-slow 2>/dev/null | sed 's/^/  /' || echo "  nothing on the way in"
 
+          echo "=== Is anything pointed at that class ==="
+          # A class with no filter catches nothing, and looks exactly like a
+          # class that does. The first inspection printed the classes and not
+          # the filters, which is why it read as a chain that was whole.
+          tc filter show dev "${iface}" 2>/dev/null | sed "s/^/  /" || echo "  no filter on the way out"
+          tc filter show dev ifb-slow 2>/dev/null | sed "s/^/  /" || echo "  no filter on the way in"
+          echo "  --- and is the way in redirected at all ---"
+          tc qdisc show dev "${iface}" 2>/dev/null | sed "s/^/  /"
+
+          echo "=== Where the bytes are actually going ==="
+          # The question the speed test asks, put to the engine. If a limited
+          # account's traffic is counted under the plain outbounds rather than
+          # the shaped ones, the rules are not matching it, and nothing below
+          # the rules can help.
+          /usr/local/bin/xray api statsquery --server=127.0.0.1:10085 2>/dev/null \
+            | python3 -c '
+import json, sys
+try:
+    stats = json.load(sys.stdin).get("stat", [])
+except Exception:
+    print("  counters could not be read"); raise SystemExit
+totals = {}
+for s in stats:
+    name = s.get("name", "")
+    if not name.startswith("outbound>>>"):
+        continue
+    tag = name.split(">>>")[1]
+    group = "shaped" if tag.startswith("slow-") else "plain"
+    totals[group] = totals.get(group, 0) + int(s.get("value", 0) or 0)
+if not totals:
+    print("  nothing has been counted yet")
+for group, value in sorted(totals.items()):
+    print("  %-8s %.1f MB" % (group, value / 1e6))
+' || echo "  counters could not be read"
+
           echo "=== Does the mark survive the return ==="
           iptables -t mangle -S 2>/dev/null | grep -i connmark | sed 's/^/  /' \
             || echo "  the connection's mark is not being saved or restored"
