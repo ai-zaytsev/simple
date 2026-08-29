@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"download.simplevpn/control-plane/internal/purchase"
 )
 
 // ServiceState is what an operator can change while the service runs.
 type ServiceState struct {
 	KillSwitch             KillSwitch
 	MinSupportedAppVersion int
+	Purchases              purchase.Settings
 }
 
 type KillSwitch struct {
@@ -52,14 +55,64 @@ func (s *Store) LoadServiceState(ctx context.Context) (ServiceState, error) {
 				return ServiceState{}, fmt.Errorf("min_supported_app_version is unreadable: %w", err)
 			}
 			seen[key] = true
+		case "purchases":
+			// Read into a local shape and copied across, rather than tagging
+			// the purchase package's own struct with JSON names. The names in
+			// this row belong to the database; the field names belong to the
+			// decision. Tying them together would make renaming either one a
+			// migration.
+			var p struct {
+				Open     bool `json:"open"`
+				FreeDays int  `json:"free_days"`
+			}
+			if err := json.Unmarshal(raw, &p); err != nil {
+				return ServiceState{}, fmt.Errorf("purchases is unreadable: %w", err)
+			}
+			state.Purchases = purchase.Settings{Open: p.Open, FreeDays: p.FreeDays}
+			seen[key] = true
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return ServiceState{}, fmt.Errorf("cannot finish reading service state: %w", err)
 	}
 
+	// Purchases is deliberately not required.
+	//
+	// An absent row leaves Open false, and false is the safe direction: the
+	// service declines to sell rather than sells because nobody said it may
+	// not. The kill switch is required for the mirror-image reason - its
+	// dangerous default is off - and the asymmetry is the point rather than
+	// an oversight.
 	if !seen["kill_switch"] || !seen["min_supported_app_version"] {
 		return ServiceState{}, fmt.Errorf("service state is incomplete")
 	}
 	return state, nil
+}
+
+// SetPurchases writes the two settings an operator may change about selling.
+//
+// One statement for both, because they are read as one row and a partial write
+// would leave the pair inconsistent for as long as it took somebody to notice.
+// The whole value is replaced rather than merged: merging a missing field
+// silently keeps an old one, and "I turned the wait down and it did not
+// change" is exactly the kind of failure this table exists to avoid.
+func (s *Store) SetPurchases(ctx context.Context, p purchase.Settings, by string) error {
+	value, err := json.Marshal(struct {
+		Open     bool `json:"open"`
+		FreeDays int  `json:"free_days"`
+	}{Open: p.Open, FreeDays: p.FreeDays})
+	if err != nil {
+		return fmt.Errorf("cannot write the purchase settings: %w", err)
+	}
+
+	if _, err := s.pool.Exec(ctx, `
+		insert into service_state (key, value, changed_by, updated_at)
+		values ('purchases', $1::jsonb, $2, now())
+		on conflict (key) do update
+		set value = excluded.value,
+		    changed_by = excluded.changed_by,
+		    updated_at = now()`, value, by); err != nil {
+		return fmt.Errorf("cannot save the purchase settings: %w", err)
+	}
+	return nil
 }

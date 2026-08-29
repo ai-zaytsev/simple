@@ -240,6 +240,21 @@ jobs:
           }
           echo "ok: a way in and a spare are told apart"
 
+          # Selling switched off during an incident and never switched back is
+          # invisible from every other angle: the symptom is an absence of
+          # revenue that nobody attributes to a setting. It has to be on the
+          # panel, and it has to be legible when it is off.
+          echo "${zeroes}" | grep -q '| продажи | \*\*закрыты\*\* |' || {
+            echo "The panel does not say that selling is closed."
+            echo "${zeroes}" | grep -A 6 'Продажа VIP' || echo "(no purchase section at all)"
+            exit 1
+          }
+          echo "${zeroes}" | grep -q '| FREE до покупки | 7 дн. |' || {
+            echo "The panel does not say how long the free period is."
+            exit 1
+          }
+          echo "ok: whether VIP can be bought is on the panel"
+
       - name: Every workflow must still parse
         shell: bash
         run: |

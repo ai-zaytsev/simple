@@ -278,6 +278,22 @@ def main(path):
     # from a migration. A limit that was supposed to be lifted and was not
     # looks identical from every other angle: the migration is logged as
     # applied, the tests pass against its own text, and the service starts.
+    # Whether VIP can be bought at all. Printed next to what the tiers grant,
+    # because "VIP has no limits" and "nobody can get VIP" are two halves of
+    # one answer and reading either alone is misleading.
+    buying = d.get("purchases")
+    if buying is not None:
+        say("### Продажа VIP")
+        say("")
+        say("| | |")
+        say("| --- | --- |")
+        say("| продажи | %s |" % ("открыты" if buying.get("open") else "**закрыты**"))
+        say("| FREE до покупки | %s дн. |" % buying.get("free_days"))
+        say("")
+        if not buying.get("open"):
+            say("Закрытые продажи не трогают тех, у кого VIP уже есть.")
+            say("")
+
     tiers = d.get("tiers") or []
     if tiers:
         say("### Что даёт тариф")

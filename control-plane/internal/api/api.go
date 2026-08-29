@@ -160,6 +160,10 @@ func (s *Server) Routes() http.Handler {
 	// The same operation with a handle that may appear in a public log, which
 	// is what lets it happen through the pipeline rather than by hand.
 	mux.HandleFunc("POST /v1/admin/accounts", s.adminAccounts)
+
+	// Whether VIP may be bought at all, and how long a new account waits.
+	// An empty body reads; a body with both fields replaces them.
+	mux.HandleFunc("POST /v1/admin/purchases", s.adminPurchases)
 	mux.HandleFunc("POST /v1/admin/account/tier-by-prefix", s.adminTierByPrefix)
 	return mux
 }

@@ -40,5 +40,6 @@
   "tiers": [
     {"tier": "FREE", "max_devices": 1, "max_external": 0, "speed_mbit": 10, "accounts": 3},
     {"tier": "VIP", "max_devices": null, "max_external": null, "speed_mbit": null, "accounts": 1}
-  ]
+  ],
+  "purchases": {"open": false, "free_days": 7}
 }

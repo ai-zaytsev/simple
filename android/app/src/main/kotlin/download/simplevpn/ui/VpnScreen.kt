@@ -62,16 +62,21 @@ fun VpnScreen(
     val state by stateFlow.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
-    // Which status this account is on, asked once when the screen appears.
+    // Which status this account is on and whether it may buy the other one,
+    // asked once when the screen appears.
     //
-    // Null until answered, and null again when the service cannot be reached.
-    // The section below appears only on a definite VIP, so an outage hides a
-    // section rather than inventing one - and a FREE account never sees a
-    // disabled control, because a disabled control is a promise.
-    var tier by remember { mutableStateOf<String?>(null) }
+    // Null until answered, and null again when the service cannot be reached -
+    // and then the corner stays empty rather than guessing. Showing the VIP
+    // offer to somebody who already has VIP would be the worse guess of the
+    // two, so neither is made.
+    //
+    // Asked every time rather than remembered: a status changes without this
+    // installation doing anything, and so does whether selling is open at all.
+    var standing by remember { mutableStateOf<ControlPlaneClient.Standing?>(null) }
     LaunchedEffect(Unit) {
-        tier = withContext(Dispatchers.IO) { ControlPlaneClient(context).tier() }
+        standing = withContext(Dispatchers.IO) { ControlPlaneClient(context).tier() }
     }
+    val tier = standing?.tier
 
     var showingDevices by remember { mutableStateOf(false) }
 
@@ -140,6 +145,23 @@ fun VpnScreen(
             ) {
                 Text(text = stringResource(R.string.devices))
             }
+        } else if (tier != null) {
+            // The same corner, the other word.
+            //
+            // Always here, and disabled until it can do something. The
+            // argument against a disabled control - that it promises what does
+            // not exist - was made about the devices section, which a FREE
+            // account never gets. This is the opposite case: VIP is something
+            // this person will be able to buy, and the only question is when.
+            // That is a promise with a date, and hiding it until the date
+            // means the offer is only ever seen by somebody who happens to
+            // open the application on the right day.
+            VipButton(
+                standing = standing,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(16.dp),
+            )
         }
 
         TraceControls(
@@ -494,4 +516,79 @@ private fun statusText(state: VpnConnectionState): String = when (state) {
     is VpnConnectionState.Reconnecting -> stringResource(R.string.status_reconnecting)
     is VpnConnectionState.Disconnecting -> stringResource(R.string.status_disconnecting)
     is VpnConnectionState.Failed -> state.reason
+}
+
+/**
+ * The VIP offer, in the corner a VIP account keeps its devices in.
+ *
+ * Visible always, and doing something only when the service says it may. The
+ * reason is always shown, because a control that refuses without saying why is
+ * the thing people write to support about - and the three reasons need three
+ * different answers:
+ *
+ * The wait has a date, and the date is the whole of the message: nothing is
+ * wrong, come back then.
+ *
+ * Sales being off has no date, because nobody has decided one. Inventing
+ * "soon" would be a promise made by a screen rather than by a person.
+ *
+ * There is no third refusal for an account that already has VIP: that account
+ * sees the devices section here instead, which is what it wanted from VIP in
+ * the first place.
+ */
+@Composable
+private fun VipButton(
+    standing: ControlPlaneClient.Standing?,
+    modifier: Modifier = Modifier,
+) {
+    var explaining by remember { mutableStateOf(false) }
+
+    TextButton(
+        onClick = { explaining = true },
+        modifier = modifier,
+        // Not disabled in the Compose sense. A greyed-out control cannot be
+        // pressed, so it cannot explain itself either, and the person is left
+        // with a word and no way to ask about it. It is enabled and it answers.
+    ) {
+        Text(text = stringResource(R.string.vip))
+    }
+
+    if (explaining) {
+        val buy = standing?.mayBuy == true
+        AlertDialog(
+            onDismissRequest = { explaining = false },
+            title = { Text(text = stringResource(R.string.vip)) },
+            text = {
+                Text(
+                    text = when {
+                        buy -> stringResource(R.string.vip_soon)
+                        standing?.whyNot == "too_soon" && standing.opensOn.isNotBlank() ->
+                            stringResource(R.string.vip_wait, readableDay(standing.opensOn))
+                        standing?.whyNot == "too_soon" -> stringResource(R.string.vip_wait_unknown)
+                        else -> stringResource(R.string.vip_closed)
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { explaining = false }) {
+                    Text(text = stringResource(R.string.support_no_mail_close))
+                }
+            },
+        )
+    }
+}
+
+/**
+ * The day out of a timestamp, without pretending to do arithmetic on it.
+ *
+ * The server decides when the wait ends and sends the moment; this only makes
+ * it readable. Counting days here would mean trusting the phone's clock, and a
+ * phone whose clock is a week fast would announce that the wait is over while
+ * the service goes on refusing - the application and the server disagreeing in
+ * front of the person.
+ */
+private fun readableDay(timestamp: String): String {
+    val day = timestamp.substringBefore('T')
+    val parts = day.split('-')
+    return if (parts.size == 3) "${parts[2]}.${parts[1]}.${parts[0]}" else day
 }
