@@ -60,8 +60,29 @@ fi
 
 say "Packages"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq nginx curl unzip openssl python3 ca-certificates >/dev/null
+
+# A machine that has just booted is still busy with itself.
+#
+# Cloud-init runs its own package work on first boot, and this arrived while
+# that was still holding the lock: "Could not get lock /var/lib/dpkg/lock-
+# frontend", and the build stopped. It is a race, so it passed in one
+# datacenter and failed in another for no reason but timing - which is the
+# worst kind, because it looks like the datacenter.
+#
+# Waited for rather than retried: cloud-init knows when it has finished and
+# will say so. The bound is generous and finite, because a first boot that
+# never finishes is a machine to give up on rather than to keep asking.
+if command -v cloud-init >/dev/null 2>&1; then
+  echo "  waiting for the machine to finish its own first boot"
+  timeout 300 cloud-init status --wait >/dev/null 2>&1 || true
+fi
+
+# And the lock itself, in case something else holds it: apt waits instead of
+# failing outright. Cheaper than a retry loop of our own and it covers the
+# unattended upgrade that starts on a timer rather than from cloud-init.
+apt-get -o DPkg::Lock::Timeout=300 update -qq
+apt-get -o DPkg::Lock::Timeout=300 install -y -qq \
+  nginx curl unzip openssl python3 ca-certificates >/dev/null
 
 say "Engine ${XRAY_VERSION}"
 if [ "$(sha256sum /usr/local/bin/xray 2>/dev/null | cut -d' ' -f1)" != "${XRAY_SHA256}" ]; then
