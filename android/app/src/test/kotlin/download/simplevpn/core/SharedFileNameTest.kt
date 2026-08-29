@@ -22,7 +22,7 @@ import org.junit.Test
 class SharedFileNameTest {
 
     private val log = source("core/SessionLog.kt")
-    private val screen = source("ui/VpnScreen.kt")
+    private val mail = source("support/SupportMail.kt")
 
     @Test
     fun `the exported recording is a txt file`() {
@@ -56,18 +56,24 @@ class SharedFileNameTest {
     }
 
     @Test
-    fun `the share carries clip data as well as the extra`() {
+    fun `the letter carries clip data as well as the extra`() {
         // The grant flag covers EXTRA_STREAM in most receivers and not all.
-        // A receiver that reads the URI off the clip data gets an empty file
-        // without this - the worst failure of the three, because it looks like
-        // it worked.
+        // A mail application that reads the URI off the clip data attaches an
+        // empty file without this - the worst failure of the three, because it
+        // looks like it worked.
+        //
+        // Asserted against SupportMail rather than the screen: the recording
+        // now leaves as the same letter the support button writes, and the
+        // screen no longer builds an intent of its own. This test failed on
+        // that move, correctly - it was looking where the code used to be.
         assertTrue(
-            "the share intent has no clip data, so some receivers get no grant",
-            screen.contains("ClipData.newUri"),
+            "the letter has no clip data, so some mail applications attach nothing",
+            mail.contains("ClipData.newUri"),
         )
         assertTrue(
-            "the share intent no longer declares a type",
-            screen.contains("""type = "text/plain""""),
+            "the letter does not declare a type, so the attachment resolves " +
+                "however the receiver guesses",
+            mail.contains("""type = "text/plain""""),
         )
     }
 

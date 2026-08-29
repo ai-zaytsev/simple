@@ -48,9 +48,12 @@
     <string name="trace_warning_confirm">Начать запись</string>
     <string name="trace_warning_cancel">Не надо</string>
 
-    <string name="trace_send_title">Что уедет вместе с файлом</string>
+    <string name="trace_send_title">Что внутри файла</string>
     <string name="trace_send_body">В записи %1$d адресов, к которым обращалось устройство. Отправляйте её только тому, кому готовы это показать.</string>
-    <string name="trace_send_confirm">Отправить</string>
+    <string name="trace_send_confirm">Отправить письмом</string>
+    <string name="trace_send_save">Сохранить на устройство</string>
+    <string name="trace_saved">Файл сохранён</string>
+    <string name="trace_save_failed">Не удалось сохранить файл</string>
     <string name="trace_send_delete">Удалить запись</string>
     <string name="trace_share_title">Подробный лог</string>
 
