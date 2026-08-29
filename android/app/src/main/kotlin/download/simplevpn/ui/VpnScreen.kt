@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.FileProvider
 import download.simplevpn.R
 import download.simplevpn.core.SessionLog
+import download.simplevpn.plan.ControlPlaneClient
 import download.simplevpn.support.SupportMail
 import android.os.SystemClock
 import download.simplevpn.vpn.TraceState
@@ -57,6 +58,25 @@ fun VpnScreen(
     onToggle: (isActive: Boolean) -> Unit,
 ) {
     val state by stateFlow.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    // Which status this account is on, asked once when the screen appears.
+    //
+    // Null until answered, and null again when the service cannot be reached.
+    // The section below appears only on a definite VIP, so an outage hides a
+    // section rather than inventing one - and a FREE account never sees a
+    // disabled control, because a disabled control is a promise.
+    var tier by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        tier = withContext(Dispatchers.IO) { ControlPlaneClient(context).tier() }
+    }
+
+    var showingDevices by remember { mutableStateOf(false) }
+
+    if (showingDevices) {
+        ExternalDevicesScreen(onBack = { showingDevices = false })
+        return
+    }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
       Box(modifier = Modifier.fillMaxSize()) {
@@ -100,6 +120,24 @@ fun VpnScreen(
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyLarge,
             )
+        }
+
+        // One word, in the corner, and only for an account that has it.
+        //
+        // Not a tab bar, not a menu, not a card on the main screen. The main
+        // screen is a button and a line of status; routers and televisions are
+        // something a person goes looking for once and then rarely, and
+        // putting them in the way of the thing everybody opens the
+        // application for would cost every user to serve some of them.
+        if (tier == "VIP") {
+            TextButton(
+                onClick = { showingDevices = true },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(16.dp),
+            ) {
+                Text(text = stringResource(R.string.devices))
+            }
         }
 
         TraceControls(

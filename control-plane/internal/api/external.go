@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	"download.simplevpn/control-plane/internal/link"
 	"download.simplevpn/control-plane/internal/store"
 )
@@ -148,4 +150,64 @@ func (s *Server) externalLinks(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"devices": out})
+}
+
+// rotateExternal replaces the link of one external device.
+//
+// For "the old one stopped working". The reasons differ - a node retired, a
+// link pasted where it should not have been, a client that cached something
+// broken - and the answer to all of them is the same: this television, working
+// again, still called what its owner calls it.
+//
+// Deliberately not "delete and add again". That loses the name, loses the
+// device's place in the list, and asks somebody to re-do the part they got
+// right in order to fix the part they did not.
+func (s *Server) rotateExternal(w http.ResponseWriter, r *http.Request) {
+	caller, ok := s.device(w, r)
+	if !ok {
+		return
+	}
+
+	var body struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := decode(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "request could not be read")
+		return
+	}
+
+	deviceID, err := uuid.Parse(body.DeviceID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "that is not a device")
+		return
+	}
+
+	// The account comes from the token, never from the request. Naming
+	// somebody else's television has to fail on ownership rather than on
+	// whether the caller guessed an identifier that exists.
+	rotated, err := s.store.RotateExternalCredential(r.Context(), caller.AccountID, deviceID)
+	switch {
+	case errors.Is(err, store.ErrNotYours):
+		writeError(w, http.StatusNotFound, "no such device on this account")
+		return
+	case err != nil:
+		s.log.Error("cannot rotate an external credential", "error", err)
+		writeError(w, http.StatusInternalServerError, "cannot replace the link")
+		return
+	}
+
+	links, err := s.linksFor(r, rotated)
+	if err != nil {
+		s.log.Error("cannot build links", "error", err)
+		writeError(w, http.StatusInternalServerError, "cannot build the links")
+		return
+	}
+
+	s.log.Info("external link replaced", "account", caller.AccountID, "device", rotated.ID)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"device_id": rotated.ID.String(),
+		"label":     rotated.Label,
+		"links":     links,
+	})
 }
