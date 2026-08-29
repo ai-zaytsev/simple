@@ -223,6 +223,23 @@ jobs:
           }
           echo "ok: unlimited, none and a number read as three different things"
 
+          # A way in and a spare are not the same row. Everything that was not
+          # a node's cover used to print as "точка входа", so an idle spare
+          # looked like the path every recovery depends on - and the real path
+          # looked like an idle spare. The one address whose loss matters most
+          # was the one the panel could not point at.
+          echo "${zeroes}" | grep -q '| путь входа |' || {
+            echo "A way in to the Control Plane is not named as one."
+            echo "${zeroes}" | grep -A 6 'Точки входа'
+            exit 1
+          }
+          echo "${zeroes}" | grep -q '| запас |' || {
+            echo "A spare domain is being printed as though it were a way in."
+            echo "${zeroes}" | grep -A 6 'Точки входа'
+            exit 1
+          }
+          echo "ok: a way in and a spare are told apart"
+
       - name: Every workflow must still parse
         shell: bash
         run: |

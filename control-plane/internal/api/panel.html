@@ -354,13 +354,30 @@
     });
     document.getElementById("lifecycles").innerHTML = l;
 
-    var e = "<tr><th>адрес</th><th>вывод</th><th>отсюда</th><th>с устройств</th>" +
-            "<th>проверок</th><th>задержка</th></tr>";
+    // Three roles, not two. A cover in front of a node, a way in to the
+    // Control Plane, and a spare that is neither. Without this column the
+    // table is a list of names doing unlike jobs, and the job that matters
+    // most - the path every recovery depends on - is the one that looks
+    // like all the others.
+    var covers = {};
+    (d.capacity && d.capacity.domains || []).forEach(function (x) {
+      covers[x.domain] = x;
+    });
+    function role(p) {
+      var c = covers[p.target];
+      if (c) return "прикрытие ноды (" + c.sessions + ")";
+      if (p.way_in) return '<span class="warn">путь входа</span>';
+      return '<span class="muted">запас</span>';
+    }
+
+    var e = "<tr><th>адрес</th><th>что это</th><th>вывод</th><th>отсюда</th>" +
+            "<th>с устройств</th><th>проверок</th><th>задержка</th></tr>";
     if (!d.endpoints.length) {
-      e += '<tr><td colspan="6" class="muted">проверок пока не было</td></tr>';
+      e += '<tr><td colspan="7" class="muted">проверок пока не было</td></tr>';
     }
     d.endpoints.forEach(function (p) {
       e += "<tr><td>" + esc(p.target) + "</td>" +
+        "<td>" + role(p) + "</td>" +
         "<td>" + tag(ENTRY_WORDS, p.verdict) + "</td>" +
         "<td>" + (p.ok_from_us < 0 ? "—" : num(p.ok_from_us, 0) + "%") + "</td>" +
         "<td>" + (p.ok_from_devices < 0 ? "—" : num(p.ok_from_devices, 0) + "%") + "</td>" +

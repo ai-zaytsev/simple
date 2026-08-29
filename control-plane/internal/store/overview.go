@@ -121,6 +121,22 @@ type EndpointHealth struct {
 	// point of keeping two vantages: an address we can reach and devices
 	// cannot is not broken, it is being kept from them.
 	Verdict string `json:"verdict"`
+
+	// Whether this is one of the addresses a device tries when it needs to be
+	// told where to go next.
+	//
+	// The panel already separated a cover in front of a node from everything
+	// else, because the two fail differently and are replaced differently. But
+	// "everything else" held two unlike things: a way in to the Control Plane,
+	// which is the path every recovery depends on, and an unused spare, which
+	// is a name waiting for a job. Printed identically, a way in looks
+	// disposable and a spare looks load-bearing.
+	//
+	// That was noticed while checking whether a new node had just been given a
+	// way in as its cover. It had not - add-node refuses that, and the refusal
+	// worked - but the panel could not have shown it either way, and the one
+	// thing it could not show is the one whose loss matters most.
+	WayIn bool `json:"way_in"`
 }
 
 // Overview answers every question the panel asks, in one round of queries.
@@ -453,8 +469,10 @@ func (s *Store) endpointHealth(ctx context.Context, now time.Time) ([]EndpointHe
 			coalesce(avg(case when vantage = 'device' then (ok::int) end) * 100, -1)::float8,
 			count(*) filter (where vantage = 'device')::int,
 			avg(latency_ms) filter (where ok)::float8,
-			max(at) filter (where ok)
-		from metrics.endpoint_probes
+			max(at) filter (where ok),
+			exists (select 1 from bootstrap_entries b
+			         where lower(b.host) = lower(p.target) and b.enabled)
+		from metrics.endpoint_probes p
 		where at >= $1
 		group by target
 		order by target`, now.Add(-24*time.Hour))
@@ -467,7 +485,7 @@ func (s *Store) endpointHealth(ctx context.Context, now time.Time) ([]EndpointHe
 	for rows.Next() {
 		var e EndpointHealth
 		if err := rows.Scan(&e.Target, &e.FromUs, &e.FromDevices,
-			&e.DeviceChecks, &e.LatencyMS, &e.LastOK); err != nil {
+			&e.DeviceChecks, &e.LatencyMS, &e.LastOK, &e.WayIn); err != nil {
 			return nil, fmt.Errorf("cannot read a probe row: %w", err)
 		}
 		e.Verdict = endpointVerdict(e)

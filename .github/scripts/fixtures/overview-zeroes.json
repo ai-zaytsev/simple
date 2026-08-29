@@ -23,7 +23,9 @@
   ],
   "endpoints": [
     {"target": "dead.example", "verdict": "unreachable", "ok_from_us": 0.0,
-     "ok_from_devices": 0.0, "device_checks": 0}
+     "ok_from_devices": 0.0, "device_checks": 0, "way_in": true},
+    {"target": "spare.example", "verdict": "works", "ok_from_us": 100.0,
+     "ok_from_devices": 100.0, "device_checks": 5, "way_in": false}
   ],
   "usage": {"users": 1, "total_bytes": 0},
   "tiers": [

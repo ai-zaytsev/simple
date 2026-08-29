@@ -247,9 +247,17 @@ def main(path):
         for i, p in enumerate(sorted(entries, key=lambda x: x.get("target") or ""), 1):
             standing = decided.get(p.get("target")) or {}
             cover = covers.get(p.get("target"))
-            role = "прикрытие ноды" if cover else "точка входа"
+            # Three things, not two. A cover in front of a node, a way in to
+            # the Control Plane, and a spare that is neither. The first version
+            # of this called everything that was not a cover a way in, which
+            # made an idle spare look like the path recovery depends on - and
+            # made the real one indistinguishable from an idle spare.
             if cover:
-                role += " (%s сессий)" % cover.get("sessions")
+                role = "прикрытие ноды (%s сессий)" % cover.get("sessions")
+            elif p.get("way_in"):
+                role = "путь входа"
+            else:
+                role = "запас"
             say("| №%d | %s | %s | %s | %s | %s | %s | %s |" % (
                 i, role, p.get("verdict"),
                 rate(p.get("ok_from_us")),
