@@ -16,6 +16,12 @@ name: Account Tier
 #
 # List first, then set. The listing carries no address either - a prefix, a
 # tier and a count of devices.
+#
+# The tables are printed by scripts in .github/scripts rather than by Python
+# written into the run blocks below. The first version did it the other way
+# and the file stopped parsing: a program inside a block scalar has to be
+# indented to stay inside it, and GitHub reports an unparseable workflow as
+# one with no trigger.
 
 on:
   workflow_dispatch:
@@ -53,6 +59,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Reach the host
         env:
           DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
@@ -81,25 +90,15 @@ jobs:
                http://127.0.0.1:8080/v1/admin/accounts' \
             <<< "${ADMIN_TOKEN}" > /tmp/accounts.json
 
+          # Proof it is the answer and not an error page, before anything is
+          # printed. An unauthorised reply is JSON too.
           if ! grep -q '"accounts"' /tmp/accounts.json; then
             echo "The service did not answer with a listing."
             exit 1
           fi
 
-          {
-            echo "## Аккаунты"
-            echo
-            echo "Адресов здесь нет и быть не может. Префикс — это начало"
-            echo "идентификатора, которого достаточно, чтобы назвать аккаунт."
-            echo
-            echo "| префикс | тариф | устройств |"
-            echo "| --- | --- | --- |"
-            python3 -c '
-import json
-for a in json.load(open("/tmp/accounts.json")).get("accounts", []):
-    print("| %s | %s | %s |" % (a.get("prefix"), a.get("tier"), a.get("devices")))
-'
-          } | tee -a "${GITHUB_STEP_SUMMARY}"
+          python3 .github/scripts/say_accounts.py /tmp/accounts.json \
+            | tee -a "${GITHUB_STEP_SUMMARY}"
 
       - name: Give it a tier
         if: inputs.action == 'set'
@@ -112,18 +111,15 @@ for a in json.load(open("/tmp/accounts.json")).get("accounts", []):
           set -euo pipefail
 
           # Refused here as well as in the service. The service is the one that
-          # counts, and a refusal that arrives before a round trip says the
-          # same thing in the place somebody is looking.
+          # counts; a refusal before a round trip says the same thing in the
+          # place somebody is already looking.
           if [ "${#PREFIX}" -lt 4 ]; then
             echo "Give at least four characters of the identifier."
             echo "Run this with action=list first and copy a prefix from it."
             exit 1
           fi
 
-          body=$(python3 -c '
-import json, os
-print(json.dumps({"prefix": os.environ["PREFIX"], "tier": os.environ["TIER"]}))
-')
+          body=$(printf '{"prefix": "%s", "tier": "%s"}' "${PREFIX}" "${TIER}")
 
           # Both the token and the request on stdin, for the same reason.
           printf '%s\n%s\n' "${ADMIN_TOKEN}" "${body}" \
@@ -136,38 +132,15 @@ print(json.dumps({"prefix": os.environ["PREFIX"], "tier": os.environ["TIER"]}))
                echo; cat /tmp/tier.json; rm -f /tmp/tier.json' > /tmp/answer.txt
 
           code=$(head -1 /tmp/answer.txt)
-          rest=$(tail -n +2 /tmp/answer.txt)
+          tail -n +2 /tmp/answer.txt > /tmp/tier.json
 
           if [ "${code}" != "200" ]; then
             echo "Not set. HTTP ${code}."
-            # The body is the service's own refusal and carries no address:
-            # this endpoint is never given one.
-            echo "${rest}"
+            # The service's own refusal, which carries no address: this
+            # endpoint is never given one.
+            cat /tmp/tier.json
             exit 1
           fi
 
-          {
-            echo "## Тариф назначен"
-            echo
-            printf '%s\n' "${rest}" | python3 -c '
-import json, sys
-a = json.load(sys.stdin)
-
-
-def limit(v, unit=""):
-    if v is None:
-        return "без предела"
-    if v == 0:
-        return "нет"
-    return "%s%s" % (v, unit)
-
-
-print("| | |")
-print("| --- | --- |")
-print("| аккаунт | %s… |" % a.get("prefix"))
-print("| тариф | %s |" % a.get("tier"))
-print("| устройств приложения | %s |" % limit(a.get("max_devices")))
-print("| внешних устройств | %s |" % limit(a.get("max_external")))
-print("| устройств сейчас | %s |" % a.get("devices"))
-'
-          } | tee -a "${GITHUB_STEP_SUMMARY}"
+          python3 .github/scripts/say_tier.py /tmp/tier.json \
+            | tee -a "${GITHUB_STEP_SUMMARY}"
