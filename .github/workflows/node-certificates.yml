@@ -1,0 +1,125 @@
+name: Node Certificates
+
+# Moves one node between the authority nobody trusts and the one everybody
+# does, without rebuilding the machine.
+#
+# It exists because those two are used for different things and the same node
+# wants both in turn. A build proved out against the test authority costs
+# nothing from the weekly allowance and cannot be used by a phone; the real one
+# is what makes it usable and is limited to four issuances a week for a name.
+#
+# So a node is built cheaply, checked, and only then promoted. Before this, the
+# only way to change which authority a node uses was to build another machine,
+# which spent an allowance to answer a question about a machine that already
+# existed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      alias:
+        description: Which node, as the panel shows it.
+        required: true
+        type: string
+      authority:
+        description: Which authority should certify it from now on.
+        required: true
+        default: real
+        type: choice
+        options:
+          - real
+          - test
+
+permissions:
+  contents: read
+
+env:
+  JUMP: ${{ secrets.CP_DEPLOY_HOST }}
+
+jobs:
+  certificates:
+    name: Node Certificates
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reach the Control Plane
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          {
+            echo "Host *"
+            echo "  IdentityFile ~/.ssh/deploy"
+            echo "  IdentitiesOnly yes"
+            echo "  BatchMode yes"
+            echo "  StrictHostKeyChecking accept-new"
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+          ssh-keyscan -H "${JUMP}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh "root@${JUMP}" true
+
+      - name: Say which authority certifies it
+        id: node
+        env:
+          ALIAS: ${{ inputs.alias }}
+          AUTHORITY: ${{ inputs.authority }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/authority.sql <<SQL
+          update nodes
+          set params = jsonb_set(params, '{certificates}', to_jsonb('${AUTHORITY}'::text))
+          where alias = '${ALIAS}' and state <> 'removed';
+          SQL
+          SSH_STDIN=/tmp/authority.sql bash infra/ssh-retry.sh "root@${JUMP}" \
+            'psql "$(cat /etc/simple-vpn-cp.dsn)" -v ON_ERROR_STOP=1 -P pager=off -f -'
+
+          address=$(ssh "root@${JUMP}" \
+            "psql \"\$(cat /etc/simple-vpn-cp.dsn)\" -tAc \
+             \"select host from nodes where alias = '${ALIAS}' and state <> 'removed'\"" \
+            | tr -d '[:space:]')
+          if [ -z "${address}" ] || [ "${address}" = "0.0.0.0" ]; then
+            echo "No node called '${ALIAS}' has an address."
+            exit 1
+          fi
+          echo "::add-mask::${address}"
+          echo "address=${address}" >> "${GITHUB_OUTPUT}"
+          echo "${ALIAS} will be certified by the ${AUTHORITY} authority."
+
+      - name: Ask for one now
+        env:
+          ADDRESS: ${{ steps.node.outputs.address }}
+        run: |
+          set -euo pipefail
+          # The agent asks on a timer anyway; this only brings the next ask
+          # forward, so that the run says whether it worked instead of leaving
+          # somebody to find out hours later.
+          bash infra/ssh-retry.sh -J "root@${JUMP}" "root@${ADDRESS}" \
+            'systemctl start simple-vpn-certificate.service; sleep 5; true'
+
+          echo "--- what the agent said ---"
+          bash infra/ssh-retry.sh -J "root@${JUMP}" "root@${ADDRESS}" \
+            'journalctl -u simple-vpn-certificate -n 30 --no-pager -o cat' | sed 's/^/  /'
+
+      - name: See what it now serves
+        env:
+          ADDRESS: ${{ steps.node.outputs.address }}
+          ALIAS: ${{ inputs.alias }}
+        run: |
+          set -euo pipefail
+          # Read off the wire rather than from a file: what a phone gets is the
+          # only thing that decides whether this worked.
+          issuer=$(bash infra/ssh-retry.sh -J "root@${JUMP}" "root@${ADDRESS}" \
+            "echo | openssl s_client -connect 127.0.0.1:443 -servername \$(hostname -f) 2>/dev/null \
+             | openssl x509 -noout -issuer 2>/dev/null" || echo "")
+          echo "issuer: ${issuer:-could not be read}"
+
+          case "${issuer}" in
+            *[Ss]taging*) echo "Still the test authority. A phone will not trust this." ;;
+            *"Let's Encrypt"*) echo "The real authority. A phone will trust this." ;;
+            *) echo "Neither authority is named in what it serves. Look at the agent's words above." ;;
+          esac
