@@ -74,10 +74,15 @@ func (s *Server) adminTier(w http.ResponseWriter, r *http.Request) {
 		s.log.Info("account tier set", "account", result.AccountID, "tier", result.Tier)
 	}
 
+	// A null limit is sent as null rather than as a large number. An operator
+	// reading this is deciding whether a tier restricts something, and a
+	// number would answer a different question - "how much" - that does not
+	// apply. The pointers carry that straight through to the JSON.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"account":     result.AccountID,
-		"tier":        result.Tier,
-		"max_devices": result.MaxDevices,
-		"devices":     result.Devices,
+		"account":      result.AccountID,
+		"tier":         result.Tier,
+		"max_devices":  result.MaxDevices,
+		"max_external": result.MaxExternal,
+		"devices":      result.Devices,
 	})
 }
