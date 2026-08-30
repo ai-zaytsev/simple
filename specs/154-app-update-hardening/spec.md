@@ -2,7 +2,7 @@
 
 - Feature ID: `154-app-update-hardening`
 - Feature Branch: `feature/154-app-update-hardening`
-- Status: `active`
+- Status: `merge-ready`
 
 ## Goal
 
@@ -21,4 +21,3 @@
 - Реализация Google Play executor.
 - Публикация нового APK при открытых общих release blockers.
 - Изменение latest/min verdict или существующего API Android.
-
