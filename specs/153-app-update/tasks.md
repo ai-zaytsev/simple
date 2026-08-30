@@ -13,7 +13,7 @@
 - [x] Реализовать добровольный и принудительный update UI
 - [x] Добавить unit/integration/source tests
 - [x] Обновить architecture/operations docs и tech debt
-- [ ] Выполнить локальную валидацию
+- [x] Выполнить локальную валидацию
 - [ ] Создать PR и пройти PR loop до merge-ready
 - [ ] После human merge развернуть и выполнить live readback
 - [ ] После закрытия общих release blockers пройти direct APK end-to-end matrix
