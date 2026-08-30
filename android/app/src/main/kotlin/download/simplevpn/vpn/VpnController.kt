@@ -3,6 +3,7 @@ package download.simplevpn.vpn
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.ContextCompat
+import download.simplevpn.core.SessionLog
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,6 +32,11 @@ object VpnController {
 
     internal fun updateTrace(next: TraceState) {
         _trace.value = next
+    }
+
+    /** Restores a finished recording after the Activity or process returns. */
+    fun restoreTrace(context: Context) {
+        _trace.value = restoredTraceState(_trace.value, SessionLog.hasTrace(context))
     }
 
     /**
@@ -108,3 +114,13 @@ object VpnController {
         context.startService(intent)
     }
 }
+
+/** Keeps an active recording intact and otherwise follows what is on disk. */
+internal fun restoredTraceState(current: TraceState, hasTrace: Boolean): TraceState =
+    if (current is TraceState.Recording) {
+        current
+    } else if (hasTrace) {
+        TraceState.Ready
+    } else {
+        TraceState.Idle
+    }
