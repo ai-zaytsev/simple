@@ -26,8 +26,9 @@ import java.util.Locale
  * [traceFile] is the engine at `info`, which names every address it dials. It
  * is a browsing history, and it exists only while somebody has deliberately
  * started a recording, having been told what it holds. It is removed when it
- * is sent and when the application starts, so that at an arbitrary moment
- * there is nothing on the device to take.
+ * is removed after it is handed to mail, successfully saved elsewhere or
+ * explicitly deleted. Merely reopening the application does not discard a
+ * recording the person has not acted on yet.
  *
  * Separate files rather than one, for a second reason too: the engine holds
  * its own handle and writes directly, so interleaving our lines into it would
@@ -60,10 +61,10 @@ object SessionLog {
     /**
      * Removes the detailed recording.
      *
-     * Called when it has been sent and when the application starts. Not on
-     * every session start: a recording is meant to survive the reconnect that
-     * starting it causes, and a user who records a fault, sees it, and then
-     * reconnects should still have the file.
+     * Called after it has been handed to mail, successfully saved elsewhere or
+     * explicitly deleted. Not on application or session start: a recording is
+     * meant to survive the reconnect that starting it causes and remain
+     * available until the person decides what to do with it.
      */
     fun dropTrace(context: Context) {
         runCatching { traceFile(context).delete() }

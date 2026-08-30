@@ -116,7 +116,7 @@ class SimpleVpnService : VpnService() {
      * survives the service: a process that comes back has no recording
      * running, whatever was happening when it went away.
      */
-    private var tracing = false
+    private val traceWindow = TraceWindow(TRACE_LIMIT_MS)
 
     /** When this attempt began, so that "how long to connect" is measurable. */
     private var connectStartedAt = 0L
@@ -515,7 +515,7 @@ class SimpleVpnService : VpnService() {
      * keep a browsing history nobody asked for.
      */
     private fun engineLog(): XrayConfigBuilder.EngineLog =
-        if (tracing) {
+        if (traceWindow.isRunning) {
             XrayConfigBuilder.EngineLog.Trace(SessionLog.traceFile(this).absolutePath)
         } else {
             XrayConfigBuilder.EngineLog.Errors(SessionLog.engineFile(this).absolutePath)
@@ -531,21 +531,30 @@ class SimpleVpnService : VpnService() {
      * the user's back.
      */
     private fun setTracing(on: Boolean, why: String, restart: Boolean = true) {
-        watchHandler.removeCallbacks(stopTracing)
-        if (tracing == on) return
-
-        tracing = on
-        SessionLog.record(this, if (on) "detailed recording started" else "detailed recording stopped: $why")
-
         if (on) {
+            val started = traceWindow.start(SystemClock.elapsedRealtime())
+            if (!started.newlyStarted) return
+
+            // There should be no callback for a closed window. Removing one
+            // defensively is safe only after the model says this is a real
+            // transition; a repeated start must leave the original callback.
+            watchHandler.removeCallbacks(stopTracing)
+            SessionLog.record(this, "detailed recording started")
+
             // Not a reminder to the user, and not a timer they can extend. A
             // recording forgotten for a day is the way this feature leaks, and
             // "the user will remember to stop it" is not a mitigation.
             watchHandler.postDelayed(stopTracing, TRACE_LIMIT_MS)
             VpnController.updateTrace(
-                TraceState.Recording(stopsAtElapsedMillis = SystemClock.elapsedRealtime() + TRACE_LIMIT_MS),
+                TraceState.Recording(stopsAtElapsedMillis = started.stopsAtElapsedMillis),
             )
         } else {
+            // Remove even if the model is already stopped: teardown is the
+            // final safety boundary for every callback owned by the service.
+            watchHandler.removeCallbacks(stopTracing)
+            if (!traceWindow.stop()) return
+
+            SessionLog.record(this, "detailed recording stopped: $why")
             VpnController.updateTrace(
                 if (SessionLog.hasTrace(this)) TraceState.Ready else TraceState.Idle,
             )
