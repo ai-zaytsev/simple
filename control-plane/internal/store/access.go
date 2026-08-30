@@ -372,7 +372,7 @@ func (s *Store) SetAccountTier(ctx context.Context, email, tier string) (Account
 	var out AccountTier
 
 	err := s.pool.QueryRow(ctx, `
-		update accounts set tier = $2
+		update accounts set tier = $2, vip_expires_at = null
 		where lower(email) = lower($1)
 		returning id, tier`, email, tier).Scan(&out.AccountID, &out.Tier)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -740,7 +740,7 @@ func (s *Store) SetAccountTierByPrefix(
 
 	var out AccountTier
 	err := s.pool.QueryRow(ctx, `
-		update accounts set tier = $2
+		update accounts set tier = $2, vip_expires_at = null
 		where id::text like $1 || '%'
 		returning id, tier`, prefix, tier).Scan(&out.AccountID, &out.Tier)
 	if err != nil {

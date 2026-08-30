@@ -25,6 +25,8 @@ import (
 	"download.simplevpn/control-plane/internal/certs"
 	"download.simplevpn/control-plane/internal/dnsedit"
 	"download.simplevpn/control-plane/internal/mail"
+	"download.simplevpn/control-plane/internal/payment"
+	"download.simplevpn/control-plane/internal/payment/yookassa"
 	"download.simplevpn/control-plane/internal/probe"
 	"download.simplevpn/control-plane/internal/signing"
 	"download.simplevpn/control-plane/internal/store"
@@ -196,6 +198,54 @@ func run(log *slog.Logger) error {
 		log.Info("schema updated", "applied", strings.Join(applied, ","))
 	}
 
+	// Payment credentials exist only here. The Android application asks this
+	// service for a checkout and therefore never needs a shop identifier, a
+	// secret key or even the name of the configured provider.
+	provider, err := yookassa.New(
+		os.Getenv("CP_YOOKASSA_SHOP_ID"),
+		os.Getenv("CP_YOOKASSA_SECRET_KEY"),
+		nil,
+	)
+	if err != nil {
+		return fmt.Errorf("CP_YOOKASSA_SHOP_ID and CP_YOOKASSA_SECRET_KEY: %w", err)
+	}
+	returnURL := os.Getenv("CP_PAYMENT_RETURN_URL")
+	if returnURL == "" {
+		returnURL = "https://simple-syncbridge.download/v1/payments/return"
+	}
+	payments, err := payment.NewService(st, provider, returnURL)
+	if err != nil {
+		return fmt.Errorf("payment service: %w", err)
+	}
+
+	// A paid tier is access, not a label. Expiry therefore runs before the
+	// service answers and continuously afterwards; each pass also revokes
+	// credentials no longer allowed by FREE.
+	expired, err := st.ExpireVIPs(ctx)
+	if err != nil {
+		return err
+	}
+	if expired > 0 {
+		log.Info("paid VIP expired", "accounts", expired)
+	}
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				count, expireErr := st.ExpireVIPs(ctx)
+				if expireErr != nil {
+					log.Error("cannot expire paid VIP", "error", expireErr)
+				} else if count > 0 {
+					log.Info("paid VIP expired", "accounts", count)
+				}
+			}
+		}
+	}()
+
 	// Our own addresses are checked from here, and the same addresses are
 	// checked by devices. Neither reads user traffic to find out whether a way
 	// in still works, which is the point: the sensor is a test of our own, not
@@ -246,7 +296,7 @@ func run(log *slog.Logger) error {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           api.New(st, signer, cleaned, planTTL, sender, baseURL, deriver, issuer, testIssuer, adminToken, nodeCapacity, log).Routes(),
+		Handler:           api.New(st, signer, cleaned, planTTL, sender, baseURL, deriver, issuer, testIssuer, adminToken, nodeCapacity, payments, log).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

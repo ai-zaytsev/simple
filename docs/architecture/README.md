@@ -1,6 +1,6 @@
 # Architecture
 
-Целевая архитектура MVP Android VPN. Стадия 1 — архитектурный фундамент: документы определяют границы компонентов и ограничения, которым обязана подчиняться реализация. Продуктового кода на этой стадии нет.
+Целевая архитектура MVP Android VPN. Документы определяют границы компонентов и ограничения, которым обязана подчиняться действующая реализация.
 
 ## Карта Документов
 
@@ -47,7 +47,7 @@
 | Достаточно агрегированного retention | Механизм когорт в [identity-model.md](identity-model.md); ADR-003 закрыт |
 | Резервный способ первой настройки обязателен до публичного запуска | Канал `rescue` спроектирован и обязателен: зеркала и код восстановления, [bootstrap-recovery.md](bootstrap-recovery.md); ADR-004 закрыт |
 | Один Core и один транспорт — временные ограничения | Шестнадцать инвариантов в [evolution.md](evolution.md); ADR-011 и ADR-014 переведены в `accepted (temporary)` |
-| Оплата откладывается | Платёжный путь убран из MVP, VIP выдаётся административно; ADR-006 |
+| Разовые платежи VIP включаются через ЮKassa без mobile SDK | Provider-neutral Core, внешний checkout и канонический webhook; ADR-030 заменил ADR-006 |
 | FREE и VIP — одинаково расходуемая инфраструктура, различие только в лимитах и экспорте | Разделение пулов FREE/VIP убрано из [threat-model.md](threat-model.md) и [node-lifecycle.md](node-lifecycle.md); ADR-002 пересмотрен |
 | VIP может выгружать конфигурацию для сторонних клиентов | Subscription-модель и `export`-пул, [entitlement-model.md](entitlement-model.md); ADR-017 |
 
@@ -55,7 +55,7 @@
 
 Осталось одно решение со статусом `needs-owner-decision` в [decisions.md](decisions.md): DNS-резолвер (`ADR-008`). Email-провайдер — Brevo (`ADR-012`), VPS-провайдер — DigitalOcean (`ADR-005`).
 
-Отдельно ждут решения Business Owner, не будучи ADR: размер квоты FREE (бюджетное решение, см. [mvp-topology.md](mvp-topology.md)), резервный email-провайдер, площадки для `rescue`-зеркал, второй провайдер для нод. Полный список — в [prerequisites.md](prerequisites.md).
+Отдельно ждут решения Business Owner, не будучи ADR: размер квоты FREE (бюджетное решение, см. [mvp-topology.md](mvp-topology.md)), production-юридический и фискальный контур платежей, резервный email-провайдер, площадки для `rescue`-зеркал, второй провайдер для нод. Полный список — в [prerequisites.md](prerequisites.md).
 
 ## Как Пользоваться Этими Документами
 

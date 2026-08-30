@@ -14,14 +14,16 @@ import (
 	"download.simplevpn/control-plane/internal/certs"
 	"download.simplevpn/control-plane/internal/document"
 	"download.simplevpn/control-plane/internal/mail"
+	"download.simplevpn/control-plane/internal/payment"
 	"download.simplevpn/control-plane/internal/signing"
 	"download.simplevpn/control-plane/internal/store"
 )
 
 type Server struct {
-	store  *store.Store
-	signer *signing.Signer
-	log    *slog.Logger
+	store    *store.Store
+	signer   *signing.Signer
+	log      *slog.Logger
+	payments *payment.Service
 
 	// bootstrapHosts is where clients are told to look for this service. It is
 	// configuration rather than a constant so that moving the Control Plane
@@ -96,6 +98,7 @@ func New(
 	testIssuer *certs.Issuer,
 	adminToken string,
 	nodeCapacity int,
+	payments *payment.Service,
 	log *slog.Logger,
 ) *Server {
 	return &Server{
@@ -110,6 +113,7 @@ func New(
 		certsTest:      testIssuer,
 		adminToken:     adminToken,
 		nodeCapacity:   nodeCapacity,
+		payments:       payments,
 		log:            log,
 	}
 }
@@ -125,6 +129,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/plan", s.plan)
 	mux.HandleFunc("POST /v1/devices", s.listDevices)
 	mux.HandleFunc("POST /v1/devices/revoke", s.revokeDevice)
+	mux.HandleFunc("POST /v1/payments", s.createPayment)
+	mux.HandleFunc("GET /v1/payments/current", s.currentPayment)
+	mux.HandleFunc("POST /v1/payments/webhooks/yookassa", s.paymentWebhook)
+	mux.HandleFunc("GET /v1/payments/return", s.paymentReturn)
 
 	// Routers, televisions, computers and anything else that speaks the same
 	// protocol. They are revoked through the endpoint above like everything

@@ -29,7 +29,7 @@
 | DNS provider API token | Провайдер | GitHub Secrets | Управление доменами | Плановая | Перехват доменов |
 | Email provider key `BREVO_API_KEY` | Провайдер | GitHub Secrets, позже — secrets store среды | Auth service | Плановая и при подозрении | Рассылка от нашего имени, перехват magic links |
 | Email webhook path secret | Control Plane | Secrets store среды | Обработчик webhook | Плановая | Возможность слать поддельные события доставки |
-| Payment provider keys | Провайдер | Secrets store среды | Billing | Плановая | Финансовые операции |
+| YooKassa `shopId` и `Secret Key` | YooKassa | GitHub Secrets → runtime-файл Core `0600` | Только Core server API | При переходе test → production и при подозрении | Создание и чтение платежей магазина |
 | Firebase service account | Google | GitHub Secrets | Распространение сборок | Плановая | Раздача поддельной сборки тестерам |
 
 Строки с наивысшим приоритетом защиты: APK signing key, DB credentials, plan signing key. Компрометация любого из трёх не лечится ротацией нод.
@@ -45,6 +45,12 @@
 | APK | Ничего | По правилу 1 |
 
 Конкретный механизм секретов для Control Plane фиксируется `ADR-007` в [decisions.md](decisions.md). Архитектурное требование: секрет не должен попадать в аргументы командной строки, в логи и в переменные окружения дочерних процессов, которым он не нужен.
+
+### ЮKassa
+
+Тестовый магазин задаётся двумя существующими GitHub Secrets: `YOOKASSA_TEST_SHOP_ID` и `YOOKASSA_TEST_SECRET_KEY`. Deploy workflow проверяет только их наличие и записывает значения непосредственно в закрытый environment-файл Core как `CP_YOOKASSA_SHOP_ID` и `CP_YOOKASSA_SECRET_KEY`; значения не печатаются. Секрет `YOOKASSA_TEST_MOBILE_SDK_KEY` интеграцией не читается и в APK не нужен.
+
+Название runtime-переменных намеренно не содержит `TEST`: код, API и Android одинаковы для обоих контуров. Переход в production — замена значений shop ID и Secret Key в GitHub Secrets с последующим deploy. APK, схема данных и provider adapter не меняются.
 
 ## Выдача Секретов Ноде
 
@@ -94,6 +100,7 @@ sequenceDiagram
 - сканирование репозитория и истории на секреты в CI
 - запрет на коммит файлов, попадающих под правила `.gitignore` для секретов
 - тест: сборка APK не содержит строк из реестра приватных секретов
+- тест: Android source/dependencies не содержат YooKassa SDK и имён трёх test-store secrets
 - тест: конфигурация ноды, сгенерированная Control Plane, не содержит полей, которых там быть не должно
 - периодический аудит доступов к GitHub Secrets и к панелям провайдеров
 

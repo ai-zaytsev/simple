@@ -104,6 +104,7 @@ flowchart TB
 - подъём туннеля через `VpnService` и libXray
 - failover на reserve-ноду по правилам, заданным сервером
 - отправку агрегированной телеметрии
+- показ серверного каталога VIP и открытие выданного Core checkout во внешнем браузере
 
 Не отвечает и не имеет права:
 
@@ -112,6 +113,7 @@ flowchart TB
 - содержать в APK приватные ключи: в APK лежат только публичные ключи для проверки подписи
 - принимать решение о деградации ноды — он только сообщает наблюдения
 - показывать пользователю VLESS, REALITY, UUID, endpoint в основном потоке
+- хранить платёжные секреты, вычислять цену или активировать VIP по возврату браузера
 
 Пользовательский путь ограничен: email → письмо → magic link → `ON`. Всё остальное является следствием серверных решений.
 
@@ -128,6 +130,7 @@ flowchart TB
 
 - аутентификацию по email и выдачу session/refresh токенов
 - entitlement: FREE или VIP, квоты, срок действия
+- provider-neutral каталог и платежи; проверку канонического статуса у платёжного провайдера; однократную активацию срочного VIP
 - реестр нод, их состояние и capacity
 - размещение аккаунта на ноде и выдачу VLESS credential
 - сборку и подпись connection plan: `primary` + 2 reserve
@@ -143,6 +146,7 @@ flowchart TB
 - быть единственной точкой входа: у клиента обязан существовать путь восстановления, см. [bootstrap-recovery.md](bootstrap-recovery.md)
 
 PostgreSQL — единственный source of truth для аккаунтов, entitlement, нод и credentials.
+Он же является source of truth для платежей и `vip_expires_at`; состояние внешнего checkout не применяется к доступу, пока Core не подтвердил его через server API провайдера.
 
 ### VPN nodes
 
@@ -198,6 +202,29 @@ sequenceDiagram
 
 Пользователь совершает два действия: вводит email и нажимает `ON`. Всё между ними — серверная логика.
 
+### Покупка VIP
+
+```mermaid
+sequenceDiagram
+    participant U as Пользователь
+    participant A as Android
+    participant CP as Core
+    participant P as Payment provider
+
+    A->>CP: POST /v1/payments {product_id}
+    CP->>CP: FREE-период, switch продаж, серверная цена и срок
+    CP->>P: создать redirect checkout
+    P-->>CP: provider payment ID + HTTPS URL
+    CP-->>A: provider-neutral pending payment
+    A->>P: системный браузер
+    P-->>CP: webhook как сигнал
+    CP->>P: authenticated GET canonical payment
+    CP->>CP: сумма + валюта + metadata + paid; применить VIP один раз
+    A->>CP: перечитать состояние после возврата
+```
+
+Возврат страницы в Android ничего не подтверждает. Webhook также не является источником полей entitlement: он сообщает только ID объекта, после чего Core перечитывает объект по server API. ЮKassa — первый adapter общего payment provider contract; второй провайдер не меняет Android, аккаунты, VIP или VPN-доступы.
+
 ### Failover
 
 ```mermaid
@@ -232,7 +259,7 @@ sequenceDiagram
 | Микросервисы | Control Plane это один Go-бинарь с внутренними модулями |
 | Автоматический autoscaling | По ТЗ не обязателен; обязательна штатная операция добавления ноды |
 | Выбор страны или сервера в UI | Прямо запрещено ТЗ |
-| Оплата и платёжная интеграция | Отложены за пределы MVP, `ADR-006`. VIP выдаётся административно |
+| Подписки, автоплатежи, возвраты и продления VIP | Текущая покупка — разовый платёж на 1/3/12 месяцев; дальнейший lifecycle выделен в отдельные стадии |
 | ClickHouse и Loki | Не помещаются в бюджет и в доступную память, `ADR-018` и `ADR-019`. Условия обратимости — в [deferred-stack-migration.md](deferred-stack-migration.md) |
 
 Каждый пункт может быть пересмотрен отдельным ADR при появлении измеренной причины.
