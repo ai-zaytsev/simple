@@ -1,9 +1,11 @@
 package download.simplevpn.plan
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import download.simplevpn.BuildConfig
 import download.simplevpn.auth.AccountStore
+import download.simplevpn.metrics.ServiceReport
 import java.net.HttpURLConnection
 import java.security.SecureRandom
 
@@ -271,9 +273,31 @@ class ControlPlaneClient(
      * device is the one that has to answer the blocking question, and for what
      * it is allowed to say.
      */
-    fun sendReport(body: String) {
-        val token = accounts.deviceToken ?: return
-        send("/v1/app/report", body, token)
+    fun sendReport(body: String): Boolean {
+        val token = accounts.deviceToken ?: return false
+        return send(REPORT_PATH, body, token) is Result.Received
+    }
+
+    /**
+     * Checks every currently known public way in from the phone's own network.
+     *
+     * Normal requests stop at the first answer, which is correct for the user
+     * and insufficient for acceptance: an entry later in the weighted order
+     * could remain broken forever without being tried. This deliberately walks
+     * the complete descriptor. A client configured through the VPN is refused,
+     * because that would measure the tunnel rather than the network where the
+     * person actually has to enter.
+     */
+    fun probeWaysIn(): Int {
+        if (throughTunnel != null) return 0
+
+        val entries = book.entries().distinctBy {
+            listOf(it.kind.name, it.host.lowercase(), it.port.toString(), it.pathPrefix).joinToString("|")
+        }
+        for (entry in entries) {
+            attempt(entry, "/v1/config", null, null)
+        }
+        return entries.size
     }
 
     /** Tells the server a plan did not work, so somebody can look at it. */
@@ -316,6 +340,8 @@ class ControlPlaneClient(
 
     private fun attempt(entry: Entry, path: String, body: String?, token: String?): Result {
         var connection: HttpURLConnection? = null
+        val started = SystemClock.elapsedRealtime()
+        var reachedOwnAPI = false
         return try {
             connection = EntryTransport.open(entry, path, TIMEOUT_MS, throughTunnel).apply {
                 requestMethod = if (body == null) "GET" else "POST"
@@ -335,6 +361,12 @@ class ControlPlaneClient(
             }
 
             val code = connection.responseCode
+            reachedOwnAPI = code == HttpURLConnection.HTTP_OK ||
+                code == HttpURLConnection.HTTP_BAD_REQUEST ||
+                code == HttpURLConnection.HTTP_UNAUTHORIZED ||
+                code == HttpURLConnection.HTTP_CONFLICT ||
+                code == HttpURLConnection.HTTP_GONE ||
+                code == 426
 
             // The one answer that is final. The secret this device holds is no
             // longer one the server knows, which happens when somebody signs in
@@ -353,6 +385,16 @@ class ControlPlaneClient(
             Result.Failed(t.message ?: "unreachable")
         } finally {
             connection?.disconnect()
+            // The reporting request is excluded so sending a report does not
+            // create another report forever. Requests made through a VPN are
+            // excluded too: the panel asks whether this entry works from the
+            // user's public network, not whether our own tunnel can reach it.
+            if (throughTunnel == null && path != REPORT_PATH) {
+                val elapsed = (SystemClock.elapsedRealtime() - started)
+                    .coerceIn(0L, Int.MAX_VALUE.toLong())
+                    .toInt()
+                ServiceReport.probed(entry.host, reachedOwnAPI, elapsed)
+            }
         }
     }
 
@@ -362,6 +404,7 @@ class ControlPlaneClient(
 
     private companion object {
         const val TAG = "ControlPlaneClient"
+        const val REPORT_PATH = "/v1/app/report"
 
         // Short, because a blocked entry must cost seconds rather than the
         // whole budget for finding a way in.

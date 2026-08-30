@@ -330,7 +330,7 @@ func (s *Server) appReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	served := s.servedNames(r)
+	served := s.deviceReportTargets(r)
 	for _, probe := range body.Probes {
 		// Refused rather than stored if it is not one of ours. This is what
 		// keeps the single domain column in the schema from becoming a list of
@@ -348,22 +348,23 @@ func (s *Server) appReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// servedNames is the set of addresses this service will accept a report about.
+// deviceReportTargets is the set of addresses this service will accept a
+// device report about.
 //
 // Cached briefly because it is asked on every device report and changes when a
 // node is added, which is not often.
-func (s *Server) servedNames(r *http.Request) map[string]bool {
-	s.namesOnce.Lock()
-	defer s.namesOnce.Unlock()
+func (s *Server) deviceReportTargets(r *http.Request) map[string]bool {
+	s.reportNamesOnce.Lock()
+	defer s.reportNamesOnce.Unlock()
 
-	if time.Since(s.namesAt) < time.Minute && s.names != nil {
-		return s.names
+	if time.Since(s.reportNamesAt) < time.Minute && s.reportNames != nil {
+		return s.reportNames
 	}
-	list, err := s.store.ServedNames(r.Context())
+	list, err := s.store.DeviceReportTargets(r.Context())
 	if err != nil {
-		s.log.Error("cannot list served names", "error", err)
-		if s.names != nil {
-			return s.names
+		s.log.Error("cannot list device report targets", "error", err)
+		if s.reportNames != nil {
+			return s.reportNames
 		}
 		return map[string]bool{}
 	}
@@ -371,7 +372,7 @@ func (s *Server) servedNames(r *http.Request) map[string]bool {
 	for _, name := range list {
 		set[strings.ToLower(name)] = true
 	}
-	s.names, s.namesAt = set, time.Now()
+	s.reportNames, s.reportNamesAt = set, time.Now()
 	return set
 }
 

@@ -164,6 +164,35 @@ jobs:
 
           echo "=== What the measuring agent last said ==="
           journalctl -u simple-vpn-metrics -n 12 --no-pager -o cat 2>/dev/null
+
+          echo "=== Does the public edge exist on this node ==="
+          # The edge is HTTPS on the same port as the cover site. A node may
+          # remain reachable over the management network while that listener
+          # is stopped, which looks healthy to SSH and dead to every new app.
+          for unit in nginx xray simple-vpn-metrics; do
+            state=$(systemctl is-active "${unit}" 2>/dev/null || true)
+            echo "  ${unit}: ${state:-unknown}"
+          done
+
+          if ss -H -lnt 2>/dev/null | awk '$4 ~ /:443$/ { found=1 } END { exit !found }'; then
+            echo "  port 443: listening"
+          else
+            echo "  port 443: NO LISTENER"
+          fi
+
+          # No certificate names or addresses are printed. The question is
+          # only whether the local listener completes a TLS handshake.
+          if timeout 5 openssl s_client -connect 127.0.0.1:443 </dev/null >/dev/null 2>&1; then
+            echo "  local TLS handshake: yes"
+          else
+            echo "  local TLS handshake: NO"
+          fi
+
+          if nginx -t >/dev/null 2>&1; then
+            echo "  nginx configuration: valid"
+          else
+            echo "  nginx configuration: INVALID"
+          fi
           REMOTE
 
           SSH_STDIN=/tmp/inspect.sh bash infra/ssh-retry.sh \

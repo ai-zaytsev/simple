@@ -1,7 +1,9 @@
 package download.simplevpn.auth
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
+import download.simplevpn.metrics.ServiceReport
 import download.simplevpn.plan.Entry
 import download.simplevpn.plan.EntryBook
 import download.simplevpn.plan.EntryTransport
@@ -141,6 +143,8 @@ class AuthClient(private val context: Context) {
 
     private fun attempt(entry: Entry, path: String, body: String): Answer {
         var connection: HttpURLConnection? = null
+        val started = SystemClock.elapsedRealtime()
+        var reachedOwnAPI = false
         return try {
             connection = EntryTransport.open(entry, path, TIMEOUT_MS).apply {
                 requestMethod = "POST"
@@ -150,14 +154,18 @@ class AuthClient(private val context: Context) {
             }
             connection.outputStream.use { it.write(body.toByteArray()) }
 
-            when (connection.responseCode) {
-                HttpURLConnection.HTTP_OK ->
+            when (val code = connection.responseCode) {
+                HttpURLConnection.HTTP_OK -> {
+                    reachedOwnAPI = true
                     Answer.Ok(connection.inputStream.bufferedReader().readText())
+                }
 
-                HttpURLConnection.HTTP_BAD_REQUEST, HttpURLConnection.HTTP_GONE ->
+                HttpURLConnection.HTTP_BAD_REQUEST, HttpURLConnection.HTTP_GONE -> {
+                    reachedOwnAPI = true
                     Answer.Refused
+                }
 
-                else -> Answer.Failed("server refused the request")
+                else -> Answer.Failed("server refused the request ($code)")
             }
         } catch (t: Throwable) {
             // The address is never in this message: it goes to a log.
@@ -165,6 +173,10 @@ class AuthClient(private val context: Context) {
             Answer.Failed(t.message ?: "cannot reach the server")
         } finally {
             connection?.disconnect()
+            val elapsed = (SystemClock.elapsedRealtime() - started)
+                .coerceIn(0L, Int.MAX_VALUE.toLong())
+                .toInt()
+            ServiceReport.probed(entry.host, reachedOwnAPI, elapsed)
         }
     }
 
