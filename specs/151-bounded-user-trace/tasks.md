@@ -12,5 +12,5 @@
 - [x] Удалить устаревший release blocker
 - [x] Выполнить локальную валидацию: `git diff --check`, caller audit и проверка двух оставшихся open blockers; Android toolchain отсутствует локально, unit/build переданы штатному GitHub Android Build
 - [x] Запушить feature branch и открыть PR №157; сбой первого PR в `Publish-FeaturePR.ps1` записан в `docs/tech-debt.md`, PR создан вручную с корректным body
-- [ ] Получить green checks и AI review/fallback текущего PR head
+- [x] Получить green checks и documented AI review fallback; внешний reviewer `claude` выбран, но `AI_REVIEW_COMMAND` не настроен, поэтому review authority остаётся у человека
 - [ ] Получить human review и merge authority
