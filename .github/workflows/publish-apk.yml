@@ -189,6 +189,36 @@ jobs:
             --endpoint-url "${SPACES_ENDPOINT}" >/dev/null 2>&1 || : > /tmp/releases.json
 
           key="${SPACES_PREFIX}/releases/${VERSION_NAME}/$(basename "${APK_FILE}")"
+
+          # A public release followed by a temporary Core failure is a normal
+          # retry, not permission to overwrite immutable bytes. Reuse the
+          # manifest identity, verify it below through the official domain,
+          # and run only the Core synchronization again.
+          matches=$(jq -c --arg name "${VERSION_NAME}" --argjson code "${VERSION_CODE}" \
+            '[.releases[]? | select(.versionName == $name or .versionCode == $code)]' \
+            /tmp/releases.json 2>/dev/null || echo '[]')
+          count=$(jq 'length' <<<"${matches}")
+          if [ "${count}" -gt 0 ]; then
+            [ "${count}" -eq 1 ] || { echo "Published version identity is inconsistent."; exit 1; }
+            existing=$(jq -c '.[0]' <<<"${matches}")
+            [ "$(jq -r '.versionName' <<<"${existing}")" = "${VERSION_NAME}" ] || \
+              { echo "versionName is already paired with another versionCode."; exit 1; }
+            [ "$(jq -r '.versionCode' <<<"${existing}")" = "${VERSION_CODE}" ] || \
+              { echo "versionCode is already paired with another versionName."; exit 1; }
+            [ "$(jq -r '.certificateSha256' <<<"${existing}")" = "${CERTIFICATE_SHA256}" ] || \
+              { echo "Published release uses another signing certificate."; exit 1; }
+            aws s3api head-object --bucket "${SPACES_BUCKET}" --key "${key}" \
+              --endpoint-url "${SPACES_ENDPOINT}" >/dev/null
+            cp /tmp/releases.json /tmp/releases.next.json
+            echo "already_published=true" >> "${GITHUB_OUTPUT}"
+            echo "selected_sha256=$(jq -r '.sha256' <<<"${existing}")" >> "${GITHUB_OUTPUT}"
+            echo "selected_size=$(jq -r '.size' <<<"${existing}")" >> "${GITHUB_OUTPUT}"
+            echo "selected_file_name=$(jq -r '.fileName' <<<"${existing}")" >> "${GITHUB_OUTPUT}"
+            echo "versioned_key=${key}" >> "${GITHUB_OUTPUT}"
+            echo "The immutable release already exists; continuing as a Core synchronization retry."
+            exit 0
+          fi
+
           if aws s3api head-object --bucket "${SPACES_BUCKET}" --key "${key}" \
                --endpoint-url "${SPACES_ENDPOINT}" >/dev/null 2>&1; then
             echo "Immutable object already exists for ${VERSION_NAME}; refusing to overwrite it."
@@ -206,9 +236,14 @@ jobs:
             --sha256 "${APK_SHA256}" \
             --certificate-sha256 "${CERTIFICATE_SHA256}" \
             --commit "${GITHUB_SHA}"
+          echo "already_published=false" >> "${GITHUB_OUTPUT}"
+          echo "selected_sha256=${APK_SHA256}" >> "${GITHUB_OUTPUT}"
+          echo "selected_size=$(stat -c%s "${APK_FILE}")" >> "${GITHUB_OUTPUT}"
+          echo "selected_file_name=$(basename "${APK_FILE}")" >> "${GITHUB_OUTPUT}"
           echo "versioned_key=${key}" >> "${GITHUB_OUTPUT}"
 
       - name: Publish version, then latest, then manifest
+        if: steps.manifest.outputs.already_published != 'true'
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
@@ -237,8 +272,9 @@ jobs:
       - name: Verify through the official domain
         env:
           VERSION_NAME: ${{ steps.artifact.outputs.version_name }}
-          FILE_NAME: ${{ steps.artifact.outputs.file_name }}
-          EXPECTED_SHA256: ${{ steps.artifact.outputs.sha256 }}
+          FILE_NAME: ${{ steps.manifest.outputs.selected_file_name }}
+          EXPECTED_SHA256: ${{ steps.manifest.outputs.selected_sha256 }}
+          EXPECTED_CERTIFICATE_SHA256: ${{ steps.artifact.outputs.certificate_sha256 }}
         run: |
           set -euo pipefail
           curl -fsS --max-time 20 "https://${SITE_DOMAIN}/releases.json" > /tmp/public-releases.json
@@ -249,7 +285,11 @@ jobs:
           curl -fsSL --max-time 180 "https://${SITE_DOMAIN}/download/latest.apk" -o /tmp/latest.apk
           actual=$(sha256sum /tmp/latest.apk | cut -d' ' -f1)
           [ "${actual}" = "${EXPECTED_SHA256}" ] || { echo "Latest APK checksum mismatch."; exit 1; }
-          "${APKSIGNER}" verify --verbose --print-certs /tmp/latest.apk >/dev/null
+          "${APKSIGNER}" verify --verbose --print-certs /tmp/latest.apk > /tmp/public-apksigner.txt
+          public_cert=$(sed -nE 's/^Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]+)$/\1/p' \
+            /tmp/public-apksigner.txt | head -1 | tr 'A-F' 'a-f')
+          [ "${public_cert}" = "${EXPECTED_CERTIFICATE_SHA256}" ] || \
+            { echo "Public APK signing certificate mismatch."; exit 1; }
 
           code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
             "https://${SITE_DOMAIN}/download/releases/${VERSION_NAME}/${FILE_NAME}")
@@ -263,8 +303,8 @@ jobs:
           ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
           VERSION_NAME: ${{ steps.artifact.outputs.version_name }}
           VERSION_CODE: ${{ steps.artifact.outputs.version_code }}
-          FILE_NAME: ${{ steps.artifact.outputs.file_name }}
-          APK_SHA256: ${{ steps.artifact.outputs.sha256 }}
+          FILE_NAME: ${{ steps.manifest.outputs.selected_file_name }}
+          APK_SHA256: ${{ steps.manifest.outputs.selected_sha256 }}
           ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
@@ -304,9 +344,9 @@ jobs:
         env:
           VERSION_NAME: ${{ steps.artifact.outputs.version_name }}
           VERSION_CODE: ${{ steps.artifact.outputs.version_code }}
-          APK_SIZE: ${{ steps.artifact.outputs.size }}
-          APK_SHA256: ${{ steps.artifact.outputs.sha256 }}
-          FILE_NAME: ${{ steps.artifact.outputs.file_name }}
+          APK_SIZE: ${{ steps.manifest.outputs.selected_size }}
+          APK_SHA256: ${{ steps.manifest.outputs.selected_sha256 }}
+          FILE_NAME: ${{ steps.manifest.outputs.selected_file_name }}
         run: |
           {
             echo "## Official APK"

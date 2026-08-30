@@ -62,6 +62,36 @@ func TestAppUpdateLifecycleOnPostgres(t *testing.T) {
 	if err != nil || policy.Verdict(1) != appupdate.Optional {
 		t.Fatalf("minimum relaxation: policy=%+v err=%v", policy, err)
 	}
+
+	playRelease := AppRelease{
+		VersionCode: 3,
+		VersionName: "0.3.0",
+		Channel:     "google_play",
+	}
+	policy, err = st.PublishAppRelease(ctx, playRelease, "play-update-test")
+	if err != nil || policy.LatestVersionCode != 3 {
+		t.Fatalf("channel-neutral publication: policy=%+v err=%v", policy, err)
+	}
+	if _, stale := policy.Channels[appupdate.DirectAPK]; stale {
+		t.Fatal("a direct APK from the previous version survived a latest advance")
+	}
+	if _, present := policy.Channels["google_play"]; !present {
+		t.Fatal("the channel that advanced latest is absent")
+	}
+
+	directThree := AppRelease{
+		VersionCode: 3,
+		VersionName: "0.3.0",
+		Channel:     appupdate.DirectAPK,
+		Artifact: appupdate.Artifact{
+			URL:    "https://simple-vpn.download/download/releases/0.3.0/simple-vpn-0.3.0.apk",
+			SHA256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		},
+	}
+	policy, err = st.PublishAppRelease(ctx, directThree, "direct-update-test")
+	if err != nil || policy.Channels[appupdate.DirectAPK] != directThree.Artifact {
+		t.Fatalf("second channel attachment: policy=%+v err=%v", policy, err)
+	}
 	if _, err := st.PublishAppRelease(ctx, AppRelease{
 		VersionCode: 1,
 		VersionName: "0.1.0",
