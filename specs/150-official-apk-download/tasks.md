@@ -1,0 +1,25 @@
+# Tasks: Official APK Download
+
+- [x] Business Owner согласовал отдельный `site-1` в DigitalOcean `ams3`, 1 vCPU / 512 МБ / 10 ГБ, APK в Spaces
+- [x] `main` обновлён, создана `feature/150-official-apk-download`
+- [x] Запущена живая `Infra Inventory`
+- [x] Записаны `spec.md`, `plan.md`, `tasks.md` и legacy workspace assessment
+- [x] Зафиксировать результат живой инвентаризации: до apply в DigitalOcean ноль Droplet
+- [x] Найти stale test-node state, замаскировать state addresses до plan и подготовить точечное удаление отсутствующих записей перед apply
+- [x] Добавить официальный статический сайт и проверки
+- [x] Добавить release signing configuration Android
+- [x] Добавить неизменяемый manifest и проверенный publication workflow
+- [x] Добавить Spaces namespace без retention для APK
+- [x] Добавить Terraform/cloud-init `site-1`
+- [x] Добавить штатный workflow provisioning и DNS
+- [x] Обновить durable docs
+- [x] Выполнить локальную валидацию: site/manifest tests, workflow YAML, cloud-init ASCII, Terraform fmt; provider init передан GitHub runner из-за недоступности registry из локальной сети
+- [x] Запушить feature branch и создать PR #156
+- [x] Получить green required checks текущего PR head; AI Review workflow завершился штатным fallback на human review, потому что команда внешнего reviewer не настроена
+- [ ] Получить human review и merge authority
+- [ ] После merge создать `site-1` и DNS; использовать согласованный `apk/` namespace в существующем Spaces bucket
+- [ ] Без передачи секретов в чат добавить release-signing key в GitHub Secrets и сохранить Business Owner offline-копию
+- [ ] Закрыть обязательные пункты `docs/release-blockers.md`, которые publication workflow проверяет перед сборкой
+- [ ] Опубликовать первую release-signed APK
+- [ ] Проверить официальный домен, `latest`, versioned link, SHA-256 и подпись
+- [ ] Назвать результат живой сверки и закрыть стадию

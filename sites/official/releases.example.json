@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "latest": "0.1.0",
+  "releases": [
+    {
+      "versionName": "0.1.0",
+      "versionCode": 1,
+      "publishedAt": "2026-08-29T20:00:00Z",
+      "fileName": "simple-vpn-0.1.0.apk",
+      "size": 50331648,
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "certificateSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "commit": "cb4dcc28e15a0d02d0ac99348d55a75b7786400d",
+      "url": "/download/releases/0.1.0/simple-vpn-0.1.0.apk"
+    }
+  ]
+}

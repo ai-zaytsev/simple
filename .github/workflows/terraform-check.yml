@@ -13,6 +13,8 @@ on:
   pull_request:
     paths:
       - 'infra/terraform/**'
+      - 'sites/official/**'
+      - '.github/workflows/deploy-apk-site.yml'
       - '.github/workflows/terraform-check.yml'
 
 jobs:
@@ -46,6 +48,28 @@ jobs:
 
       - name: Validate
         run: terraform -chdir=infra/terraform validate
+
+      - name: Check the site Nginx configuration
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nginx >/dev/null
+          absolute_site=$(pwd)/sites/official/nginx.conf
+          cat > /tmp/nginx-site-check.conf <<EOF
+          events {}
+          http {
+            include /etc/nginx/mime.types;
+            include ${absolute_site};
+          }
+          EOF
+          sudo nginx -t -c /tmp/nginx-site-check.conf
+
+      - name: Mask addresses already recorded in Terraform state
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: bash ../../.github/scripts/mask-terraform-state-addresses.sh
 
       - name: Inventory SSH keys
         env:

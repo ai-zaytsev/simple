@@ -207,6 +207,38 @@ jobs:
 
           echo "usable=${usable}" >> "${GITHUB_OUTPUT}"
 
+      - name: Probe public APK object without exposing the bucket listing
+        id: apk_public
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ams3
+          BUCKET: simple-vpn-infra-backups
+          ENDPOINT: https://ams3.digitaloceanspaces.com
+        run: |
+          set -euo pipefail
+          key="apk/healthcheck/public-${GITHUB_RUN_ID}.txt"
+          public_url="https://${BUCKET}.ams3.digitaloceanspaces.com/${key}"
+          cleanup() {
+            aws s3api delete-object --bucket "${BUCKET}" --key "${key}" \
+              --endpoint-url "${ENDPOINT}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          printf 'public apk object probe %s\n' "${GITHUB_RUN_ID}" > /tmp/apk-public.txt
+          aws s3 cp /tmp/apk-public.txt "s3://${BUCKET}/${key}" \
+            --endpoint-url "${ENDPOINT}" --acl public-read \
+            --content-type text/plain --cache-control no-store --only-show-errors
+          curl -fsS --max-time 20 "${public_url}" > /tmp/apk-public-back.txt
+          diff -q /tmp/apk-public.txt /tmp/apk-public-back.txt >/dev/null
+          listing_code=$(curl -sS -o /tmp/apk-bucket-listing.xml -w '%{http_code}' --max-time 20 \
+            "https://${BUCKET}.ams3.digitaloceanspaces.com/" || echo 000)
+          [ "${listing_code}" != "200" ] || { echo "Bucket listing is public; refusing to mix APK and private backups."; exit 1; }
+          cleanup
+          trap - EXIT
+          echo "usable=true" >> "${GITHUB_OUTPUT}"
+          echo "Public-read works for one object while the bucket listing remains private."
+
       - name: Verdict
         if: always()
         env:
@@ -214,6 +246,7 @@ jobs:
           PROJECTS_CODE: ${{ steps.do_read.outputs.projects_code }}
           DO_WRITABLE: ${{ steps.do_write.outputs.writable }}
           SPACES_USABLE: ${{ steps.spaces.outputs.usable }}
+          APK_PUBLIC_USABLE: ${{ steps.apk_public.outputs.usable }}
         run: |
           set -euo pipefail
           # Capability is judged only by the endpoints provisioning actually uses.
@@ -226,6 +259,7 @@ jobs:
           [ "${PROJECTS_CODE:-000}" = "200" ] || { echo "Cannot read projects. Needs project read scope."; failed=1; }
           [ "${DO_WRITABLE:-false}" = "true" ] || { echo "No write scope. Provisioning is impossible until it is granted."; failed=1; }
           [ "${SPACES_USABLE:-false}" = "true" ] || { echo "Spaces bucket is not reachable."; failed=1; }
+          [ "${APK_PUBLIC_USABLE:-false}" = "true" ] || { echo "Spaces cannot publish a public APK object."; failed=1; }
           if [ "${failed}" -ne 0 ]; then
             exit 1
           fi

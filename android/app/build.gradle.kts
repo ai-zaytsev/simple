@@ -16,6 +16,22 @@ android {
         versionName = "0.1.0"
     }
 
+    val releaseKeystore = System.getenv("RELEASE_KEYSTORE")
+    val releaseStorePassword = System.getenv("RELEASE_STORE_PASSWORD")
+    val releaseKeyAlias = System.getenv("RELEASE_KEY_ALIAS")
+    val releaseKeyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+    val releaseSigningValues = listOf(
+        releaseKeystore,
+        releaseStorePassword,
+        releaseKeyAlias,
+        releaseKeyPassword,
+    )
+    val hasReleaseSigning = releaseSigningValues.all { !it.isNullOrBlank() }
+
+    require(hasReleaseSigning || releaseSigningValues.all { it.isNullOrBlank() }) {
+        "Release signing is only accepted when the keystore, both passwords and alias are all present."
+    }
+
     signingConfigs {
         getByName("debug") {
             // The same key on every build, when CI supplies one.
@@ -38,6 +54,16 @@ android {
                 keyPassword = "android"
             }
         }
+
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseKeystore!!)
+                storeType = "PKCS12"
+                storePassword = releaseStorePassword!!
+                keyAlias = releaseKeyAlias!!
+                keyPassword = releaseKeyPassword!!
+            }
+        }
     }
 
     buildTypes {
@@ -52,9 +78,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // Signing is intentionally absent. The release keystore is held by
-            // the Business Owner and injected in CI, never stored in the repo.
-            // See docs/architecture/secrets-model.md.
+            // The release keystore is held by the Business Owner and injected
+            // in CI, never stored in the repository. A developer can still
+            // assemble an unsigned release locally; publication verifies the
+            // APK signature and refuses it. See docs/architecture/secrets-model.md.
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
