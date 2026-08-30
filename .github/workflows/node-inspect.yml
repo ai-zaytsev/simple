@@ -210,7 +210,23 @@ jobs:
             -J "root@${JUMP}" -o StrictHostKeyChecking=accept-new \
             "root@${ADDRESS}" 'bash -s' | sed 's/^/  /'
 
+      - name: Require a local HTTPS listener
+        env:
+          ADDRESS: ${{ steps.node.outputs.address }}
+        run: |
+          set -euo pipefail
+          ssh -J "root@${JUMP}" -o StrictHostKeyChecking=accept-new \
+            "root@${ADDRESS}" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          systemctl is-active --quiet nginx
+          ss -H -lnt | awk '$4 ~ /:443$/ { found=1 } END { exit !found }'
+          timeout 5 openssl s_client -connect 127.0.0.1:443 </dev/null >/dev/null 2>&1
+          nginx -t >/dev/null 2>&1
+          REMOTE
+          echo "The node has a valid local HTTPS listener."
+
       - name: Test the public edge from outside
+        if: always()
         env:
           DOMAIN: ${{ steps.node.outputs.domain }}
           PREFIX: ${{ steps.node.outputs.prefix }}
