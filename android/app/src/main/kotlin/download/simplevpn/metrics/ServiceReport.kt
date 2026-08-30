@@ -71,9 +71,10 @@ object ServiceReport {
     /**
      * Records what one of our own addresses did when it was tried.
      *
-     * Only ever called with an address from our own connection plan. The
-     * server checks that too and drops anything else, so a modified build
-     * cannot turn this into a way of reporting where somebody went.
+     * Only ever called with an address from our own connection plan or signed
+     * bootstrap descriptor. The server independently checks the current node
+     * and bootstrap tables and drops anything else, so a modified build cannot
+     * turn this into a way of reporting where somebody went.
      */
     fun probed(target: String, ok: Boolean, latencyMs: Int?) = synchronized(lock) {
         if (target.isBlank()) return

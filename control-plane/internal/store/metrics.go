@@ -189,12 +189,11 @@ func (s *Store) RecordProbe(ctx context.Context, at time.Time, target, vantage s
 	return nil
 }
 
-// ServedNames lists the addresses this service is willing to test.
+// ServedNames lists the DNS names the Control Plane's own prober can test.
 //
-// The prober takes its targets from here rather than from anything a client or
-// a node sends, so the one domain column in the schema can only ever hold a
-// name we serve. A target that arrives from outside is refused, which is what
-// keeps a probe table from becoming a list of places people go.
+// It opens ordinary HTTPS URLs, so an IP entry that needs a separate TLS name
+// and an edge that needs a path prefix do not belong here. Device reports have
+// a separate allowlist below because Android tests those transports correctly.
 func (s *Store) ServedNames(ctx context.Context) ([]string, error) {
 	rows, err := s.pool.Query(ctx, `
 		select distinct params->>'server_name' from nodes
@@ -212,6 +211,34 @@ func (s *Store) ServedNames(ctx context.Context) ([]string, error) {
 		var name string
 		if err := rows.Scan(&name); err != nil {
 			return nil, fmt.Errorf("cannot read a served name: %w", err)
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
+// DeviceReportTargets lists every address an Android report may name.
+//
+// All values come from our own database, never from the report. Keeping this
+// allowlist server-owned is what prevents a modified application from turning
+// endpoint_probes into a history of sites somebody visited.
+func (s *Store) DeviceReportTargets(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		select distinct params->>'server_name' from nodes
+		where coalesce(params->>'server_name','') <> ''
+		union
+		select distinct host from bootstrap_entries
+		where enabled and host <> ''`)
+	if err != nil {
+		return nil, fmt.Errorf("cannot list device report targets: %w", err)
+	}
+	defer rows.Close()
+
+	names := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("cannot read a device report target: %w", err)
 		}
 		names = append(names, name)
 	}

@@ -70,6 +70,17 @@ jobs:
           echo "::add-mask::${address}"
           echo "address=${address}" >> "${GITHUB_OUTPUT}"
 
+          domain=$(ssh "root@${JUMP}" \
+            "psql \"\$(cat /etc/simple-vpn-cp.dsn)\" -tAc \
+             \"select coalesce(params->>'server_name','') from nodes where alias = '${ALIAS}' and state <> 'removed'\"" \
+            | tr -d '[:space:]')
+          prefix=$(ssh "root@${JUMP}" \
+            "psql \"\$(cat /etc/simple-vpn-cp.dsn)\" -tAc \
+             \"select coalesce(path_prefix,'') from bootstrap_entries where enabled and lower(host) = lower('${domain}') limit 1\"" \
+            | tr -d '[:space:]')
+          echo "domain=${domain}" >> "${GITHUB_OUTPUT}"
+          echo "prefix=${prefix}" >> "${GITHUB_OUTPUT}"
+
       - name: Say what it is doing
         env:
           ADDRESS: ${{ steps.node.outputs.address }}
@@ -164,8 +175,72 @@ jobs:
 
           echo "=== What the measuring agent last said ==="
           journalctl -u simple-vpn-metrics -n 12 --no-pager -o cat 2>/dev/null
+
+          echo "=== Does the public edge exist on this node ==="
+          # The edge is HTTPS on the same port as the cover site. A node may
+          # remain reachable over the management network while that listener
+          # is stopped, which looks healthy to SSH and dead to every new app.
+          for unit in nginx xray simple-vpn-metrics; do
+            state=$(systemctl is-active "${unit}" 2>/dev/null || true)
+            echo "  ${unit}: ${state:-unknown}"
+          done
+
+          if ss -H -lnt 2>/dev/null | awk '$4 ~ /:443$/ { found=1 } END { exit !found }'; then
+            echo "  port 443: listening"
+          else
+            echo "  port 443: NO LISTENER"
+          fi
+
+          # No certificate names or addresses are printed. The question is
+          # only whether the local listener completes a TLS handshake.
+          if timeout 5 openssl s_client -connect 127.0.0.1:443 </dev/null >/dev/null 2>&1; then
+            echo "  local TLS handshake: yes"
+          else
+            echo "  local TLS handshake: NO"
+          fi
+
+          if nginx -t >/dev/null 2>&1; then
+            echo "  nginx configuration: valid"
+          else
+            echo "  nginx configuration: INVALID"
+          fi
           REMOTE
 
           SSH_STDIN=/tmp/inspect.sh bash infra/ssh-retry.sh \
             -J "root@${JUMP}" -o StrictHostKeyChecking=accept-new \
             "root@${ADDRESS}" 'bash -s' | sed 's/^/  /'
+
+      - name: Require a local HTTPS listener
+        env:
+          ADDRESS: ${{ steps.node.outputs.address }}
+        run: |
+          set -euo pipefail
+          ssh -J "root@${JUMP}" -o StrictHostKeyChecking=accept-new \
+            "root@${ADDRESS}" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          systemctl is-active --quiet nginx
+          ss -H -lnt | awk '$4 ~ /:443$/ { found=1 } END { exit !found }'
+          timeout 5 openssl s_client -connect 127.0.0.1:443 </dev/null >/dev/null 2>&1
+          nginx -t >/dev/null 2>&1
+          REMOTE
+          echo "The node has a valid local HTTPS listener."
+
+      - name: Test the public edge from outside
+        if: always()
+        env:
+          DOMAIN: ${{ steps.node.outputs.domain }}
+          PREFIX: ${{ steps.node.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DOMAIN}" ] || [ -z "${PREFIX}" ]; then
+            echo "This node has no enabled public edge entry."
+            exit 1
+          fi
+
+          # The URL is public in the signed bootstrap, but the opaque prefix is
+          # still kept out of the log. A status failure makes the diagnostic
+          # run itself red, so the broken alias remains identifiable even when
+          # archived Actions logs cannot be downloaded.
+          curl -fsS --max-time 15 -o /dev/null \
+            "https://${DOMAIN}${PREFIX}/v1/config"
+          echo "${DOMAIN}: the exact public bootstrap route answers."

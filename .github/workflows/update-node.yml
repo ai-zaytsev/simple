@@ -140,6 +140,22 @@ jobs:
                /usr/local/lib/simple-vpn/speed-limit.sh none"
           echo "The shaper will remove itself in ${MINUTES} minutes unless this run cancels it."
 
+      - name: Stand the public edge back up
+        env:
+          ADDRESS: ${{ steps.node.outputs.address }}
+        run: |
+          set -euo pipefail
+          # Management SSH can remain healthy while nginx is stopped, leaving
+          # the VPN node present in the fleet and its bootstrap edge dead. An
+          # update is convergence, not only a file copy: validate the existing
+          # configuration and restore the public listener before scripts try
+          # to reload it.
+          bash infra/ssh-retry.sh -i ~/.ssh/deploy -o BatchMode=yes \
+            -J "root@${JUMP}" -o StrictHostKeyChecking=accept-new \
+            "root@${ADDRESS}" \
+            'nginx -t && systemctl enable -q --now nginx && systemctl is-active --quiet nginx'
+          echo "The public HTTPS service is running."
+
       - name: Copy the agents and the shaper
         env:
           ADDRESS: ${{ steps.node.outputs.address }}

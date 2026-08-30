@@ -73,11 +73,11 @@ type Server struct {
 	// and renting larger ones should not mean rebuilding this.
 	nodeCapacity int
 
-	// names is the set of addresses this service will accept a report about,
+	// reportNames is the set of addresses this service will accept a report about,
 	// cached for a minute. Guarded because device reports arrive in parallel.
-	names     map[string]bool
-	namesAt   time.Time
-	namesOnce namesGuard
+	reportNames     map[string]bool
+	reportNamesAt   time.Time
+	reportNamesOnce namesGuard
 
 	// Which credentials the nodes should route through their heavy outbounds,
 	// recomputed at most once a minute. Cached because every node asks on

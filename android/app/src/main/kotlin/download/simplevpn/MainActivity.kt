@@ -17,6 +17,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import download.simplevpn.auth.AccountStore
 import download.simplevpn.support.LastError
 import download.simplevpn.auth.SignInScreen
+import download.simplevpn.metrics.WayInProbe
 import download.simplevpn.ui.VpnScreen
 import download.simplevpn.update.AppUpdateDialog
 import download.simplevpn.update.AppUpdatePolicy
@@ -57,6 +58,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         UpdateController.refresh(this)
+        WayInProbe.refresh(this)
         VpnController.recheck(this)
     }
 
@@ -97,7 +99,12 @@ class MainActivity : ComponentActivity() {
                         onToggle = { isActive -> if (isActive) requestStop() else requestStart() },
                     )
                 } else {
-                    SignInScreen(onSignedIn = { signedIn = true })
+                    SignInScreen(
+                        onSignedIn = {
+                            signedIn = true
+                            WayInProbe.refresh(this, force = true)
+                        },
+                    )
                 }
 
                 AppUpdateDialog(
