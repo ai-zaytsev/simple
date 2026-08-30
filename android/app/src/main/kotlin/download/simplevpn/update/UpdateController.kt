@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** Process-scoped update state, independent of Activity lifetime. */
 object UpdateController {
@@ -26,41 +28,47 @@ object UpdateController {
     ) {
         val required: Boolean get() = verdict is AppUpdatePolicy.Verdict.Required
         val visible: Boolean get() = required ||
-            (verdict is AppUpdatePolicy.Verdict.Optional && !optionalDismissed)
+            (verdict is AppUpdatePolicy.Verdict.Optional &&
+                verdict.artifact != null &&
+                !optionalDismissed)
         val busy: Boolean get() = phase == Phase.DOWNLOADING || phase == Phase.INSTALLING
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val refreshMutex = Mutex()
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
+    @Volatile
     private var dismissedVersionCode: Int? = null
 
     fun refresh(context: Context) {
         val application = context.applicationContext
         scope.launch {
-            val config = ConfigSource(application).current()
-            val verdict = config?.update?.verdict(
-                BuildConfig.VERSION_CODE,
-                BuildConfig.UPDATE_CHANNEL,
-            ) ?: return@launch
-            val latest = when (verdict) {
-                is AppUpdatePolicy.Verdict.Optional -> verdict.policy.latestVersionCode
-                is AppUpdatePolicy.Verdict.Required -> verdict.policy.latestVersionCode
-                AppUpdatePolicy.Verdict.Current -> null
+            refreshMutex.withLock {
+                val config = ConfigSource(application).current()
+                val verdict = config?.update?.verdict(
+                    BuildConfig.VERSION_CODE,
+                    BuildConfig.UPDATE_CHANNEL,
+                ) ?: return@withLock
+                val latest = when (verdict) {
+                    is AppUpdatePolicy.Verdict.Optional -> verdict.policy.latestVersionCode
+                    is AppUpdatePolicy.Verdict.Required -> verdict.policy.latestVersionCode
+                    AppUpdatePolicy.Verdict.Current -> null
+                }
+                val pendingFailure = consumeInstallerFailure(application)
+                val old = _state.value
+                val active = old.phase == Phase.DOWNLOADING || old.phase == Phase.INSTALLING
+                _state.value = State(
+                    verdict = verdict,
+                    phase = when {
+                        pendingFailure != null -> Phase.FAILED
+                        active -> old.phase
+                        else -> Phase.IDLE
+                    },
+                    failure = pendingFailure ?: if (active) old.failure else null,
+                    optionalDismissed = latest != null && latest == dismissedVersionCode,
+                )
             }
-            val pendingFailure = consumeInstallerFailure(application)
-            val old = _state.value
-            val active = old.phase == Phase.DOWNLOADING || old.phase == Phase.INSTALLING
-            _state.value = State(
-                verdict = verdict,
-                phase = when {
-                    pendingFailure != null -> Phase.FAILED
-                    active -> old.phase
-                    else -> Phase.IDLE
-                },
-                failure = pendingFailure ?: if (active) old.failure else null,
-                optionalDismissed = latest != null && latest == dismissedVersionCode,
-            )
         }
     }
 
@@ -73,6 +81,7 @@ object UpdateController {
 
     fun begin(context: Context) {
         val current = _state.value
+        if (current.busy) return
         val pair = when (val verdict = current.verdict) {
             is AppUpdatePolicy.Verdict.Optional -> verdict.policy to verdict.artifact
             is AppUpdatePolicy.Verdict.Required -> verdict.policy to verdict.artifact

@@ -35,6 +35,8 @@ class AppUpdateContractTest {
         val dialog = source("update/AppUpdateDialog.kt")
         assertTrue(dialog.contains("if (!state.required) onLater()"))
         assertTrue(dialog.contains("dismissButton = if (state.required)"))
+        val controller = source("update/UpdateController.kt")
+        assertTrue(controller.contains("verdict.artifact != null"))
         val activity = source("MainActivity.kt")
         assertTrue(activity.contains("AppUpdatePolicy.Verdict.Required"))
     }

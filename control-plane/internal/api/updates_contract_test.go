@@ -57,3 +57,26 @@ func TestUpdateChangesAreOperatorOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestAPKPublicationCanRetryCoreSynchronizationSafely(t *testing.T) {
+	source, err := os.ReadFile("../../../.github/workflows/publish-apk.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publish := string(source)
+	verify := strings.Index(publish, "name: Verify through the official domain")
+	advance := strings.Index(publish, "name: Advance Core latest after public verification")
+	if verify < 0 || advance < 0 || verify > advance {
+		t.Fatal("Core latest can advance before the public APK is verified")
+	}
+	for _, contract := range []string{
+		"already_published=true",
+		"selected_sha256",
+		"Public APK signing certificate mismatch",
+		"steps.manifest.outputs.selected_sha256",
+	} {
+		if !strings.Contains(publish, contract) {
+			t.Errorf("publication retry contract is missing %q", contract)
+		}
+	}
+}

@@ -39,8 +39,12 @@ func (s *Store) PublishAppRelease(
 	if strings.TrimSpace(release.Channel) == "" {
 		return appupdate.Policy{}, errors.New("release channel is empty")
 	}
-	if err := release.Artifact.Validate(); err != nil {
-		return appupdate.Policy{}, fmt.Errorf("release artifact is invalid: %w", err)
+	if release.Channel == appupdate.DirectAPK {
+		if err := release.Artifact.Validate(); err != nil {
+			return appupdate.Policy{}, fmt.Errorf("release artifact is invalid: %w", err)
+		}
+	} else if release.Artifact != (appupdate.Artifact{}) {
+		return appupdate.Policy{}, errors.New("unknown channel cannot publish direct APK material")
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -83,10 +87,11 @@ func (s *Store) PublishAppRelease(
 
 	policy.LatestVersionCode = release.VersionCode
 	policy.LatestVersionName = strings.TrimSpace(release.VersionName)
-	if policy.Channels == nil {
-		policy.Channels = map[string]appupdate.Artifact{}
-	}
-	policy.Channels[release.Channel] = release.Artifact
+	// Channel material belongs to one exact global latest version. Keeping an
+	// artifact from the previous version would make that channel offer old
+	// bytes while the policy describes the new version. Other channels attach
+	// to this release through the equal-version branch above.
+	policy.Channels = map[string]appupdate.Artifact{release.Channel: release.Artifact}
 	if err := policy.Validate(); err != nil {
 		return appupdate.Policy{}, fmt.Errorf("release would make policy invalid: %w", err)
 	}
@@ -99,7 +104,7 @@ func (s *Store) PublishAppRelease(
 	return policy, nil
 }
 
-// SetMinSupportedAppVersion raises the server stop line atomically in both
+// SetMinSupportedAppVersion changes the server stop line atomically in both
 // the new policy and the legacy row used by a rolled-back Core binary.
 func (s *Store) SetMinSupportedAppVersion(
 	ctx context.Context,
