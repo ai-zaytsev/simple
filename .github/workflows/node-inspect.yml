@@ -70,6 +70,17 @@ jobs:
           echo "::add-mask::${address}"
           echo "address=${address}" >> "${GITHUB_OUTPUT}"
 
+          domain=$(ssh "root@${JUMP}" \
+            "psql \"\$(cat /etc/simple-vpn-cp.dsn)\" -tAc \
+             \"select coalesce(params->>'server_name','') from nodes where alias = '${ALIAS}' and state <> 'removed'\"" \
+            | tr -d '[:space:]')
+          prefix=$(ssh "root@${JUMP}" \
+            "psql \"\$(cat /etc/simple-vpn-cp.dsn)\" -tAc \
+             \"select coalesce(path_prefix,'') from bootstrap_entries where enabled and lower(host) = lower('${domain}') limit 1\"" \
+            | tr -d '[:space:]')
+          echo "domain=${domain}" >> "${GITHUB_OUTPUT}"
+          echo "prefix=${prefix}" >> "${GITHUB_OUTPUT}"
+
       - name: Say what it is doing
         env:
           ADDRESS: ${{ steps.node.outputs.address }}
@@ -198,3 +209,22 @@ jobs:
           SSH_STDIN=/tmp/inspect.sh bash infra/ssh-retry.sh \
             -J "root@${JUMP}" -o StrictHostKeyChecking=accept-new \
             "root@${ADDRESS}" 'bash -s' | sed 's/^/  /'
+
+      - name: Test the public edge from outside
+        env:
+          DOMAIN: ${{ steps.node.outputs.domain }}
+          PREFIX: ${{ steps.node.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DOMAIN}" ] || [ -z "${PREFIX}" ]; then
+            echo "This node has no enabled public edge entry."
+            exit 1
+          fi
+
+          # The URL is public in the signed bootstrap, but the opaque prefix is
+          # still kept out of the log. A status failure makes the diagnostic
+          # run itself red, so the broken alias remains identifiable even when
+          # archived Actions logs cannot be downloaded.
+          curl -fsS --max-time 15 -o /dev/null \
+            "https://${DOMAIN}${PREFIX}/v1/config"
+          echo "${DOMAIN}: the exact public bootstrap route answers."
