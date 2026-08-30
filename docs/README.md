@@ -22,6 +22,7 @@
 - `docs/release-apk.md` — официальный APK: release signing, неизменяемая история, `latest` и штатная публикация
 - `docs/integrations/digitalocean.md` — DigitalOcean: фактическая область токена, Spaces, retention, границы бюджета
 - `docs/integrations/libxray.md` — транспортный движок: закреплённая версия, контрольная сумма, публичная сигнатура
+- `docs/integrations/yookassa.md` — разовые платежи VIP: provider boundary, webhook, секреты и test-store matrix
 
 Связанный task-memory layer хранится в `specs/<feature-id>/`. Product-code задача не должна стартовать без активной feature-memory папки с `spec.md`, `plan.md` и `tasks.md`.
 

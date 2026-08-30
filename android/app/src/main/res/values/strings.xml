@@ -70,7 +70,12 @@
     <string name="vip_wait">VIP можно будет купить с %1$s.</string>
     <string name="vip_wait_unknown">VIP можно будет купить позже.</string>
     <string name="vip_closed">Продажа VIP сейчас закрыта. Мы откроем её позже.</string>
-    <string name="vip_soon">Покупка скоро откроется в приложении.</string>
+    <string name="vip_soon">Выберите срок VIP.</string>
+    <string name="vip_choose">На какой срок подключить VIP</string>
+    <string name="vip_payment_pending">Платёж ещё не подтверждён. VIP включится только после подтверждения платёжной системой.</string>
+    <string name="vip_payment_continue">Вернуться к оплате</string>
+    <string name="vip_payment_check">Проверить оплату</string>
+    <string name="vip_payment_failed">Не удалось открыть страницу оплаты. Деньги не списаны — попробуйте ещё раз.</string>
     <string name="devices">Устройства</string>
     <string name="devices_title">Роутеры, ТВ и другие устройства</string>
     <string name="devices_explain">Одно устройство — одна ссылка. Нужно ещё подключение — добавьте устройство. Отзыв одного не трогает остальные.</string>

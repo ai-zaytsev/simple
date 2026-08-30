@@ -145,6 +145,23 @@ class ControlPlaneClient(
                 // the wait is over, which is the one thing the server is here
                 // to decide.
                 opensOn = buy?.optString("available_at").orEmpty(),
+                products = buildList {
+                    val list = buy?.optJSONArray("products") ?: return@buildList
+                    for (index in 0 until list.length()) {
+                        val item = list.optJSONObject(index) ?: continue
+                        val id = item.optString("id")
+                        if (id.isBlank()) continue
+                        add(
+                            Product(
+                                id = id,
+                                title = item.optString("title"),
+                                amountMinor = item.optLong("amount_minor"),
+                                currency = item.optString("currency"),
+                                durationMonths = item.optInt("duration_months"),
+                            ),
+                        )
+                    }
+                },
             )
         } catch (t: Throwable) {
             Log.w(TAG, "cannot read the standing", t)
@@ -165,7 +182,58 @@ class ControlPlaneClient(
         val mayBuy: Boolean,
         val whyNot: String,
         val opensOn: String,
+        val products: List<Product>,
     )
+
+    data class Product(
+        val id: String,
+        val title: String,
+        val amountMinor: Long,
+        val currency: String,
+        val durationMonths: Int,
+    )
+
+    data class PaymentState(
+        val id: String,
+        val productId: String,
+        val status: String,
+        val checkoutUrl: String,
+    )
+
+    /** Starts the server-owned product and returns an external checkout. */
+    fun startPayment(productId: String): PaymentState? {
+        val token = accounts.deviceToken ?: return null
+        val body = org.json.JSONObject().put("product_id", productId).toString()
+        return paymentFrom(send("/v1/payments", body, token))
+    }
+
+    /**
+     * Reads only Core's durable state after returning from the browser.
+     *
+     * This call cannot confirm a payment: Core updates this state from a
+     * verified webhook, not from the fact that Android resumed.
+     */
+    fun currentPayment(): PaymentState? {
+        val token = accounts.deviceToken ?: return null
+        return paymentFrom(send("/v1/payments/current", null, token))
+    }
+
+    private fun paymentFrom(result: Result): PaymentState? {
+        if (result !is Result.Received) return null
+        return try {
+            val json = org.json.JSONObject(result.envelopeJson)
+            val id = json.optString("payment_id").ifBlank { return null }
+            PaymentState(
+                id = id,
+                productId = json.optString("product_id"),
+                status = json.optString("status"),
+                checkoutUrl = json.optString("checkout_url"),
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "cannot read payment state", t)
+            null
+        }
+    }
 
     /** Every external device on this account, with its links. */
     fun externalDevices(): Result {

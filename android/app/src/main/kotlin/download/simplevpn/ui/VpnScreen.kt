@@ -1,6 +1,7 @@
 package download.simplevpn.ui
 
 import android.content.Intent
+import android.net.Uri
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,6 +33,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.FileProvider
 import download.simplevpn.R
@@ -46,6 +51,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.NumberFormat
+import java.util.Locale
 
 /**
  * One button and one honest line of status.
@@ -61,6 +68,7 @@ fun VpnScreen(
 ) {
     val state by stateFlow.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     // Which status this account is on and whether it may buy the other one,
     // asked once when the screen appears.
@@ -73,8 +81,22 @@ fun VpnScreen(
     // Asked every time rather than remembered: a status changes without this
     // installation doing anything, and so does whether selling is open at all.
     var standing by remember { mutableStateOf<ControlPlaneClient.Standing?>(null) }
-    LaunchedEffect(Unit) {
-        standing = withContext(Dispatchers.IO) { ControlPlaneClient(context).tier() }
+    var payment by remember { mutableStateOf<ControlPlaneClient.PaymentState?>(null) }
+    var refreshStanding by remember { mutableStateOf(0) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) refreshStanding++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(refreshStanding) {
+        val answer = withContext(Dispatchers.IO) {
+            val client = ControlPlaneClient(context)
+            client.tier() to client.currentPayment()
+        }
+        standing = answer.first
+        payment = answer.second
     }
     val tier = standing?.tier
 
@@ -158,6 +180,8 @@ fun VpnScreen(
             // open the application on the right day.
             VipButton(
                 standing = standing,
+                payment = payment,
+                onRefresh = { refreshStanding++ },
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(16.dp),
@@ -539,12 +563,29 @@ private fun statusText(state: VpnConnectionState): String = when (state) {
 @Composable
 private fun VipButton(
     standing: ControlPlaneClient.Standing?,
+    payment: ControlPlaneClient.PaymentState?,
+    onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var explaining by remember { mutableStateOf(false) }
+    var choosing by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
+    // "creating" means Core has a retryable idempotent operation but no
+    // checkout yet, so choosing the same product retries it. Only a real
+    // provider checkout is presented as pending.
+    val pending = payment?.status == "pending"
 
     TextButton(
-        onClick = { explaining = true },
+        onClick = {
+            when {
+                standing?.mayBuy != true -> explaining = true
+                pending -> explaining = true
+                else -> choosing = true
+            }
+        },
         modifier = modifier,
         // Not disabled in the Compose sense. A greyed-out control cannot be
         // pressed, so it cannot explain itself either, and the person is left
@@ -561,6 +602,7 @@ private fun VipButton(
             text = {
                 Text(
                     text = when {
+                        pending -> stringResource(R.string.vip_payment_pending)
                         buy -> stringResource(R.string.vip_soon)
                         standing?.whyNot == "too_soon" && standing.opensOn.isNotBlank() ->
                             stringResource(R.string.vip_wait, readableDay(standing.opensOn))
@@ -570,12 +612,91 @@ private fun VipButton(
                 )
             },
             confirmButton = {
-                TextButton(onClick = { explaining = false }) {
+                Column(horizontalAlignment = Alignment.End) {
+                    if (pending && payment?.checkoutUrl?.isNotBlank() == true) {
+                        TextButton(onClick = {
+                            explaining = false
+                            if (!openCheckout(context, payment.checkoutUrl)) failed = true
+                        }) {
+                            Text(text = stringResource(R.string.vip_payment_continue))
+                        }
+                        TextButton(onClick = {
+                            explaining = false
+                            onRefresh()
+                        }) {
+                            Text(text = stringResource(R.string.vip_payment_check))
+                        }
+                    }
+                    TextButton(onClick = { explaining = false }) {
+                        Text(text = stringResource(R.string.support_no_mail_close))
+                    }
+                }
+            },
+        )
+    }
+
+    if (choosing) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) choosing = false },
+            title = { Text(text = stringResource(R.string.vip_choose)) },
+            text = {
+                Column {
+                    standing?.products.orEmpty().forEach { product ->
+                        TextButton(
+                            onClick = {
+                                if (busy) return@TextButton
+                                busy = true
+                                scope.launch {
+                                    val started = withContext(Dispatchers.IO) {
+                                        ControlPlaneClient(context).startPayment(product.id)
+                                    }
+                                    busy = false
+                                    choosing = false
+                                    if (started == null || !openCheckout(context, started.checkoutUrl)) {
+                                        failed = true
+                                    }
+                                }
+                            },
+                            enabled = !busy,
+                        ) {
+                            Text(text = "${product.title} · ${rubles(product.amountMinor)}")
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { choosing = false }, enabled = !busy) {
+                    Text(text = stringResource(R.string.devices_cancel))
+                }
+            },
+        )
+    }
+
+    if (failed) {
+        AlertDialog(
+            onDismissRequest = { failed = false },
+            text = { Text(text = stringResource(R.string.vip_payment_failed)) },
+            confirmButton = {
+                TextButton(onClick = { failed = false }) {
                     Text(text = stringResource(R.string.support_no_mail_close))
                 }
             },
         )
     }
+}
+
+private fun openCheckout(context: android.content.Context, address: String): Boolean {
+    val uri = runCatching { Uri.parse(address) }.getOrNull() ?: return false
+    if (uri.scheme != "https" || uri.host.isNullOrBlank()) return false
+    return runCatching {
+        context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+    }.isSuccess
+}
+
+private fun rubles(amountMinor: Long): String {
+    val whole = amountMinor / 100
+    return NumberFormat.getIntegerInstance(Locale("ru", "RU")).format(whole) + " ₽"
 }
 
 /**

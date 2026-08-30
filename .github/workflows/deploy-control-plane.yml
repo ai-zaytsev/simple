@@ -96,8 +96,14 @@ jobs:
           # the journal and nowhere else, which is a deployment that decides
           # correctly and tells nobody.
           ALERT_EMAIL: ${{ secrets.CP_ALERT_EMAIL }}
+          # Existing test-store credentials. The workflow never needs the
+          # mobile SDK key: checkout is created by Core over server API.
+          YOOKASSA_SHOP_ID: ${{ secrets.YOOKASSA_TEST_SHOP_ID }}
+          YOOKASSA_SECRET_KEY: ${{ secrets.YOOKASSA_TEST_SECRET_KEY }}
         run: |
           set -euo pipefail
+          [ -n "${YOOKASSA_SHOP_ID}" ] || { echo "YOOKASSA_TEST_SHOP_ID is not configured."; exit 1; }
+          [ -n "${YOOKASSA_SECRET_KEY}" ] || { echo "YOOKASSA_TEST_SECRET_KEY is not configured."; exit 1; }
           if [ "${SLOT}" = "a" ]; then
             seed="${SEED_A}"; key_id="cp-2026-08-a"
           else
@@ -127,6 +133,9 @@ jobs:
           CP_DNS_SPACESHIP_SECRET=${SS_SECRET}
           CP_ADMIN_TOKEN=${ADMIN_TOKEN}
           CP_ALERT_EMAIL=${ALERT_EMAIL}
+          CP_YOOKASSA_SHOP_ID=${YOOKASSA_SHOP_ID}
+          CP_YOOKASSA_SECRET_KEY=${YOOKASSA_SECRET_KEY}
+          CP_PAYMENT_RETURN_URL=https://simple-syncbridge.download/v1/payments/return
           ENVFILE
 
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'bash -s' <<'REMOTE'
@@ -199,3 +208,21 @@ jobs:
             exit 1
           fi
           echo "| Sign-in link route | reachable |" >> "${GITHUB_STEP_SUMMARY}"
+
+          return_page=$(curl -fsS --max-time 15 \
+            https://simple-syncbridge.download/v1/payments/return || echo "")
+          if ! printf '%s' "${return_page}" | grep -q 'ничего не подтверждает'; then
+            echo "The neutral payment return page is not reachable through nginx."
+            exit 1
+          fi
+          echo "| Payment return route | neutral page reachable |" >> "${GITHUB_STEP_SUMMARY}"
+
+          webhook_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+            -X POST https://simple-syncbridge.download/v1/payments/webhooks/yookassa \
+            || echo 000)
+          if [ "${webhook_code}" != "400" ]; then
+            echo "Expected 400 for an empty webhook probe. Got ${webhook_code}."
+            echo "404 means nginx is not routing the payment webhook to the Control Plane."
+            exit 1
+          fi
+          echo "| Payment webhook route | reachable |" >> "${GITHUB_STEP_SUMMARY}"

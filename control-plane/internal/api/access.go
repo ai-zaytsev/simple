@@ -120,6 +120,26 @@ func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
 	if offer.AvailableAt != nil {
 		buy["available_at"] = offer.AvailableAt.UTC().Format(time.RFC3339)
 	}
+	if offer.Available && s.payments != nil {
+		products, err := s.payments.Products(r.Context())
+		if err != nil {
+			s.log.Error("cannot read payment products", "error", err)
+			buy["available"] = false
+			buy["reason"] = purchase.ReasonClosed
+		} else {
+			out := make([]map[string]any, 0, len(products))
+			for _, product := range products {
+				out = append(out, map[string]any{
+					"id":              product.ID,
+					"title":           product.Title,
+					"amount_minor":    product.AmountMinor,
+					"currency":        product.Currency,
+					"duration_months": product.DurationMonths,
+				})
+			}
+			buy["products"] = out
+		}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"devices":  out,
