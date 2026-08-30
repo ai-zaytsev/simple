@@ -2,7 +2,7 @@
 
 - Feature ID: `156-way-in-live-readback`
 - Feature Branch: `feature/156-way-in-live-readback`
-- Status: `in-progress`
+- Status: `merge-ready`
 
 ## Goal
 
@@ -20,4 +20,3 @@
 
 - Публикация официального APK.
 - Подъём новой ноды или покупка домена.
-

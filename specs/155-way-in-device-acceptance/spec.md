@@ -2,7 +2,7 @@
 
 - Feature ID: `155-way-in-device-acceptance`
 - Feature Branch: `feature/155-way-in-device-acceptance`
-- Status: `in-progress`
+- Status: `completed`
 
 ## Goal
 
