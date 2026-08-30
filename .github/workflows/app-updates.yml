@@ -1,0 +1,98 @@
+name: Application Updates
+
+# Reads the version policy or raises the minimum supported version. Latest is
+# not an operator input: only the official APK publisher may advance it, after
+# the signed artifact answers through the public domain with the expected hash.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Read policy, or set the minimum supported versionCode.
+        required: true
+        default: show
+        type: choice
+        options:
+          - show
+          - set-minimum
+      minimum_version_code:
+        description: Positive versionCode. Ignored when showing.
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    name: Application Updates
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" true
+          echo "Host reachable."
+
+      - name: Read or set the stop line
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          ACTION: ${{ inputs.action }}
+          MINIMUM: ${{ inputs.minimum_version_code }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if [ "${ACTION}" = "set-minimum" ]; then
+            case "${MINIMUM}" in
+              ''|*[!0-9]*) echo "Minimum must be a positive integer."; exit 1 ;;
+            esac
+            [ "${MINIMUM}" -gt 0 ] || { echo "Minimum must be positive."; exit 1; }
+            path='/v1/admin/updates/minimum'
+            method='POST'
+            body=$(jq -cn --argjson version "${MINIMUM}" '{version_code:$version}')
+          else
+            path='/v1/admin/updates'
+            method='GET'
+            body=''
+          fi
+
+          printf '%s\n%s\n%s\n%s\n' "${ADMIN_TOKEN}" "${method}" "${path}" "${body}" \
+            | ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              "read -r t; read -r m; read -r p; read -r b; \
+               if [ \"\${m}\" = GET ]; then data=''; else data=\"--data-binary @-\"; fi; \
+               printf '%s' \"\${b}\" | curl -sS --max-time 20 -o /tmp/app-updates.json -w '%{http_code}' \
+                 -X \"\${m}\" -H \"authorization: Bearer \${t}\" \
+                 -H 'content-type: application/json' -H 'x-changed-by: ${ACTOR}' \
+                 \${data} http://127.0.0.1:8080\${p}; \
+               echo; cat /tmp/app-updates.json; rm -f /tmp/app-updates.json" > /tmp/answer.txt
+
+          code=$(head -1 /tmp/answer.txt)
+          tail -n +2 /tmp/answer.txt > /tmp/app-updates.json
+          if [ "${code}" != "200" ]; then
+            echo "Not done. HTTP ${code}."
+            cat /tmp/app-updates.json
+            exit 1
+          fi
+
+          latest=$(jq -r '.latest_version_name + " (" + (.latest_version_code|tostring) + ")"' /tmp/app-updates.json)
+          minimum=$(jq -r '.min_supported_version_code' /tmp/app-updates.json)
+          channels=$(jq -r '.channels | keys | length' /tmp/app-updates.json)
+          {
+            echo "## Application update policy"
+            echo ""
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| latest | ${latest} |"
+            echo "| minimum | ${minimum} |"
+            echo "| channels with artifacts | ${channels} |"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"

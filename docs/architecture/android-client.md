@@ -24,6 +24,8 @@ SimpleVpnService      владеет туннелем
 
 Платёжный путь также заканчивается на границе клиента. Android получает от Core серверный каталог, отправляет обратно только `product_id` и открывает выданный HTTPS checkout через системный `ACTION_VIEW`. В приложении нет SDK ЮKassa, shop ID, Secret Key, цены по умолчанию или кода активации VIP. После возврата браузера клиент перечитывает сохранённое состояние Core; сам факт возврата не меняет entitlement.
 
+Update path устроен той же границей: подписанный config определяет latest/min и материал выбранного канала, Android только вычисляет общий verdict и исполняет канал. `BuildConfig.UPDATE_CHANNEL=direct_apk`; APK скачивается в private cache с пределами времени/размера/redirect, проверяется по SHA-256 до `PackageInstaller.Session` и остаётся под системным подтверждением. `BuildConfig.VERSION_CODE` — единственный номер сборки и в UI verdict, и в plan request, и в VPN-service stop check. Будущий Google Play build меняет channel executor, а не server policy или VPN.
+
 ## Как Закрываются Критерии Приёмки
 
 | Критерий | Чем обеспечен |
@@ -38,6 +40,10 @@ SimpleVpnService      владеет туннелем
 | VIP покупается без встроенной платёжной формы | Core выдаёт внешний HTTPS checkout; Android открывает системный браузер |
 | Возврат не выдаёт VIP | `ON_RESUME` только перечитывает Core; право меняет подтверждённый сервером webhook |
 | В APK нет платёжных секретов | Android знает только provider-neutral product/payment contract; source-test запрещает ключи и YooKassa dependency |
+| Добровольное обновление не выключает VPN | `current < latest` при `current >= min` даёт dismissable «Обновить / Позже» |
+| Принудительное обновление блокирует VPN | UI недismissable, сервис проверяет signed config, Core отвечает 426 до plan/credential |
+| Direct APK нельзя подменить | HTTPS URL/hash приходят в signed config; SHA-256 проверяется до platform installer |
+| Google Play не меняет policy | update verdict отделён от channel executor; Play adapter добавляется отдельно |
 | Воспроизводимая сборка | Всё зафиксировано, см. раздел ниже |
 
 ### Почему приложение исключает само себя

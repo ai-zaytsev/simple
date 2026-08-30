@@ -4,6 +4,8 @@
 // installed application, not a refactor.
 package document
 
+import "download.simplevpn/control-plane/internal/appupdate"
+
 // Transport is an envelope, not a set of fields.
 //
 // Everything specific to a protocol lives inside Params, so the plan schema
@@ -103,12 +105,13 @@ type Plan struct {
 // Config is issued to everyone, and is how the fleet is steered without
 // reissuing individual plans.
 type Config struct {
-	V                     int            `json:"v"`
-	Seq                   int64          `json:"seq"`
-	IssuedAt              string         `json:"issued_at"`
-	MinSupportedAppVersion int           `json:"min_supported_app_version"`
-	KillSwitch            KillSwitch     `json:"kill_switch"`
-	Features              map[string]bool `json:"features"`
+	V                      int              `json:"v"`
+	Seq                    int64            `json:"seq"`
+	IssuedAt               string           `json:"issued_at"`
+	MinSupportedAppVersion int              `json:"min_supported_app_version"`
+	Update                 appupdate.Policy `json:"update"`
+	KillSwitch             KillSwitch       `json:"kill_switch"`
+	Features               map[string]bool  `json:"features"`
 
 	// RefreshAfterS is how long a client may go on using this document before
 	// asking again. Shorter than a plan's life on purpose: this is the only
@@ -173,5 +176,5 @@ type Bootstrap struct {
 	IssuedAt     string           `json:"issued_at"`
 	ValidUntil   string           `json:"valid_until"`
 	Entries      []BootstrapEntry `json:"entries"`
-	RefreshAfterS int             `json:"refresh_after_s"`
+	RefreshAfterS int              `json:"refresh_after_s"`
 }

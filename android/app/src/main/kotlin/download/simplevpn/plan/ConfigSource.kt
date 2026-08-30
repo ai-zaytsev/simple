@@ -40,13 +40,18 @@ class ConfigSource(private val context: Context) {
      * Must not be called on the main thread: it opens a connection.
      */
     fun current(now: Long = System.currentTimeMillis()): ServiceConfig? {
-        val fetched = fetch(now)
-        if (fetched != null) return fetched
+        // The Activity and a running VPN service may ask at the same moment.
+        // Serialising the read/compare/write prevents the lower sequence from
+        // winning a SharedPreferences race after a higher one was accepted.
+        synchronized(REFRESH_LOCK) {
+            val fetched = fetch(now)
+            if (fetched != null) return fetched
 
-        // Kept rather than discarded, and kept whatever its age. See above:
-        // this is the difference between a switch that survives an outage and
-        // one an adversary can clear by cutting a wire.
-        return stored()
+            // Kept rather than discarded, and kept whatever its age. See above:
+            // this is the difference between a switch that survives an outage and
+            // one an adversary can clear by cutting a wire.
+            return stored()
+        }
     }
 
     private fun fetch(now: Long): ServiceConfig? {
@@ -111,5 +116,6 @@ class ConfigSource(private val context: Context) {
         const val KEY_DOCUMENT = "payload"
         const val KEY_SEQ = "seq"
         const val KEY_FETCHED_AT = "fetched_at"
+        private val REFRESH_LOCK = Any()
     }
 }

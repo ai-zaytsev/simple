@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"download.simplevpn/control-plane/internal/appupdate"
 )
 
 // Overview is everything the panel shows, in one answer.
@@ -53,6 +55,11 @@ type Overview struct {
 	// switched back is invisible from every other angle, and the symptom is
 	// an absence of revenue that nobody attributes to a setting.
 	Purchases PurchaseSettings `json:"purchases"`
+
+	// The stop line and the offered version, read from the same row that
+	// config and plan issuance use. A deployment is not accepted by reading a
+	// migration that intended to write them.
+	Updates appupdate.Policy `json:"updates"`
 }
 
 type NodeHealth struct {
@@ -225,12 +232,15 @@ func (s *Store) Overview(ctx context.Context, now time.Time) (Overview, error) {
 	// Read from the same place the decision reads it, not from a copy kept
 	// for the panel. A panel showing its own idea of a setting is a panel
 	// that can agree with itself while disagreeing with the service.
-	if state, err := s.LoadServiceState(ctx); err == nil {
-		o.Purchases = PurchaseSettings{
-			Open:     state.Purchases.Open,
-			FreeDays: state.Purchases.FreeDays,
-		}
+	state, err := s.LoadServiceState(ctx)
+	if err != nil {
+		return o, fmt.Errorf("cannot read service state for overview: %w", err)
 	}
+	o.Purchases = PurchaseSettings{
+		Open:     state.Purchases.Open,
+		FreeDays: state.Purchases.FreeDays,
+	}
+	o.Updates = state.AppUpdates
 	return o, nil
 }
 

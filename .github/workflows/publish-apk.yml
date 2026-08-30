@@ -256,6 +256,50 @@ jobs:
           [ "${code}" = "200" ] || { echo "Versioned link returned HTTP ${code}."; exit 1; }
           echo "Official latest and immutable version links both answer with the signed APK."
 
+      - name: Advance Core latest after public verification
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          VERSION_NAME: ${{ steps.artifact.outputs.version_name }}
+          VERSION_CODE: ${{ steps.artifact.outputs.version_code }}
+          FILE_NAME: ${{ steps.artifact.outputs.file_name }}
+          APK_SHA256: ${{ steps.artifact.outputs.sha256 }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          url="https://${SITE_DOMAIN}/download/releases/${VERSION_NAME}/${FILE_NAME}"
+          body=$(jq -cn \
+            --argjson version_code "${VERSION_CODE}" \
+            --arg version_name "${VERSION_NAME}" \
+            --arg channel 'direct_apk' \
+            --arg url "${url}" \
+            --arg sha256 "${APK_SHA256}" \
+            '{version_code:$version_code,version_name:$version_name,channel:$channel,url:$url,sha256:$sha256}')
+
+          printf '%s\n%s\n' "${ADMIN_TOKEN}" "${body}" \
+            | ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              "read -r t; read -r b; printf '%s' \"\${b}\" | curl -sS --max-time 20 \
+                 -o /tmp/app-release.json -w '%{http_code}' \
+                 -H \"authorization: Bearer \${t}\" \
+                 -H 'content-type: application/json' \
+                 -H 'x-changed-by: apk-publisher/${ACTOR}' \
+                 --data-binary @- http://127.0.0.1:8080/v1/admin/updates/publish; \
+               echo; cat /tmp/app-release.json; rm -f /tmp/app-release.json" > /tmp/core-answer.txt
+
+          code=$(head -1 /tmp/core-answer.txt)
+          if [ "${code}" != "200" ]; then
+            echo "The APK is public, but Core latest was not advanced. HTTP ${code}."
+            tail -n +2 /tmp/core-answer.txt
+            exit 1
+          fi
+          echo "Core latest now names the publicly verified immutable APK."
+
       - name: Summary
         env:
           VERSION_NAME: ${{ steps.artifact.outputs.version_name }}

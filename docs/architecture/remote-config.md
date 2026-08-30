@@ -89,6 +89,17 @@
   "seq": 17,
   "issued_at": "2026-08-21T10:00:00Z",
   "min_supported_app_version": 3,
+  "update": {
+    "latest_version_code": 5,
+    "latest_version_name": "0.5.0",
+    "min_supported_version_code": 3,
+    "channels": {
+      "direct_apk": {
+        "url": "https://simple-vpn.download/download/releases/0.5.0/simple-vpn-0.5.0.apk",
+        "sha256": "64 lowercase hex characters"
+      }
+    }
+  },
   "kill_switch": { "enabled": false, "message_key": "" },
   "auth": {
     "magic_link_ttl_s": 900,
@@ -107,7 +118,9 @@
 }
 ```
 
-`kill_switch` существует, чтобы при инциденте остановить подключение клиентов централизованно, не дожидаясь обновления APK. `min_supported_app_version` позволяет вывести из эксплуатации сборки, чьё поведение стало опасным.
+`kill_switch` существует, чтобы при инциденте остановить подключение клиентов централизованно, не дожидаясь обновления APK. Корневой `min_supported_app_version` сохранён для уже выпущенных клиентов и совпадает с `update.min_supported_version_code`.
+
+`current < min` означает обязательное обновление и запрет нового connection plan; `min <= current < latest` — добровольное обновление без ограничения VPN. Отдельного mandatory-флага нет, поэтому два поля не могут противоречить друг другу. Latest/min общие для каналов, а `channels` содержит только способ исполнения. Публикация APK меняет latest/direct artifact после публичной проверки и не повышает min.
 
 ## Подпись И Проверка
 

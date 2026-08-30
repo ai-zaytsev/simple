@@ -50,6 +50,34 @@ class ServiceConfigTest {
     }
 
     @Test
+    fun `new update policy must agree with the legacy minimum`() {
+        val payload = document(minVersion = 2)
+        payload.put(
+            "update",
+            JSONObject(
+                """{"latest_version_code":3,"latest_version_name":"0.3.0",
+                    "min_supported_version_code":1,"channels":{}}""",
+            ),
+        )
+        assertNull(ServiceConfig.parse(payload))
+    }
+
+    @Test
+    fun `new update policy is available to channel executor`() {
+        val payload = document(minVersion = 2)
+        payload.put(
+            "update",
+            JSONObject(
+                """{"latest_version_code":3,"latest_version_name":"0.3.0",
+                    "min_supported_version_code":2,"channels":{}}""",
+            ),
+        )
+        val config = ServiceConfig.parse(payload)!!
+        assertEquals(3, config.update.latestVersionCode)
+        assertEquals(2, config.update.minSupportedVersionCode)
+    }
+
+    @Test
     fun `when both apply the kill switch is the reason given`() {
         // Not a preference about wording. One of these is true of everybody
         // and the other blames the person's build; saying the second when the

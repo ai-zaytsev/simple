@@ -15,6 +15,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import download.simplevpn.MainActivity
 import download.simplevpn.R
+import download.simplevpn.BuildConfig
 import download.simplevpn.config.RoutingPolicy
 import download.simplevpn.config.XrayConfigBuilder
 import download.simplevpn.core.BridgeDiagnostics
@@ -473,7 +474,7 @@ class SimpleVpnService : VpnService() {
      * @return false when it may not run, having already stopped the service
      */
     private fun allowedToRun(config: ServiceConfig): Boolean {
-        return when (val verdict = config.verdict(APP_VERSION)) {
+        return when (val verdict = config.verdict(BuildConfig.VERSION_CODE)) {
             is ServiceConfig.Verdict.Allowed -> true
 
             is ServiceConfig.Verdict.Stopped -> {
@@ -1106,15 +1107,6 @@ class SimpleVpnService : VpnService() {
          */
         private const val MAX_PROBE_ATTEMPTS = 10
 
-
-        /**
-         * What this build calls itself when the server asks how old it is.
-         *
-         * A plain integer rather than a version name: the server compares it,
-         * and a comparison of names is a comparison that eventually gets an
-         * unexpected name and does the wrong thing quietly.
-         */
-        private const val APP_VERSION = 1
 
         /**
          * How often what has been counted is sent.
