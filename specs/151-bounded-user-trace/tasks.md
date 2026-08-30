@@ -11,6 +11,6 @@
 - [x] Обновить privacy model и Android architecture
 - [x] Удалить устаревший release blocker
 - [x] Выполнить локальную валидацию: `git diff --check`, caller audit и проверка двух оставшихся open blockers; Android toolchain отсутствует локально, unit/build переданы штатному GitHub Android Build
-- [ ] Запушить feature branch и открыть PR
+- [x] Запушить feature branch и открыть PR №157; сбой первого PR в `Publish-FeaturePR.ps1` записан в `docs/tech-debt.md`, PR создан вручную с корректным body
 - [ ] Получить green checks и AI review/fallback текущего PR head
 - [ ] Получить human review и merge authority
