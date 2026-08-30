@@ -13,10 +13,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import download.simplevpn.auth.AccountStore
 import download.simplevpn.support.LastError
 import download.simplevpn.auth.SignInScreen
 import download.simplevpn.ui.VpnScreen
+import download.simplevpn.update.AppUpdateDialog
+import download.simplevpn.update.AppUpdatePolicy
+import download.simplevpn.update.UpdateController
 import download.simplevpn.vpn.VpnConnectionState
 import download.simplevpn.vpn.VpnController
 
@@ -52,6 +56,7 @@ class MainActivity : ComponentActivity() {
      */
     override fun onResume() {
         super.onResume()
+        UpdateController.refresh(this)
         VpnController.recheck(this)
     }
 
@@ -66,6 +71,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
+                val update by UpdateController.state.collectAsStateWithLifecycle()
                 // Which screen to show is decided by whether this installation
                 // has proved access to a mailbox, and by nothing else. There is
                 // no password to remember, so there is nothing to be logged out
@@ -93,11 +99,18 @@ class MainActivity : ComponentActivity() {
                 } else {
                     SignInScreen(onSignedIn = { signedIn = true })
                 }
+
+                AppUpdateDialog(
+                    state = update,
+                    onUpdate = { UpdateController.begin(this) },
+                    onLater = { UpdateController.dismissOptional() },
+                )
             }
         }
     }
 
     private fun requestStart() {
+        if (UpdateController.state.value.verdict is AppUpdatePolicy.Verdict.Required) return
         // The system asks the user once per install. prepare() returns null
         // when consent already exists.
         val consentIntent: Intent? = VpnService.prepare(this)

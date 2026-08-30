@@ -154,6 +154,20 @@ CLAUDE.md называет `tasks.md` фактическим состояние�
 
 **Закрывается:** панель показывает распределение внешних устройств по аккаунтам, и становится видно, отличается ли самый активный аккаунт от остальных на порядок.
 
+## Приёмка Платежей И Обновлений
+
+### Test-store ЮKassa не пройден через живой APK
+
+**Риск:** payment Core, webhook verification и Android external checkout прошли unit/integration/CI, Core развернут, но живая матрица success/failure/cancel/repeated webhook до VIP activation не выполнена на телефоне. Настройка webhook в кабинете test store не подтверждена. Общие release blockers запрещают публиковать APK с новым payment UI, поэтому зелёный сервер ещё не доказывает пользовательский путь.
+
+**Закрывается:** в тестовом магазине настроен webhook, опубликован разрешённый подписанный APK и на живом FREE-аккаунте пройдена матрица из `docs/integrations/yookassa.md` с readback payment row, tier и неизменного expiry после повторного webhook.
+
+### Direct APK update не пройден между двумя подписанными выпусками
+
+**Риск:** channel-neutral latest/min policy, server-side HTTP 426, download limits, SHA-256 и PackageInstaller проверяются кодом и CI, но поведение системного installer и unknown-source permission отличается по версиям/прошивкам Android. Пока открыты общие release blockers, нельзя опубликовать даже первую официальную сборку с updater; без неё нельзя доказать переход на следующую.
+
+**Закрывается:** после снятия release blockers публикуется первая подписанная сборка с updater, затем следующий versionCode. На реальном устройстве проходят: no update, optional/later, unavailable APK, controlled wrong hash, installer cancel/failure, required VPN block, успешная установка и восстановление VPN. Core/panel readback совпадает с каждым переключением latest/min.
+
 ## Process-Layer
 
 ### Publish-FeaturePR не создаёт первый PR и пишет literal-переменные в body

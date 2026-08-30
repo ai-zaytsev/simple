@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"download.simplevpn/control-plane/internal/analytics"
+	"download.simplevpn/control-plane/internal/appupdate"
 	"download.simplevpn/control-plane/internal/certs"
 	"download.simplevpn/control-plane/internal/document"
 	"download.simplevpn/control-plane/internal/mail"
@@ -172,6 +173,9 @@ func (s *Server) Routes() http.Handler {
 	// Whether VIP may be bought at all, and how long a new account waits.
 	// An empty body reads; a body with both fields replaces them.
 	mux.HandleFunc("POST /v1/admin/purchases", s.adminPurchases)
+	mux.HandleFunc("GET /v1/admin/updates", s.adminUpdates)
+	mux.HandleFunc("POST /v1/admin/updates/publish", s.adminPublishUpdate)
+	mux.HandleFunc("POST /v1/admin/updates/minimum", s.adminMinimumUpdate)
 	mux.HandleFunc("POST /v1/admin/account/tier-by-prefix", s.adminTierByPrefix)
 	return mux
 }
@@ -207,6 +211,25 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 	// that was handed over when a mailbox was proved.
 	device, ok := s.device(w, r)
 	if !ok {
+		return
+	}
+
+	// The client checks this first for a useful screen; Core checks it again
+	// for the actual boundary. An unsupported build receives neither a plan
+	// nor fresh VPN material even if its UI is bypassed or stale.
+	state, err := s.store.LoadServiceState(ctx)
+	if err != nil {
+		s.log.Error("cannot read the application version policy", "error", err)
+		writeError(w, http.StatusInternalServerError, "cannot decide whether this version may connect")
+		return
+	}
+	if state.AppUpdates.Verdict(req.AppVersion) == appupdate.Required {
+		s.log.Info("plan refused for unsupported application version", "app_version", req.AppVersion)
+		writeJSON(w, http.StatusUpgradeRequired, map[string]any{
+			"error":                      "application update required",
+			"code":                       "app_update_required",
+			"min_supported_version_code": state.AppUpdates.MinSupportedVersionCode,
+		})
 		return
 	}
 
@@ -341,6 +364,7 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 		Seq:                    seq,
 		IssuedAt:               time.Now().UTC().Format(time.RFC3339),
 		MinSupportedAppVersion: state.MinSupportedAppVersion,
+		Update:                 state.AppUpdates,
 		KillSwitch: document.KillSwitch{
 			Enabled:    state.KillSwitch.Enabled,
 			MessageKey: state.KillSwitch.MessageKey,

@@ -1,5 +1,6 @@
 package download.simplevpn.plan
 
+import download.simplevpn.update.AppUpdatePolicy
 import org.json.JSONObject
 
 /**
@@ -16,6 +17,7 @@ data class ServiceConfig(
     val killSwitch: Boolean,
     val killMessageKey: String,
     val minSupportedAppVersion: Int,
+    val update: AppUpdatePolicy,
     val refreshAfterSeconds: Int,
 ) {
 
@@ -51,6 +53,9 @@ data class ServiceConfig(
                 if (payload.getInt("v") != SUPPORTED_VERSION) return null
 
                 val kill = payload.optJSONObject("kill_switch")
+                val legacyMinimum = payload.optInt("min_supported_app_version", 1)
+                val updates = AppUpdatePolicy.parse(payload, legacyMinimum) ?: return null
+                if (payload.has("update") && legacyMinimum != updates.minSupportedVersionCode) return null
                 ServiceConfig(
                     seq = payload.getLong("seq"),
                     // Absent means off. A document that does not mention the
@@ -59,7 +64,8 @@ data class ServiceConfig(
                     // service down on an upgrade.
                     killSwitch = kill?.optBoolean("enabled", false) ?: false,
                     killMessageKey = kill?.optString("message_key", "") ?: "",
-                    minSupportedAppVersion = payload.optInt("min_supported_app_version", 1),
+                    minSupportedAppVersion = updates.minSupportedVersionCode,
+                    update = updates,
                     refreshAfterSeconds = payload.optInt("refresh_after_s", DEFAULT_REFRESH),
                 )
             } catch (t: Throwable) {

@@ -10,7 +10,7 @@
 | [threat-model.md](threat-model.md) | Модель нарушителя, контроли, blast radius, принятые риски | Проектируете что-либо, доступное извне |
 | [privacy-model.md](privacy-model.md) | Что собирается, что запрещено, сроки хранения | Трогаете данные, логи или метрики |
 | [identity-model.md](identity-model.md) | `account_id`, `device_id`, `analytics_id`, `vpn_credential_id` и матрица видимости | Добавляете поле с пользовательским ключом |
-| [remote-config.md](remote-config.md) | Connection plan, remote config, подпись, anti-rollback | Работаете с конфигурацией клиента |
+| [remote-config.md](remote-config.md) | Connection plan, remote config, latest/min updates, подпись, anti-rollback | Работаете с конфигурацией клиента |
 | [bootstrap-recovery.md](bootstrap-recovery.md) | Как клиент находит Control Plane и восстанавливается без новой сборки | Занимаетесь точками входа и устойчивостью |
 | [node-lifecycle.md](node-lifecycle.md) | Состояния ноды, provisioning, детект блокировки, замена | Работаете с флотом |
 | [observability.md](observability.md) | Модель данных метрик и классификация нагрузки | Добавляете метрику или дашборд |

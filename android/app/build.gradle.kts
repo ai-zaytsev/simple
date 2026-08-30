@@ -14,6 +14,9 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+        // The version policy is shared; only this executor changes when a
+        // Google Play build is introduced.
+        buildConfigField("String", "UPDATE_CHANNEL", "\"direct_apk\"")
     }
 
     val releaseKeystore = System.getenv("RELEASE_KEYSTORE")

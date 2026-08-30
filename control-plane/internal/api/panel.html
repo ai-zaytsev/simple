@@ -115,6 +115,10 @@
     <p class="sub">Читается из строк, а не из миграции: применённая миграция и действующая политика — разные утверждения.</p>
     <div class="card wrap"><table id="tiers"></table></div>
 
+    <h2>Версии приложения</h2>
+    <p class="sub">Последняя версия предлагает обновление; минимальная запрещает старой версии новый VPN-план.</p>
+    <div class="card wrap"><table id="updates"></table></div>
+
     <h2>Нагрузка по пользователям</h2>
     <p class="sub">Объём за месяц. Кто именно — не хранится.</p>
     <div class="grid" id="usage"></div>
@@ -439,6 +443,15 @@
         "<td>" + ceiling(p.speed_mbit, " Мбит/с") + "</td></tr>";
     });
     document.getElementById("tiers").innerHTML = tt;
+
+    var updates = d.updates || {};
+    var channels = Object.keys(updates.channels || {}).length;
+    document.getElementById("updates").innerHTML =
+      "<tr><th>последняя</th><th>versionCode</th><th>минимальная</th><th>каналов</th></tr>" +
+      "<tr><td>" + esc(updates.latest_version_name || "—") + "</td>" +
+      "<td>" + (updates.latest_version_code || "—") + "</td>" +
+      "<td>" + (updates.min_supported_version_code || "—") + "</td>" +
+      "<td>" + channels + "</td></tr>";
 
     var u = d.usage;
     document.getElementById("usage").innerHTML =

@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!--
         From Android 11 an application cannot see what else is installed unless
@@ -67,6 +68,12 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="VPN tunnel must stay established while the app is in the background." />
         </service>
+
+        <!-- Explicit and private: only the PendingIntent created for our own
+             PackageInstaller session can deliver an update result here. -->
+        <receiver
+            android:name=".update.UpdateInstallReceiver"
+            android:exported="false" />
         <!--
             Lets the session log leave the device only when the user shares it,
             and only that one file. Diagnostic, and goes with the slice.

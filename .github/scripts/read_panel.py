@@ -294,6 +294,21 @@ def main(path):
             say("Закрытые продажи не трогают тех, у кого VIP уже есть.")
             say("")
 
+    updates = d.get("updates") or {}
+    if updates:
+        say("### Версии приложения")
+        say("")
+        say("| | |")
+        say("| --- | --- |")
+        say("| последняя | %s (%s) |" % (
+            updates.get("latest_version_name"),
+            updates.get("latest_version_code")))
+        say("| минимально поддерживаемая | %s |" %
+            updates.get("min_supported_version_code"))
+        channels = updates.get("channels") or {}
+        say("| каналов с артефактом | %s |" % len(channels))
+        say("")
+
     tiers = d.get("tiers") or []
     if tiers:
         say("### Что даёт тариф")

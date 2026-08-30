@@ -2,6 +2,7 @@ package download.simplevpn.plan
 
 import android.content.Context
 import android.util.Log
+import download.simplevpn.BuildConfig
 import download.simplevpn.auth.AccountStore
 import java.net.HttpURLConnection
 import java.security.SecureRandom
@@ -64,7 +65,7 @@ class ControlPlaneClient(
 
         val body = """
             {"supported_transports":["vless-ws-tls"],
-             "app_version":$APP_VERSION}
+             "app_version":${BuildConfig.VERSION_CODE}}
         """.trimIndent()
 
         return send("/v1/plan", body, token)
@@ -365,6 +366,5 @@ class ControlPlaneClient(
         // Short, because a blocked entry must cost seconds rather than the
         // whole budget for finding a way in.
         const val TIMEOUT_MS = 8_000
-        const val APP_VERSION = 1
     }
 }

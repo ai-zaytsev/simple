@@ -34,6 +34,20 @@
     <string name="error_already_tunnelled">Эта сеть уже работает через наш VPN. Второй туннель не нужен.</string>
     <string name="error_no_working_plan">Не удалось подключиться ни с текущими, ни с предыдущими настройками. Попробуйте позже.</string>
 
+    <string name="update_available_title">Доступно обновление</string>
+    <string name="update_available_body">Можно установить новую версию сейчас или продолжить пользоваться VPN.</string>
+    <string name="update_required_title">Требуется обновление</string>
+    <string name="update_required_body">Эта версия больше не поддерживается. Обновите приложение, чтобы снова включить VPN.</string>
+    <string name="update_now">Обновить</string>
+    <string name="update_later">Позже</string>
+    <string name="update_permission">Разрешите этому приложению устанавливать обновления, затем нажмите «Обновить» ещё раз.</string>
+    <string name="update_open_settings">Открыть настройки</string>
+    <string name="update_downloading">Скачиваем обновление и проверяем его целостность…</string>
+    <string name="update_installing">Обновление проверено. Подтвердите установку в системном окне Android.</string>
+    <string name="update_download_failed">Не удалось получить обновление. Проверьте соединение и попробуйте ещё раз.</string>
+    <string name="update_hash_failed">Проверка обновления не пройдена. Файл удалён и не будет установлен.</string>
+    <string name="update_install_failed">Android не установил обновление. Попробуйте ещё раз.</string>
+
     <string name="notification_channel_name">Состояние VPN</string>
 
     <string name="trace_start">Начать писать лог</string>

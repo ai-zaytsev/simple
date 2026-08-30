@@ -483,3 +483,17 @@ and tunbridge.aar -> tunbridge-runtime
 **Почему внешний checkout.** Карточные данные не входят в нашу систему, APK не получает платёжных ключей, а server API оставляет источник истины в Core. Provider boundary принимает только сумму, валюту, описание, return URL и внутренний payment ID; добавление второго adapter не меняет публичный API Android или применение VIP.
 
 **Последствия.** Платный VIP имеет `vip_expires_at` и по сроку возвращается в FREE с отзывом VIP-only credentials. Административный VIP с `vip_expires_at = null` остаётся бессрочным. Отключение новых продаж не влияет на действующий VIP. Production-договор, фискализация, налоговый режим, возвраты/chargebacks, срок хранения платежей и flow продления записаны отдельным долгом.
+
+---
+
+## ADR-031. Обязательность обновления выводится из min, канал исполняется отдельно
+
+**Статус:** `accepted`
+
+**Контекст.** Приложение распространяется напрямую как APK, а позже может появиться в Google Play. Если каждый канал получит собственную latest/min логику, Core, APK и Play начнут давать разные ответы одной установленной версии. Отдельный `mandatory` рядом с `min` создаёт ещё одно противоречие: сборка может одновременно оказаться выше minimum и помечена обязательной без определённого правила для VPN.
+
+**Решение.** Core хранит общий целочисленный `latest_version_code` и `min_supported_version_code`. `current < min` всегда required и запрещает plan; `min <= current < latest` всегда optional; иначе update нет. Channel material живёт рядом, но не участвует в verdict. Direct APK получает immutable HTTPS URL и SHA-256, проверяется до platform `PackageInstaller`. Google Play позже реализует тот же optional/required verdict через flexible/immediate flow.
+
+Корневой `min_supported_app_version` остаётся в signed config ради старых APK и записывается атомарно с новой policy. Latest продвигает только официальный publisher после обратного скачивания/hash/signature verification; min меняет отдельная operator-операция. Публикация не делает обновление принудительным.
+
+**Последствия.** `versionCode` становится единственным машинным номером; hard-coded номер в Android запрещён. Latest монотонен. Min находится в `1..latest`, но может быть понижен новым config seq для аварийного восстановления. Core не доверяет одному UI: plan handler повторяет проверку до выдачи VPN material. Добавление Play не затрагивает аккаунты, VIP, платежи, connection plan schema или VPN entitlement.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"download.simplevpn/control-plane/internal/appupdate"
 	"download.simplevpn/control-plane/internal/purchase"
 )
 
@@ -12,6 +13,7 @@ import (
 type ServiceState struct {
 	KillSwitch             KillSwitch
 	MinSupportedAppVersion int
+	AppUpdates             appupdate.Policy
 	Purchases              purchase.Settings
 }
 
@@ -55,6 +57,14 @@ func (s *Store) LoadServiceState(ctx context.Context) (ServiceState, error) {
 				return ServiceState{}, fmt.Errorf("min_supported_app_version is unreadable: %w", err)
 			}
 			seen[key] = true
+		case "app_updates":
+			if err := json.Unmarshal(raw, &state.AppUpdates); err != nil {
+				return ServiceState{}, fmt.Errorf("app_updates is unreadable: %w", err)
+			}
+			if err := state.AppUpdates.Validate(); err != nil {
+				return ServiceState{}, fmt.Errorf("app_updates is invalid: %w", err)
+			}
+			seen[key] = true
 		case "purchases":
 			// Read into a local shape and copied across, rather than tagging
 			// the purchase package's own struct with JSON names. The names in
@@ -83,9 +93,14 @@ func (s *Store) LoadServiceState(ctx context.Context) (ServiceState, error) {
 	// not. The kill switch is required for the mirror-image reason - its
 	// dangerous default is off - and the asymmetry is the point rather than
 	// an oversight.
-	if !seen["kill_switch"] || !seen["min_supported_app_version"] {
+	if !seen["kill_switch"] || !seen["min_supported_app_version"] || !seen["app_updates"] {
 		return ServiceState{}, fmt.Errorf("service state is incomplete")
 	}
+
+	// The new policy is authoritative. The old row is kept and written with it
+	// so a binary rollback still enforces the same minimum, while old clients
+	// keep receiving the root field they already understand.
+	state.MinSupportedAppVersion = state.AppUpdates.MinSupportedVersionCode
 	return state, nil
 }
 
