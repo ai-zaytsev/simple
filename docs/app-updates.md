@@ -49,24 +49,9 @@ Google Play предлагает flexible и immediate flows: первый со�
 
 ## Операторские Операции
 
-Workflow `Application Updates`:
+Live-проверка, публикация, изменение minimum и recovery описаны только в [BO-инструкции](business-owner-operations.md#обновление-приложения) и [mini-runbook APK-канала](business-owner-operations.md#официальный-apk-канал).
 
-- `show` — читает live latest/min и число настроенных channel artifacts;
-- `set-minimum` — задаёт `min` в пределах `1..latest` без APK update.
-
-`min` можно понизить: это аварийное восстановление поддержки старой сборки. Signed config получает новый больший `seq`, поэтому intentional rollback policy не является replay старого документа.
-
-Latest нельзя вводить вручную. Его продвигает только `Publish APK` после того, как workflow:
-
-1. записал immutable versioned object;
-2. обновил `latest` и manifest;
-3. скачал APK через официальный домен;
-4. повторно сверил SHA-256 и release signature;
-5. передал Core постоянный versioned URL и hash.
-
-Если публичная публикация успела завершиться, а синхронизация Core временно не удалась, повтор `Publish APK` распознаёт точную уже опубликованную пару `versionName/versionCode`, не перезаписывает immutable APK, заново проверяет публичный hash и подпись и повторяет только продвижение Core.
-
-Публикация не меняет `min`, поэтому новая версия сначала всегда добровольная. Принудительной она становится только отдельной operator-операцией после проверки.
+Технические границы: latest продвигает только `Publish APK` после публичной проверки hash/signature; публикация не меняет minimum. Minimum можно понизить аварийно, при этом подписанный config получает новый возрастающий `seq` и не является replay старого документа.
 
 ## Сценарии Отказа
 
@@ -79,6 +64,4 @@ Latest нельзя вводить вручную. Его продвигает �
 
 ## Live Acceptance
 
-После deploy читаются `Read The Panel` и `Application Updates / show`: ожидаются latest `0.1.0 (1)`, minimum `1`; channel material появится после первой официальной публикации.
-
-End-to-end direct APK требует двух подписанных выпусков: первая опубликованная сборка должна уже содержать updater, следующая проверяет optional/required переход. Пока общие release blockers открыты, этот проход не считается выполненным и записан в [tech-debt.md](tech-debt.md).
+Текущее состояние версии и наличие channel artifact не фиксируются здесь: их читают `Read The Panel` и `Application Updates / show`, ссылки находятся в BO-инструкции. Критерий end-to-end остаётся техническим: нужны два подписанных выпуска, первый содержит updater, второй проверяет optional и required переходы. Незакрытый проход ведётся в [tech-debt.md](tech-debt.md) и [release-blockers.md](release-blockers.md).

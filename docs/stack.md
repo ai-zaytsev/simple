@@ -1,6 +1,6 @@
-# MVP Stack
+# Технологический стек
 
-Зафиксированное решение по стеку MVP. Документ — durable memory: он описывает выбор технологий, а не архитектуру приложения. Проектирование приложения на момент фиксации не начато.
+Документ фиксирует используемые технологии, а не размещение и не текущее состояние сервисов. Актуальные провайдеры, регионы, хосты и операции находятся только в [BO-инструкции](business-owner-operations.md).
 
 ## Состав
 
@@ -9,21 +9,21 @@
 | Android | Kotlin + Jetpack Compose |
 | VPN на Android | Android `VpnService` |
 | VPN engine | Xray-core / libXray |
-| Протокол | VLESS + REALITY |
+| Основной VPN-транспорт | VLESS over WebSocket/TLS за Nginx |
+| Запасной транспорт | REALITY на отдельном порту; включается только подписанным планом |
 | Backend / Control Plane | Go |
 | Основная БД | PostgreSQL |
-| Per-user analytics | ClickHouse |
-| Metrics | Prometheus |
-| Dashboards | Grafana |
-| Logs | Loki |
-| Telemetry transport | OpenTelemetry |
+| Аналитика и метрики MVP | PostgreSQL + серверная `/panel` |
+| Логи | journald на хостах |
 | Provisioning VPS | Terraform + cloud-init + API провайдера |
-| Management network | WireGuard |
-| Email login | Transactional email provider + magic links |
+| Доступ к VPN-нодам | SSH только с Core; GitHub Actions подключается через Core как jump host |
+| Email login | Brevo + magic links |
 | APK testing | Firebase App Distribution + signed APK |
 | CI/CD | GitHub Actions |
 | Официальный APK-сайт | Nginx на DigitalOcean `site-1`, Cloudflare, APK в Spaces |
-| VPN nodes | Ubuntu 24.04 + Xray + node-agent |
+| VPN nodes | Kamatera, Ubuntu + Nginx + Xray + node-agent |
+
+ClickHouse, Prometheus, Grafana, Loki, OpenTelemetry Collector и отдельная WireGuard management network сейчас не развёрнуты. Это возможные будущие компоненты с условиями ввода из [deferred-stack-migration.md](architecture/deferred-stack-migration.md), а не часть действующего стека.
 
 ## Что Из Этого Следует Для Process-Layer
 
@@ -32,14 +32,4 @@
 - продуктовый CI (сборка APK, тесты Go, `terraform plan`) не заводится авансом: он появляется вместе с первой задачей, которая приносит соответствующий код
 - signing keys, provider API tokens, SMTP-креды и Firebase service account никогда не попадают в репозиторий — только в GitHub Secrets или локальный `.env`
 
-## Что Ещё Не Решено
-
-Эти вопросы намеренно оставлены открытыми и должны решаться в рамках отдельных задач через `specs/<feature-id>/`:
-
-- раскладка каталогов репозитория (single repo vs отдельные модули)
-- конкретный cloud-провайдер для VPS и его Terraform provider
-- конкретный transactional email provider
-- модель хранения состояния Control Plane и схема PostgreSQL
-- контракт между Control Plane и node-agent
-
-Пока решение не принято и не зафиксировано в `docs/`, реализация по нему не стартует.
+Открытые продуктовые и операционные решения ведутся в [tech-debt.md](tech-debt.md), [release-blockers.md](release-blockers.md) и активной feature-memory, а не в этом перечне технологий.

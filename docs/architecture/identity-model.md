@@ -27,9 +27,8 @@ Email существует только в контуре account и auth. Он 
 | Telemetry ingest | | t | | + | t | + |
 | VPN node | | | | | + | |
 | PostgreSQL | + | + | + | | + | |
-| Аналитика: PostgreSQL `analytics` | | | | + | | + |
-| Prometheus | | | | | | |
-| Логи: journald и архив | | | | | | |
+| Аналитика/метрики: PostgreSQL `metrics` | | | | + | | + |
+| Логи: journald | | | | | | |
 
 Два правила читаются прямо из матрицы:
 

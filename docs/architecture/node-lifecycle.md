@@ -49,9 +49,9 @@ sequenceDiagram
     OP->>TF: node add (pool, region)
     TF->>P: создать инстанс + cloud-init
     P-->>N: Ubuntu 24.04 загружена
-    N->>N: cloud-init: node-agent, Xray, WireGuard
+    N->>N: cloud-init: Nginx, Xray, node-agent, probe-agent
     N->>CP: enroll(one-time token)
-    CP-->>N: node identity, WG peer, REALITY keys, конфигурация
+    CP-->>N: node identity, credentials и transport configuration
     N->>N: применить конфигурацию, запустить Xray
     N->>CP: health report
     CP->>CP: WARMING → HEALTHY после серии проверок

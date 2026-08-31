@@ -1,161 +1,108 @@
 # Infrastructure
 
-Инфраструктурная схема MVP: целевая топология и правила, не зависящие от конкретного провайдера.
+Документ описывает логическую топологию и технические инварианты. Провайдеры, регионы, домены, размеры машин, текущее состояние и команды восстановления находятся только в [операционной инструкции Business Owner](../business-owner-operations.md).
 
-Фактическое размещение ролей, стоимость и бюджет трафика после выбора DigitalOcean — в [mvp-topology.md](mvp-topology.md). Этот документ отвечает на вопрос «как устроено», тот — на вопрос «где именно и за сколько».
-
-## Топология
+## Действующая логическая топология
 
 ```mermaid
 flowchart TB
-    subgraph internet["Публичная сеть"]
-        USERS["Клиенты из России"]
-    end
+    APP["Android"]
+    DNS["Authoritative DNS"]
+    SITE["APK site"]
+    SPACE["Object storage: APK / state"]
+    CORE["Core: Go + Nginx"]
+    PG[("PostgreSQL")]
+    MAIL["Email provider"]
+    PAY["Payment provider"]
+    N1["VPN node + cover + Core edge"]
+    N2["VPN node + cover + Core edge"]
 
-    subgraph core["Core host"]
-        CPAPP["Control Plane (Go)"]
-        PG[("PostgreSQL")]
-        WGHUB["WireGuard hub"]
-    end
-
-    subgraph obshost["Observability host"]
-        OTEL["OTel Collector"]
-        PROM["Prometheus"]
-        CH[("ClickHouse")]
-        LOKI["Loki"]
-        GRAF["Grafana"]
-    end
-
-    subgraph edge["Edge pool"]
-        E1["edge-1: REALITY → CP API"]
-        E2["edge-2: REALITY → CP API"]
-    end
-
-    subgraph vpn["VPN pool"]
-        N1["node free-1"]
-        N2["node free-2"]
-        N3["node vip-1"]
-    end
-
-    PROBE["RU probe host<br/>внешняя проба"]
-
-    USERS -->|"HTTPS :443"| CPAPP
-    USERS -->|"REALITY :443"| E1
-    USERS -->|"REALITY :443"| E2
-    USERS -->|"VLESS + REALITY :443"| N1
-    USERS --> N2
-    USERS --> N3
-
-    E1 -.->|"WireGuard"| WGHUB
-    E2 -.->|"WireGuard"| WGHUB
-    N1 -.->|"WireGuard"| WGHUB
-    N2 -.->|"WireGuard"| WGHUB
-    N3 -.->|"WireGuard"| WGHUB
-    PROBE -.->|"WireGuard"| WGHUB
-
-    CPAPP --> PG
-    N1 -.-> OTEL
-    N2 -.-> OTEL
-    N3 -.-> OTEL
-    CPAPP -.-> OTEL
+    APP -->|"bootstrap / auth / plan"| CORE
+    APP -->|"VLESS over WebSocket/TLS"| N1
+    APP -->|"VLESS over WebSocket/TLS"| N2
+    APP -->|"APK / manifest"| SITE
+    DNS --> CORE
+    DNS --> SITE
+    DNS --> N1
+    DNS --> N2
+    SITE --> SPACE
+    CORE --> PG
+    CORE --> MAIL
+    CORE --> PAY
+    N1 -->|"signed edge route"| CORE
+    N2 -->|"signed edge route"| CORE
 ```
 
-Сплошные линии — публичный трафик. Пунктир — management-сеть WireGuard.
+Core и PostgreSQL находятся на одном хосте. Отдельного observability-host, выделенного DB-host и отдельных edge-машин сейчас нет. VPN-ноды одновременно несут пользовательский туннель, сайт-прикрытие и резервный путь в Core. Фактические имена и состав читаются в BO-инструкции и `Read The Panel`.
 
-## Хосты MVP
+## Границы компонентов
 
-| Роль | Количество | Что несёт | Почему так |
-| --- | --- | --- | --- |
-| Core | 1 | Control Plane, PostgreSQL, WireGuard hub | На объёмах MVP разделение Control Plane и БД не даёт выигрыша, но добавляет операционную стоимость |
-| Observability | 1 | OTel Collector, Prometheus, ClickHouse, Loki, Grafana | Отделён от Core, чтобы всплеск аналитики не влиял на выдачу планов |
-| Edge | 2+ | Xray REALITY, проксирование API Control Plane | Точки входа bootstrap; расходуемые |
-| VPN node | по нагрузке | Xray REALITY, node-agent | Пулы `app`, `export`, `quarantine` |
-| RU probe | 1 | Внешняя проба доступности | Единственный способ увидеть блокировку из целевой сети |
-
-Core и Observability — единственные хосты, которые не являются расходуемыми. Всё остальное создаётся и уничтожается по мере необходимости.
-
-Таблица и диаграмма выше описывают целевое состояние. На MVP из состава Observability исключены ClickHouse и Loki: они не помещаются в бюджет и в доступную память, см. `ADR-018` и `ADR-019` в [decisions.md](decisions.md). Аналитика живёт в отдельной базе того же PostgreSQL, логи — в journald на хостах. Фактический состав — в [mvp-topology.md](mvp-topology.md).
-
-Core в MVP — единственная точка отказа выдачи новых планов. Это принято сознательно и **как временное ограничение**: клиенты с валидным планом продолжают работать в `GRACE`, см. [remote-config.md](remote-config.md), поэтому недоступность Core деградирует онбординг, а не связность существующих пользователей.
-
-Резервирование Core — задача стадии после запуска, но подготовка к нему обязательна уже сейчас: инварианты И-1 – И-9 в [evolution.md](evolution.md) требуют, чтобы Control Plane не хранил состояния в памяти и на локальном диске. Топологически несколько Core-серверов выражаются уже существующим механизмом: bootstrap descriptor содержит список точек входа, и добавление второго Core не требует изменения схемы.
-
-## Сетевые Правила
-
-| Хост | Входящие разрешения | Всё остальное |
+| Компонент | Хранит состояние | Можно пересоздать без восстановления данных |
 | --- | --- | --- |
-| Core | `443/tcp` API, `51820/udp` WireGuard | Запрещено, включая SSH из публичной сети |
-| Observability | Ничего из публичной сети | Только через WireGuard |
-| Edge | `443/tcp` | Запрещено |
-| VPN node | `443/tcp` | Запрещено |
-| RU probe | Ничего | Только через WireGuard |
+| Core process и Nginx | Нет продуктового состояния вне PostgreSQL | Да |
+| PostgreSQL | Аккаунты, планы, ноды, метрики, entitlement и платежи | Нет |
+| VPN-нода | Только локальную конфигурацию и краткоживущие процессы | Да; ноды расходуемые |
+| APK site | Нет: история APK и manifest находятся в object storage | Да |
+| Object storage | Terraform state и APK; namespaces для будущих backup/log archive | Нет для state и единственных release artifacts |
 
-SSH доступен исключительно через management-сеть. Публичный SSH на любом хосте считается дефектом конфигурации.
+Core остаётся единой точкой отказа для новых входов, refresh и управления. Клиент с последним валидным планом продолжает работу в `GRACE`; это ограничивает пользовательский эффект, но не заменяет резервирование. Инварианты будущего multi-Core описаны в [evolution.md](evolution.md).
 
-Grafana и все дашборды не имеют публичного доступа: подключение через management-сеть. Публичная Grafana — типовой путь утечки операционных данных и списка нод.
+## Сетевые правила
 
-## Требования К Разнообразию
+| Компонент | Публично | Управление |
+| --- | --- | --- |
+| Core | HTTPS API через Nginx | SSH/консоль; фактические firewall-ограничения — в BO-инструкции |
+| VPN-нода | `443/tcp` cover + основной WebSocket/TLS; запасной transport port только при настройке | SSH разрешён только от Core; CI использует Core как jump host |
+| APK site | `80/443` через Cloudflare; origin принимает Cloudflare | DigitalOcean Web Console; публичный SSH закрыт firewall |
+| PostgreSQL | Не публикуется | Локально на Core host |
+| Панель | Не публикуется | Читается штатным workflow через Core host |
 
-Из [threat-model.md](threat-model.md) и [bootstrap-recovery.md](bootstrap-recovery.md):
+Для доменов VPN-ноды Cloudflare proxy запрещён: он терминирует TLS и ломает сквозной WebSocket-туннель. Для APK-сайта proxy разрешён и является частью схемы.
 
-- ноды и edge распределяются минимум по двум независимым провайдерам
-- домены точек входа регистрируются минимум у двух регистраторов
-- три ноды одного плана не должны находиться в одной подсети и по возможности у одного провайдера
-- edge-ноды не размещаются в тех же подсетях, что и VPN-ноды
+## Provisioning и lifecycle
 
-Провайдер выбирается с учётом того, что VPN-трафик и abuse-жалобы для части хостеров неприемлемы. Это фильтр при выборе, а не деталь эксплуатации.
+Штатная цепочка VPN-ноды:
 
-## Provisioning
-
+```text
+Add Server
+  → provider instance
+  → cloud-init: Nginx, Xray, node-agent и probe-agent
+  → DNS и TLS
+  → регистрация в Core
+  → Node Inspect и проверки с Android
+  → serving
 ```
-terraform apply
-  → инстанс у провайдера
-  → cloud-init: пакеты, node-agent, WireGuard, Xray
-  → enroll в Control Plane одноразовым токеном
-  → получение конфигурации
-  → health checks
-  → включение в пул
-```
 
-Правила:
+Сервер не включается в выдачу только потому, что машина создана. Обязательны обе точки обзора: проверка с Core и проверка с пользовательского Android-устройства. Вывод выполняется через `draining` и `Retire Node`; старый IP/домен не восстанавливают как production-ноду.
 
-- состояние Terraform хранится в удалённом зашифрованном бэкенде, не в репозитории
-- образ не содержит секретов и не содержит конфигурации, специфичной для конкретной ноды
-- добавление ноды — одна операция, запускаемая локально или из GitHub Actions
-- удаление ноды — тоже одна операция, включающая отзыв credentials и удаление WG peer
+Terraform state хранится удалённо. Образ и repository не содержат секретов или node-specific credentials. Любая постоянная машина сверх действующего инвентаря требует решения Business Owner; автомасштабирование платных ресурсов запрещено.
 
 ## Окружения
 
-| Окружение | Назначение | Состав |
-| --- | --- | --- |
-| `dev` | Локальная разработка | Docker Compose: Control Plane, PostgreSQL, ClickHouse; ноды заменяются моками |
-| `staging` | Проверка изменений | Минимальный набор: Core, одна нода, один edge |
-| `prod` | Продуктив | Полная топология |
+| Окружение | Назначение |
+| --- | --- |
+| `dev` | Локальные Go/PostgreSQL и Android tests; внешние провайдеры заменяются fake/adapters, где это возможно |
+| Provider test mode | ЮKassa test store и диагностические workflows против реальных внешних API |
+| `prod` | Один Core/DB host, расходуемый VPN fleet, APK site и внешние SaaS |
 
-Отдельный `staging` нужен не ради полноты, а потому что изменения конфигурации нод и подписи планов нельзя проверять на живых пользователях.
+Отдельный постоянно работающий staging fleet сейчас не развёрнут. Изменения проходят тесты и provider-specific smoke checks, но этот компромисс нельзя описывать как полноценное staging-окружение.
 
-## Бэкапы И Восстановление
+## Резервное копирование и восстановление
 
-| Данные | Частота | Проверка |
-| --- | --- | --- |
-| PostgreSQL | Ежедневно, шифрованно, вне Core-хоста | Регулярное тестовое восстановление |
-| Конфигурация инфраструктуры | В репозитории как код | Пересоздание из кода |
-| ClickHouse | Реже, допускается потеря части аналитики | Не критично для работы сервиса |
-| Секреты | По процедуре хранения | Проверка доступности резервной копии |
+Требуемый контракт:
 
-Порядок приоритетов при восстановлении: PostgreSQL, затем Control Plane, затем ноды, затем аналитика. Ноды восстанавливаются созданием новых, а не восстановлением старых.
+| Данные | Требование |
+| --- | --- |
+| PostgreSQL | Шифрованная копия вне Core host и регулярно проверенный restore |
+| Infrastructure configuration | Репозиторий + remote Terraform state; возможность import существующего ресурса |
+| APK | Неизменяемые versioned objects и отдельный `latest`; release signing key имеет offline-копию у Business Owner |
+| Технические журналы | Локальная ротация; при появлении архива — только безопасный формат без пользовательских адресов |
+| Секреты | В CI/provider vault и offline recovery по отдельной процедуре, не в документации |
 
-## Форма Затрат
+PostgreSQL backup, проверенный restore и архив journald **ещё не реализованы**. Наличие namespace в object storage не является backup. Текущий риск и порядок ручного восстановления зафиксированы в [BO-инструкции](../business-owner-operations.md#известные-операционные-пробелы) и [tech-debt.md](../tech-debt.md).
 
-Точные суммы не фиксируются, потому что зависят от провайдера и трафика. Структурно затраты выглядят так:
+При потере нескольких компонентов порядок приоритета: PostgreSQL → Core → DNS/bootstrap → VPN-ноды → APK site → аналитическая история. VPN-ноды и APK site пересоздаются; Core data нельзя восстановить из нод.
 
-| Статья | Характер | Драйвер роста |
-| --- | --- | --- |
-| Core + Observability | Постоянная | Практически не растёт на MVP |
-| VPN-ноды | Переменная | Число пользователей и объём трафика |
-| Edge-ноды | Малая постоянная | Число точек входа |
-| RU probe | Малая постоянная | Нет |
-| Домены | Малая постоянная | Число точек входа |
-| Email, платежи | Переменная | Регистрации и оплаты |
+## Форма затрат
 
-Основной драйвер — трафик, поэтому классификация нагрузки и квоты FREE напрямую влияют на экономику, а не только на продукт.
+Постоянные статьи — Core host, APK site/object storage, домены и внешние SaaS. Переменные — VPN fleet и трафик. Точная цена и живой provider inventory не фиксируются здесь; перед покупкой читаются provider bill и раздел роста нагрузки в BO-инструкции.
