@@ -61,6 +61,11 @@ func newAt(shopID, secretKey, baseURL string, client *http.Client) (*Client, err
 
 func (c *Client) Name() string { return "yookassa" }
 
+// YooKassa documents POST idempotency for 24 hours. Core also searches by
+// payment and refund metadata before every retry, and stops creating after
+// this window if the previous outcome still cannot be established.
+func (c *Client) RefundIdempotencyWindow() time.Duration { return 24 * time.Hour }
+
 func (c *Client) Create(ctx context.Context, in payment.CreateRequest) (payment.Checkout, error) {
 	payload := struct {
 		Amount struct {
@@ -165,6 +170,150 @@ func (c *Client) Get(ctx context.Context, providerPaymentID string) (payment.Can
 		Paid:              raw.Paid,
 		Test:              raw.Test,
 		PaidAt:            paidAt,
+		PaymentMethod:     raw.PaymentMethod.Type,
+		Refundable:        raw.Refundable,
+	}, nil
+}
+
+// RefundLimits contains only capabilities verified for payment methods this
+// test-store integration can actually exercise. Unknown methods are allowed a
+// full refund but are not guessed to support a partial one.
+func (c *Client) RefundLimits(paymentMethod string) payment.RefundLimits {
+	return payment.RefundLimits{
+		Full:         true,
+		Partial:      paymentMethod == "bank_card",
+		MinimumMinor: 100,
+	}
+}
+
+func (c *Client) CreateRefund(
+	ctx context.Context, in payment.RefundCreateRequest,
+) (payment.RefundOperation, error) {
+	payload := struct {
+		Amount struct {
+			Value    string `json:"value"`
+			Currency string `json:"currency"`
+		} `json:"amount"`
+		PaymentID   string            `json:"payment_id"`
+		Description string            `json:"description"`
+		Metadata    map[string]string `json:"metadata"`
+	}{}
+	payload.Amount.Value = formatAmount(in.AmountMinor)
+	payload.Amount.Currency = in.Currency
+	payload.PaymentID = in.ProviderPaymentID
+	payload.Description = in.Description
+	payload.Metadata = map[string]string{"refund_id": in.RefundID}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return payment.RefundOperation{}, fmt.Errorf("cannot encode create refund request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/refunds", bytes.NewReader(body))
+	if err != nil {
+		return payment.RefundOperation{}, fmt.Errorf("cannot prepare create refund request: %w", err)
+	}
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("accept", "application/json")
+	req.Header.Set("Idempotence-Key", in.IdempotencyKey)
+	c.authorize(req)
+
+	var raw providerRefund
+	if err := c.do(req, &raw); err != nil {
+		return payment.RefundOperation{}, err
+	}
+	if strings.TrimSpace(raw.ID) == "" {
+		return payment.RefundOperation{}, errors.New("payment provider returned no refund id")
+	}
+	return payment.RefundOperation{ProviderRefundID: raw.ID}, nil
+}
+
+func (c *Client) GetRefund(ctx context.Context, providerRefundID string) (payment.CanonicalRefund, error) {
+	if strings.TrimSpace(providerRefundID) == "" {
+		return payment.CanonicalRefund{}, errors.New("provider refund id is empty")
+	}
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodGet, c.baseURL+"/refunds/"+url.PathEscape(providerRefundID), nil,
+	)
+	if err != nil {
+		return payment.CanonicalRefund{}, fmt.Errorf("cannot prepare refund lookup: %w", err)
+	}
+	req.Header.Set("accept", "application/json")
+	c.authorize(req)
+
+	var raw providerRefund
+	if err := c.do(req, &raw); err != nil {
+		return payment.CanonicalRefund{}, err
+	}
+	return canonicalRefund(raw)
+}
+
+// FindRefund recovers a POST whose HTTP response was lost. YooKassa's list
+// endpoint can filter by the original payment; the private refund_id metadata
+// then identifies our one logical operation without trusting a webhook body.
+func (c *Client) FindRefund(
+	ctx context.Context, providerPaymentID, refundID string,
+) (payment.CanonicalRefund, error) {
+	if strings.TrimSpace(providerPaymentID) == "" || strings.TrimSpace(refundID) == "" {
+		return payment.CanonicalRefund{}, payment.ErrRefundNotFound
+	}
+	cursor := ""
+	for page := 0; page < 100; page++ {
+		query := url.Values{}
+		query.Set("payment_id", providerPaymentID)
+		query.Set("limit", "100")
+		if cursor != "" {
+			query.Set("cursor", cursor)
+		}
+		req, err := http.NewRequestWithContext(
+			ctx, http.MethodGet, c.baseURL+"/refunds?"+query.Encode(), nil,
+		)
+		if err != nil {
+			return payment.CanonicalRefund{}, fmt.Errorf("cannot prepare refund search: %w", err)
+		}
+		req.Header.Set("accept", "application/json")
+		c.authorize(req)
+		var raw struct {
+			Items      []providerRefund `json:"items"`
+			NextCursor string           `json:"next_cursor"`
+		}
+		if err := c.do(req, &raw); err != nil {
+			return payment.CanonicalRefund{}, err
+		}
+		for _, item := range raw.Items {
+			if item.PaymentID == providerPaymentID && item.Metadata.RefundID == refundID {
+				return canonicalRefund(item)
+			}
+		}
+		if strings.TrimSpace(raw.NextCursor) == "" {
+			return payment.CanonicalRefund{}, payment.ErrRefundNotFound
+		}
+		cursor = strings.TrimSpace(raw.NextCursor)
+	}
+	return payment.CanonicalRefund{}, errors.New("payment provider refund list did not terminate")
+}
+
+func canonicalRefund(raw providerRefund) (payment.CanonicalRefund, error) {
+	status, err := refundStatusOf(raw.Status)
+	if err != nil {
+		return payment.CanonicalRefund{}, err
+	}
+	amount, err := parseAmount(raw.Amount.Value)
+	if err != nil {
+		return payment.CanonicalRefund{}, errors.New("payment provider returned an unreadable refund amount")
+	}
+	var createdAt *time.Time
+	if raw.CreatedAt != "" {
+		parsed, parseErr := time.Parse(time.RFC3339Nano, raw.CreatedAt)
+		if parseErr != nil {
+			return payment.CanonicalRefund{}, errors.New("payment provider returned an unreadable refund time")
+		}
+		createdAt = &parsed
+	}
+	return payment.CanonicalRefund{
+		ProviderRefundID: raw.ID, ProviderPaymentID: raw.PaymentID,
+		RefundID: raw.Metadata.RefundID, AmountMinor: amount,
+		Currency: raw.Amount.Currency, Status: status,
+		CancellationReason: refundCancellationReason(raw.CancellationDetails.Reason),
+		CreatedAt:          createdAt,
 	}, nil
 }
 
@@ -213,7 +362,28 @@ type providerPayment struct {
 	Metadata struct {
 		PaymentID string `json:"payment_id"`
 	} `json:"metadata"`
-	CapturedAt string `json:"captured_at"`
+	CapturedAt    string `json:"captured_at"`
+	Refundable    bool   `json:"refundable"`
+	PaymentMethod struct {
+		Type string `json:"type"`
+	} `json:"payment_method"`
+}
+
+type providerRefund struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	PaymentID string `json:"payment_id"`
+	CreatedAt string `json:"created_at"`
+	Amount    struct {
+		Value    string `json:"value"`
+		Currency string `json:"currency"`
+	} `json:"amount"`
+	Metadata struct {
+		RefundID string `json:"refund_id"`
+	} `json:"metadata"`
+	CancellationDetails struct {
+		Reason string `json:"reason"`
+	} `json:"cancellation_details"`
 }
 
 func statusOf(raw string) (payment.Status, error) {
@@ -226,6 +396,31 @@ func statusOf(raw string) (payment.Status, error) {
 		return payment.StatusCanceled, nil
 	default:
 		return "", errors.New("payment provider returned an unknown status")
+	}
+}
+
+func refundStatusOf(raw string) (payment.RefundStatus, error) {
+	switch raw {
+	case "pending":
+		return payment.RefundStatusPending, nil
+	case "succeeded":
+		return payment.RefundStatusSucceeded, nil
+	case "canceled":
+		return payment.RefundStatusCanceled, nil
+	default:
+		return "", errors.New("payment provider returned an unknown refund status")
+	}
+}
+
+func refundCancellationReason(raw string) string {
+	switch raw {
+	case "":
+		return ""
+	case "insufficient_funds", "general_decline", "rejected_by_payee",
+		"rejected_by_timeout", "yoo_money_account_closed", "payment_expired":
+		return raw
+	default:
+		return "provider_declined"
 	}
 }
 

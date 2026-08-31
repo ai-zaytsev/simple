@@ -117,13 +117,23 @@ func TestStartRetriesOneProviderOperation(t *testing.T) {
 }
 
 type fakeProvider struct {
-	checkout  Checkout
-	canonical Canonical
-	creates   int
-	gets      int
+	checkout        Checkout
+	canonical       Canonical
+	refundOperation RefundOperation
+	refundCanonical CanonicalRefund
+	refundLimits    RefundLimits
+	creates         int
+	gets            int
+	refundCreates   int
+	refundGets      int
+	refundFinds     int
+	refundFind      *CanonicalRefund
+	refundCreateErr error
 }
 
 func (p *fakeProvider) Name() string { return "fake" }
+
+func (p *fakeProvider) RefundIdempotencyWindow() time.Duration { return 24 * time.Hour }
 func (p *fakeProvider) Create(context.Context, CreateRequest) (Checkout, error) {
 	p.creates++
 	return p.checkout, nil
@@ -133,9 +143,35 @@ func (p *fakeProvider) Get(context.Context, string) (Canonical, error) {
 	return p.canonical, nil
 }
 
+func (p *fakeProvider) RefundLimits(string) RefundLimits {
+	if p.refundLimits.MinimumMinor == 0 {
+		return RefundLimits{Full: true, Partial: true, MinimumMinor: 100}
+	}
+	return p.refundLimits
+}
+
+func (p *fakeProvider) CreateRefund(context.Context, RefundCreateRequest) (RefundOperation, error) {
+	p.refundCreates++
+	return p.refundOperation, p.refundCreateErr
+}
+
+func (p *fakeProvider) GetRefund(context.Context, string) (CanonicalRefund, error) {
+	p.refundGets++
+	return p.refundCanonical, nil
+}
+
+func (p *fakeProvider) FindRefund(context.Context, string, string) (CanonicalRefund, error) {
+	p.refundFinds++
+	if p.refundFind == nil {
+		return CanonicalRefund{}, ErrRefundNotFound
+	}
+	return *p.refundFind, nil
+}
+
 type fakeRepo struct {
 	record  Record
 	applies int
+	refund  *RefundRecord
 }
 
 func newFakeRepo() *fakeRepo {
@@ -181,7 +217,98 @@ func (r *fakeRepo) ApplySucceeded(_ context.Context, _ string, canonical Canonic
 	r.record.Status = StatusSucceeded
 	r.record.PaidAt = &now
 	r.record.EntitlementAppliedAt = &now
+	r.record.EntitlementStartedAt = &now
+	r.record.EntitlementEndsAt = &expires
 	r.record.VIPExpiresAt = &expires
 	r.record.ProviderTest = &canonical.Test
 	return r.record, true, nil
+}
+
+func (r *fakeRepo) PaymentForAccount(_ context.Context, accountID, paymentID string) (Record, error) {
+	if accountID != r.record.AccountID || paymentID != r.record.ID {
+		return Record{}, ErrPaymentNotFound
+	}
+	return r.record, nil
+}
+
+func (r *fakeRepo) RefundByPayment(_ context.Context, accountID, paymentID string) (RefundRecord, error) {
+	if r.refund == nil || accountID != r.record.AccountID || paymentID != r.record.ID {
+		return RefundRecord{}, ErrRefundNotFound
+	}
+	return *r.refund, nil
+}
+
+func (r *fakeRepo) BeginRefund(_ context.Context, accountID string, quote RefundQuote, retry bool) (RefundRecord, error) {
+	if accountID != r.record.AccountID {
+		return RefundRecord{}, ErrPaymentNotFound
+	}
+	if r.refund != nil {
+		if (r.refund.Status == RefundStatusCanceled || r.refund.Status == RefundStatusFailed) && !retry {
+			return RefundRecord{}, ErrRefundRetryRequired
+		}
+		return *r.refund, nil
+	}
+	r.refund = &RefundRecord{
+		ID: "refund-1", PaymentID: r.record.ID, AccountID: r.record.AccountID,
+		Provider: r.record.Provider, ProviderPaymentID: r.record.ProviderPaymentID,
+		AmountMinor: quote.AmountMinor, Currency: quote.Currency, Mode: quote.Mode,
+		Status:    RefundStatusCreating,
+		CreatedAt: quote.CalculatedAt,
+		Attempt: RefundAttempt{
+			ID: "attempt-1", IdempotencyKey: "refund-idem-1",
+			Status: RefundStatusCreating, CreatedAt: quote.CalculatedAt,
+		},
+	}
+	return *r.refund, nil
+}
+
+func (r *fakeRepo) AttachRefund(_ context.Context, _, _ string, operation RefundOperation) (RefundRecord, error) {
+	r.refund.Attempt.ProviderRefundID = operation.ProviderRefundID
+	r.refund.Attempt.Status = RefundStatusPending
+	r.refund.Status = RefundStatusPending
+	return *r.refund, nil
+}
+
+func (r *fakeRepo) FailRefundAttempt(context.Context, string, string) (RefundRecord, error) {
+	r.refund.Status = RefundStatusFailed
+	r.refund.Attempt.Status = RefundStatusFailed
+	return *r.refund, nil
+}
+
+func (r *fakeRepo) RefundByProviderID(_ context.Context, provider, providerRefundID string) (RefundRecord, error) {
+	if r.refund == nil || provider != r.refund.Provider || providerRefundID != r.refund.Attempt.ProviderRefundID {
+		return RefundRecord{}, ErrRefundNotFound
+	}
+	return *r.refund, nil
+}
+
+func (r *fakeRepo) SetRefundStatus(_ context.Context, _, _ string, canonical CanonicalRefund) (RefundRecord, error) {
+	r.refund.Status = canonical.Status
+	r.refund.CancellationReason = canonical.CancellationReason
+	r.refund.Attempt.Status = canonical.Status
+	r.refund.Attempt.CancellationReason = canonical.CancellationReason
+	return *r.refund, nil
+}
+
+func (r *fakeRepo) ApplyRefundSucceeded(_ context.Context, _, _ string, canonical CanonicalRefund) (RefundRecord, bool, error) {
+	if r.refund.EntitlementRevokedAt != nil {
+		return *r.refund, false, nil
+	}
+	if err := VerifyRefund(*r.refund, canonical); err != nil {
+		return RefundRecord{}, false, err
+	}
+	now := time.Now().UTC()
+	r.refund.Status = RefundStatusSucceeded
+	r.refund.Attempt.Status = RefundStatusSucceeded
+	r.refund.SucceededAt = &now
+	r.refund.EntitlementRevokedAt = &now
+	r.record.VIPExpiresAt = nil
+	return *r.refund, true, nil
+}
+
+func (r *fakeRepo) UnresolvedRefunds(context.Context, int) ([]RefundRecord, error) {
+	if r.refund != nil && (r.refund.Status == RefundStatusCreating || r.refund.Status == RefundStatusPending) {
+		return []RefundRecord{*r.refund}, nil
+	}
+	return nil, nil
 }

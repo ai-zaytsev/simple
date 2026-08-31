@@ -258,26 +258,30 @@ func (s *Store) ApplySucceeded(
 	if canonical.PaidAt != nil {
 		paidAt = canonical.PaidAt.UTC()
 	}
+	entitlementStartedAt := paidAt
+	entitlementEndsAt := entitlementStartedAt.AddDate(0, record.Product.DurationMonths, 0)
 	if _, err := tx.Exec(ctx, `
 		update payments
 		set status = 'succeeded', provider_test = $2, paid_at = $3,
-		    entitlement_applied_at = now(), updated_at = now()
-		where id = $1`, paymentID, canonical.Test, paidAt); err != nil {
+		    entitlement_applied_at = now(), entitlement_started_at = $4,
+		    entitlement_ends_at = $5, payment_method = nullif($6, ''),
+		    provider_refundable = $7, updated_at = now()
+		where id = $1`, paymentID, canonical.Test, paidAt,
+		entitlementStartedAt, entitlementEndsAt, canonical.PaymentMethod, canonical.Refundable); err != nil {
 		return payment.Record{}, false, fmt.Errorf("cannot complete the payment: %w", err)
 	}
 
-	// An administrative VIP has no expiry and is never shortened. Every paid
-	// VIP starts at now; the greatest expression also preserves paid time in
-	// the defensive case of a second distinct successful payment.
+	// The captured-at instant is the start of the commercial period and is
+	// snapshotted on the payment. An administrative VIP has no expiry and is
+	// never shortened by a paid operation racing with it.
 	if _, err := tx.Exec(ctx, `
 		update accounts
 		set tier = 'VIP',
 		    vip_expires_at = case
-		      when tier = 'VIP' and vip_expires_at is null then null
-		      else greatest(coalesce(vip_expires_at, now()), now())
-		           + make_interval(months => $2)
+		      when tier = 'VIP' and vip_expires_at is null then null::timestamptz
+		      else $2::timestamptz
 		    end
-		where id = $1`, record.AccountID, record.Product.DurationMonths); err != nil {
+		where id = $1`, record.AccountID, entitlementEndsAt); err != nil {
 		return payment.Record{}, false, fmt.Errorf("cannot activate VIP: %w", err)
 	}
 
@@ -374,7 +378,9 @@ const paymentRecordSQL = `
 	       p.provider, coalesce(p.provider_payment_id, ''),
 	       p.idempotency_key::text, p.status, coalesce(p.checkout, ''),
 	       p.provider_test, p.created_at, p.paid_at,
-	       p.entitlement_applied_at, a.vip_expires_at
+	       p.entitlement_applied_at, p.entitlement_started_at,
+	       p.entitlement_ends_at, a.vip_expires_at,
+	       coalesce(p.payment_method, ''), p.provider_refundable
 	from payments p
 	join payment_products pr on pr.id = p.product_id
 	join accounts a on a.id = p.account_id
@@ -390,7 +396,9 @@ func paymentScan(record *payment.Record) []any {
 		&record.Product.AmountMinor, &record.Product.Currency, &record.Product.DurationMonths,
 		&record.Provider, &record.ProviderPaymentID, &record.IdempotencyKey,
 		&record.Status, &record.CheckoutURL, &record.ProviderTest, &record.CreatedAt,
-		&record.PaidAt, &record.EntitlementAppliedAt, &record.VIPExpiresAt,
+		&record.PaidAt, &record.EntitlementAppliedAt,
+		&record.EntitlementStartedAt, &record.EntitlementEndsAt,
+		&record.VIPExpiresAt, &record.PaymentMethod, &record.ProviderRefundable,
 	}
 }
 

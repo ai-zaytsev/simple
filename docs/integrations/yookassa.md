@@ -1,6 +1,6 @@
-# ЮKassa — Разовые Платежи VIP
+# ЮKassa — Разовые Платежи И Возвраты VIP
 
-Первый adapter общего payment provider contract. Архитектурное решение — `ADR-030` в [decisions.md](../architecture/decisions.md). Интеграция использует только [server API ЮKassa](https://yookassa.ru/developers/api) и внешнюю платёжную страницу; мобильного SDK и Google Play Billing нет.
+Первый adapter общего payment provider contract. Архитектурные решения — `ADR-030` и `ADR-032` в [decisions.md](../architecture/decisions.md). Интеграция использует только [server API ЮKassa](https://yookassa.ru/developers/api) и внешнюю платёжную страницу; мобильного SDK и Google Play Billing нет.
 
 ## Границы
 
@@ -9,6 +9,9 @@ Android -- product_id --> Core -- Basic Auth --> ЮKassa
 Android <-- HTTPS checkout -- Core <-- payment object -- ЮKassa
                                 ^
                                 | webhook ID -> authenticated GET -> atomic VIP
+
+Android -- payment_id --> Core -- refund amount + idempotency --> provider of original payment
+Android <-- neutral state -- Core <-- canonical refund/list/GET ---- provider
 ```
 
 Android не знает имя провайдера, shop ID, Secret Key, сумму или срок из собственных констант. Core выбирает активный продукт, сохраняет коммерческий snapshot до обращения к провайдеру и создаёт платёж с `capture: true`, `confirmation.type: redirect`, HTTPS `return_url`, внутренним `payment_id` в metadata и стабильным `Idempotence-Key`. Формат и назначение idempotency key описаны в [официальном контракте API](https://yookassa.ru/developers/using-api/interaction-format).
@@ -21,10 +24,30 @@ Android не знает имя провайдера, shop ID, Secret Key, сум
 | --- | --- | --- |
 | Создать или продолжить checkout | `POST https://simple-syncbridge.download/v1/payments` | Bearer device token |
 | Прочитать сохранённое состояние | `GET https://simple-syncbridge.download/v1/payments/current` | Bearer device token |
+| Рассчитать возврат без движения денег | `POST https://simple-syncbridge.download/v1/refunds/quote` | Bearer device token |
+| Создать или безопасно продолжить возврат | `POST https://simple-syncbridge.download/v1/refunds` | Bearer device token |
+| Канонически сверить возврат | `POST https://simple-syncbridge.download/v1/refunds/current` | Bearer device token |
 | Уведомление ЮKassa | `POST https://simple-syncbridge.download/v1/payments/webhooks/yookassa` | Публичный вход; доверяется только object ID |
 | Возврат браузера | `GET https://simple-syncbridge.download/v1/payments/return` | Нет; статичная нейтральная страница |
 
 Webhook body не активирует VIP. По object ID Core выполняет authenticated `GET /v3/payments/{id}` и сверяет provider payment ID, metadata `payment_id`, amount, currency, status и `paid`. Только `succeeded + paid` применяется к entitlement. Повторная доставка возвращает `200`, но `entitlement_applied_at` не позволяет добавить срок второй раз.
+
+## Возвраты
+
+Политика принадлежит Core и считается в целых копейках:
+
+- от подтверждённой оплаты до границы ровно `7 × 24 часа` включительно — 100% исходной суммы;
+- после границы и до конца оплаченного периода — `floor(сумма × оставшийся срок / полный срок × 75%)`;
+- после конца оплаченного периода автоматического возврата нет;
+- результат ниже provider minimum не округляется вверх.
+
+Android передаёт только внутренний `payment_id` и явное согласие на повтор после канонически отменённой попытки. Core выбирает adapter по `provider` исходного платежа, хранит один логический refund, все provider attempts и отдельный idempotency key каждой попытки. Сумма, валюта, способ оплаты и имя провайдера с телефона не принимаются.
+
+ЮKassa возвращает деньги только на исходный способ оплаты. Минимальный частичный возврат — 1 ₽; сумма всех возвратов не может превысить платёж. До расширения живой матрицы adapter разрешает частичный запрос только для используемого тестами `bank_card`; любой другой способ получает нейтральный отказ без обходного перевода и без изменения VIP. Актуальные provider-правила: [возвраты](https://yookassa.ru/developers/payment-acceptance/after-the-payment/refunds) и [способы оплаты](https://yookassa.ru/developers/payment-acceptance/getting-started/payment-methods).
+
+Ответ создания не считается результатом. Core читает `GET /v3/refunds/{id}` и сверяет refund ID, исходный provider payment ID, внутренний metadata ID, сумму и валюту. Только канонический `succeeded` атомарно завершает refund и прекращает оплаченный VIP; `creating`, `pending`, `canceled`, ошибка и потеря ответа VIP не меняют.
+
+Перед повтором потерянного POST Core запрашивает список возвратов по исходному `payment_id` и ищет собственный metadata ID. ЮKassa гарантирует идемпотентность POST 24 часа; если за это время исход установить не удалось, Core не отправляет новый денежный запрос вслепую. Операция остаётся на ручной сверке, а VIP продолжает работать.
 
 ## Серверный Каталог
 
@@ -55,7 +78,7 @@ Test → production требует заменить значения shop ID и 
 https://simple-syncbridge.download/v1/payments/webhooks/yookassa
 ```
 
-Подписать его на `payment.succeeded` и `payment.canceled`. Обработчик также понимает `payment.waiting_for_capture`, хотя при `capture: true` штатный успешный путь сразу приходит в `succeeded`. ЮKassa требует подтверждать уведомление HTTP `200` и повторяет доставку при временном non-200; актуальные события и правила — в [официальной документации webhook](https://yookassa.ru/developers/using-api/webhooks).
+Подписать его на `payment.succeeded`, `payment.canceled` и `refund.succeeded`. Обработчик также понимает `payment.waiting_for_capture`, хотя при `capture: true` штатный успешный путь сразу приходит в `succeeded`. Для отменённого refund отдельного события нет, поэтому Core периодически перечитывает незавершённые возвраты. ЮKassa требует подтверждать уведомление HTTP `200` и повторяет доставку при временном non-200; актуальные события и правила — в [официальной документации webhook](https://yookassa.ru/developers/using-api/webhooks).
 
 Для shop ID + Secret Key webhook настраивается в кабинете тестового магазина. API-регистрация webhook с Bearer token относится к OAuth-сценарию и здесь не используется.
 
@@ -70,6 +93,11 @@ https://simple-syncbridge.download/v1/payments/webhooks/yookassa
 | Пользовательский выход | закрыть/вернуться со страницы до оплаты | VIP не появляется; один возврат не меняет серверный статус |
 | Повторный webhook | повторно доставить `payment.succeeded` для того же provider payment ID | HTTP `200`, `vip_expires_at` не сдвигается |
 | Подмена полей | unit/integration test меняет amount, currency или metadata при том же status | webhook получает non-200, entitlement не меняется |
+| Полный возврат | успешный платёж моложе 7 суток | refund `succeeded`, возвращена вся сумма, VIP прекращён только после canonical GET |
+| Частичный возврат | тестовый paid interval с возрастом больше 7 суток | сумма равна `floor(pro rata × 75%)`, исходный способ принимает частичный refund, VIP прекращён после `succeeded` |
+| Недостаточный баланс | создать refund при недоступной сумме магазина | refund `canceled/insufficient_funds`, VIP остаётся |
+| Повтор и потеря ответа | повторить webhook/запрос и имитировать потерянный POST response | один provider refund, одна смена entitlement |
+| Границы | сразу, ровно 7 суток, после 7 суток, почти в конце и после конца | 100%, 100%, pro rata × 75%, минимум/отказ, автоматического возврата нет |
 
 После каждого сценария читаются собственные payment row и account tier/expiry из живой PostgreSQL либо operator endpoint. Одной картинки успешной страницы недостаточно.
 
@@ -77,6 +105,6 @@ https://simple-syncbridge.download/v1/payments/webhooks/yookassa
 
 - подписки и сохранение способа оплаты;
 - продление действующего VIP, напоминания и retention-механика;
-- возвраты и chargeback automation;
+- chargeback automation и спорные операции;
 - production receipts и юридическая настройка;
 - ручная активация VIP по данным страницы возврата.

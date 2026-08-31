@@ -37,7 +37,7 @@
 | Публичные пути в Core | Четыре используемых пути отвечали с устройства; один из них в последнем окне имел 88% успеха и помечен `slower` | Следить за следующим окном; `unreachable` или `likely blocked` требует замены пути |
 | Пользователи | 1 активный за сутки, 5,1 ГБ за текущий месяц | Это тестовая эксплуатация, не рабочая нагрузка |
 | Продажи VIP | Открыты в тестовом контуре; текущая задержка FREE перед покупкой — 1 день | Значение 1 день является серверной тестовой настройкой; продуктовый default — 7 дней |
-| Платежи | Adapter ЮKassa развёрнут, но полная живая test-store matrix ещё не пройдена | Нельзя считать оплату принятой в эксплуатацию до закрытия соответствующего долга и release blocker |
+| Платежи и возвраты | Оплата через adapter ЮKassa развёрнута; возвраты ещё не приняты живой test-store matrix | Нельзя считать денежный контур принятым до успешного deploy refund-изменений и живой сверки оплаты, полного/частичного возврата и VIP |
 | Версия приложения | latest `0.1.0 (1)`, minimum `1`, channel artifacts `0` | Политика версий есть, но официального APK ещё не опубликовано |
 | Официальный сайт | Авария: `https://simple-vpn.download` отвечает Cloudflare `521` | Cloudflare не достигает origin `site-1`; восстановление описано ниже |
 | DigitalOcean | Один Droplet размера 1 vCPU / 512 МБ / 10 ГБ в `ams3`; Spaces доступен | Это `site-1`; других Droplet нет |
@@ -109,7 +109,7 @@ Core без выпуска APK меняет kill switch, ноды и резер�
 | Объектное хранение | Terraform state, место под DB backups, APK и manifest | DigitalOcean Spaces `ams3` | приватный bucket `simple-vpn-infra-backups` | Spaces credentials в CI | State можно восстановить import; APK недоступны; DB recovery сейчас отсутствует |
 | Исходящая почта | Magic links и capacity alerts | Brevo, внешний SaaS | sender на `mail.simple-vpn.download` | Brevo, DNS Cloudflare, Core | Новые входы и email-алерты не работают |
 | Входящая почта | Приём адресов домена проекта | Cloudflare Email Routing | MX домена `simple-vpn.download` | Cloudflare и внешний конечный ящик | Support/admin письма не доходят; отправка magic links не затронута |
-| Платёжный контур | Разовые тестовые платежи VIP | ЮKassa test store, внешний SaaS | server API, внешняя checkout page, webhook в Core | Core, PostgreSQL, ЮKassa, DNS Core | Новые оплаты не завершаются; существующий VIP не меняется |
+| Платёжный контур | Разовые тестовые платежи и возвраты VIP | ЮKassa test store, внешний SaaS | server API, внешняя checkout page, webhook в Core | Core, PostgreSQL, ЮKassa, DNS Core | Новые оплаты/возвраты не завершаются; VIP не должен меняться без канонического success |
 | Канал APK | Сборка, подпись, неизменяемые версии и latest | GitHub Actions + DigitalOcean Spaces + `site-1`/Cloudflare | `https://simple-vpn.download` | signing material в CI, Spaces, сайт, Core update policy | Новые установки/обновления недоступны; установленный APK работает |
 | `ru` | Ранее предполагался как RU-probe | RUVDS, Россия | отдельный сервер 1 vCPU / 366 МБ / 9,7 ГБ | Нет runtime-зависимостей | Сейчас на сервис не влияет: роль заменена проверками с Android-устройств |
 
@@ -241,13 +241,13 @@ Cloudflare proxy допустим для публичного сайта, но �
 ### ЮKassa
 
 ```
-Что это: первый adapter общего платёжного модуля, сейчас test store и разовые VIP-платежи.
+Что это: первый adapter общего платёжного модуля, сейчас test store, разовые VIP-платежи и возвраты через провайдера исходного платежа.
 Где находится: внешний сервис ЮKassa; checkout у провайдера, webhook и entitlement в Core.
-Как проверить: кабинет test store, Service Log и payment/account readback; возврат браузера не является успехом.
+Как проверить: кабинет test store, Service Log и payment/refund/account readback; возврат браузера или ответ POST сам по себе не является успехом.
 Как перезапустить: неприменимо; при сомнении закрыть новые продажи workflow Purchases, не меняя существующий VIP.
 Где смотреть логи: операции ЮKassa и отфильтрованный Service Log; секреты и provider error body не печатать.
-Что делать при отказе: оставить платёж pending/canceled, VIP не активировать; после восстановления перечитать канонический status server API.
-Как восстановить: повторить idempotent server operation или webhook; менять провайдера только для новых платежей после завершения взаиморасчётов старого.
+Что делать при отказе: оставить платёж/refund незавершённым, VIP не активировать и не прекращать; после восстановления перечитать канонический status server API.
+Как восстановить: повторить idempotent server operation или webhook. Для потерянного refund сначала найти операцию по исходному payment в ЮKassa; после 24 часов не создавать её повторно вслепую. Менять провайдера только для новых платежей после завершения взаиморасчётов старого.
 ```
 
 ### Официальный APK-канал
@@ -294,7 +294,7 @@ Cloudflare proxy допустим для публичного сайта, но �
 | [Cloudflare](https://dash.cloudflare.com/) | DNS, proxy сайта, Email Routing | Активные зоны, A/MX/TXT, proxy только у сайта, ошибки origin |
 | [Spaceship](https://www.spaceship.com/auth/?returnUrl=%2Fapplication%2Fsellerhub%2Fdomains%2F) | Два расходных домена | A-записи, срок регистрации, доступ API |
 | [Brevo](https://app.brevo.com/) | Отправка magic link | Кредиты, delivery/bounce/blocked, репутация sender |
-| [ЮKassa](https://yookassa.ru/yooid/signin) | Test payments | status и сумма операций, webhook delivery; не считать return page подтверждением |
+| [ЮKassa](https://yookassa.ru/yooid/signin) | Test payments/refunds | status, сумма, исходный способ и webhook delivery; не считать return page или ответ POST подтверждением |
 | [VDSka](https://old.vdska.ru/page/login) | `fi` | power, диск, сеть, доступ консоли |
 | [RUVDS](https://ruvds.com/) | Неиспользуемый `ru` | Только расходы и power; сервис от него не зависит |
 
@@ -379,7 +379,7 @@ Cloudflare proxy допустим для публичного сайта, но �
 - нет резервного email-провайдера;
 - из двух зарегистрированных свободных доменов только один сейчас пригоден;
 - official APK не опубликован, direct update end-to-end не принят;
-- test-store ЮKassa не пройден полностью на живом APK;
+- test-store ЮKassa не пройден полностью на живом APK для оплаты, полного/частичного возврата и VIP readback;
 - месячная traffic quota FREE не реализована, хотя старые расчёты использовали 20 ГиБ;
 - `site-1` в момент инвентаризации находится в аварии Cloudflare 521.
 

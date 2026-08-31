@@ -103,7 +103,13 @@ fun VpnScreen(
     var showingDevices by remember { mutableStateOf(false) }
 
     if (showingDevices) {
-        ExternalDevicesScreen(onBack = { showingDevices = false })
+        ExternalDevicesScreen(
+            onBack = { showingDevices = false },
+            onRefunded = {
+                showingDevices = false
+                refreshStanding++
+            },
+        )
         return
     }
 

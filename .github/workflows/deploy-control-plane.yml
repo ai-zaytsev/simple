@@ -226,3 +226,15 @@ jobs:
             exit 1
           fi
           echo "| Payment webhook route | reachable |" >> "${GITHUB_STEP_SUMMARY}"
+
+          for route in /v1/refunds/quote /v1/refunds /v1/refunds/current; do
+            refund_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+              -X POST "https://simple-syncbridge.download${route}" \
+              || echo 000)
+            if [ "${refund_code}" != "401" ]; then
+              echo "Expected 401 for an unauthenticated ${route} probe. Got ${refund_code}."
+              echo "404 means nginx is not routing the refund API to the Control Plane."
+              exit 1
+            fi
+          done
+          echo "| Refund API routes | reachable and authenticated |" >> "${GITHUB_STEP_SUMMARY}"

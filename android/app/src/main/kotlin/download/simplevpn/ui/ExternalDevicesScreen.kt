@@ -38,6 +38,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.text.NumberFormat
+import java.util.Locale
 
 /**
  * One router, television or computer, and the one address it uses.
@@ -70,7 +72,7 @@ data class ExternalDevice(
  * cannot take the router with it, because they never shared anything.
  */
 @Composable
-fun ExternalDevicesScreen(onBack: () -> Unit) {
+fun ExternalDevicesScreen(onBack: () -> Unit, onRefunded: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
@@ -86,6 +88,9 @@ fun ExternalDevicesScreen(onBack: () -> Unit) {
     var replacing by remember { mutableStateOf<ExternalDevice?>(null) }
     var revoking by remember { mutableStateOf<ExternalDevice?>(null) }
     var copied by remember { mutableStateOf(false) }
+    var refundQuote by remember { mutableStateOf<ControlPlaneClient.RefundQuote?>(null) }
+    var refundOutcome by remember { mutableStateOf(0) }
+    var refundSucceeded by remember { mutableStateOf(false) }
 
     // Reading the list opens a connection, so it never happens on the thread
     // that draws. Written once here and reused by every action below, because
@@ -147,6 +152,27 @@ fun ExternalDevicesScreen(onBack: () -> Unit) {
                 }
             }
 
+            // A refund lives with the paid account, not with checkout. The
+            // button first asks Core for the exact current amount; Android
+            // never computes money and never supplies it back.
+            TextButton(
+                enabled = !busy,
+                onClick = {
+                    busy = true
+                    scope.launch {
+                        refundQuote = withContext(Dispatchers.IO) {
+                            val payment = client.currentPayment() ?: return@withContext null
+                            client.refundQuote(payment.id)
+                        }
+                        if (refundQuote == null) refundOutcome = R.string.refund_unavailable
+                        busy = false
+                    }
+                },
+                modifier = Modifier.align(Alignment.End),
+            ) {
+                Text(text = stringResource(R.string.refund_action))
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -169,6 +195,87 @@ fun ExternalDevicesScreen(onBack: () -> Unit) {
             confirmButton = {
                 TextButton(onClick = { copied = false }) {
                     Text(text = stringResource(R.string.devices_back))
+                }
+            },
+        )
+    }
+
+    refundQuote?.let { quote ->
+        val message = when {
+            quote.available && quote.mode == "full" ->
+                stringResource(R.string.refund_confirm_full, refundRubles(quote.amountMinor))
+            quote.available ->
+                stringResource(R.string.refund_confirm_partial, refundRubles(quote.amountMinor))
+            quote.reason == "paid_period_ended" -> stringResource(R.string.refund_period_ended)
+            quote.reason == "partial_refund_not_supported" ->
+                stringResource(R.string.refund_partial_unsupported)
+            quote.reason == "refund_below_provider_minimum" ->
+                stringResource(R.string.refund_below_minimum)
+            quote.reason == "already_refunded" -> stringResource(R.string.refund_already_done)
+            quote.reason == "creating" || quote.reason == "pending" ->
+                stringResource(R.string.refund_pending)
+            else -> stringResource(R.string.refund_unavailable)
+        }
+        AlertDialog(
+            onDismissRequest = { if (!busy) refundQuote = null },
+            title = { Text(text = stringResource(R.string.refund_confirm_title)) },
+            text = { Text(text = message) },
+            confirmButton = {
+                if (quote.available) {
+                    TextButton(
+                        enabled = !busy,
+                        onClick = {
+                            busy = true
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    client.startRefund(quote.paymentId, quote.retry)
+                                }
+                                busy = false
+                                refundQuote = null
+                                when (result?.status) {
+                                    "succeeded" -> {
+                                        refundSucceeded = true
+                                        refundOutcome = R.string.refund_succeeded
+                                    }
+                                    "creating", "pending" -> refundOutcome = R.string.refund_pending
+                                    else -> refundOutcome = R.string.refund_failed
+                                }
+                            }
+                        },
+                    ) {
+                        Text(text = stringResource(R.string.refund_confirm))
+                    }
+                } else {
+                    TextButton(onClick = { refundQuote = null }) {
+                        Text(text = stringResource(R.string.support_no_mail_close))
+                    }
+                }
+            },
+            dismissButton = if (quote.available) {
+                {
+                    TextButton(onClick = { refundQuote = null }, enabled = !busy) {
+                        Text(text = stringResource(R.string.devices_cancel))
+                    }
+                }
+            } else {
+                null
+            },
+        )
+    }
+
+    if (refundOutcome != 0) {
+        AlertDialog(
+            onDismissRequest = {},
+            text = { Text(text = stringResource(refundOutcome)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    refundOutcome = 0
+                    if (refundSucceeded) {
+                        refundSucceeded = false
+                        onRefunded()
+                    }
+                }) {
+                    Text(text = stringResource(R.string.support_no_mail_close))
                 }
             },
         )
@@ -269,6 +376,13 @@ fun ExternalDevicesScreen(onBack: () -> Unit) {
             },
         )
     }
+}
+
+private fun refundRubles(amountMinor: Long): String {
+    val whole = amountMinor / 100
+    val kopecks = amountMinor % 100
+    val rubles = NumberFormat.getIntegerInstance(Locale("ru", "RU")).format(whole)
+    return if (kopecks == 0L) "$rubles ₽" else "$rubles,%02d ₽".format(kopecks)
 }
 
 @Composable

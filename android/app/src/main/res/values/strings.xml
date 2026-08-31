@@ -112,4 +112,18 @@
     <string name="devices_revoke_yes">Удалить</string>
     <string name="devices_back">Назад</string>
     <string name="devices_unreachable">Не удалось связаться с сервисом. Попробуйте ещё раз.</string>
+    <string name="refund_action">Вернуть VIP</string>
+    <string name="refund_checking">Проверяем сумму возврата…</string>
+    <string name="refund_confirm_title">Вернуть VIP и отключить его</string>
+    <string name="refund_confirm_full">ЮKassa вернёт %1$s на тот же способ оплаты. После подтверждения возврата VIP сразу прекратится.</string>
+    <string name="refund_confirm_partial">По правилу pro rata с удержанием четверти ЮKassa вернёт %1$s на тот же способ оплаты. После подтверждения возврата VIP сразу прекратится.</string>
+    <string name="refund_confirm">Подтвердить возврат</string>
+    <string name="refund_pending">Возврат обрабатывается платёжной системой. Пока успех не подтверждён, VIP продолжает работать.</string>
+    <string name="refund_succeeded">Возврат подтверждён. VIP прекращён.</string>
+    <string name="refund_failed">Не удалось подтвердить результат возврата. VIP продолжает работать. Проверьте состояние позже; новый денежный запрос автоматически не создаётся вслепую.</string>
+    <string name="refund_period_ended">Оплаченный период уже закончился, автоматического возврата нет.</string>
+    <string name="refund_partial_unsupported">Исходный способ оплаты не поддерживает частичный возврат. Обходной перевод не выполняется, VIP продолжает работать.</string>
+    <string name="refund_below_minimum">Оставшаяся сумма меньше минимального возврата платёжной системы. Мы не округляем её вверх, автоматического возврата нет.</string>
+    <string name="refund_already_done">Этот платёж уже возвращён.</string>
+    <string name="refund_unavailable">Сейчас возврат для этого платежа недоступен. VIP не изменён.</string>
 </resources>
