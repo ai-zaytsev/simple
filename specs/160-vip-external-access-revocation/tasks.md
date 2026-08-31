@@ -10,6 +10,6 @@
 - [x] Расширить PostgreSQL lifecycle tests
 - [x] Обновить durable documentation
 - [x] Выполнить локальную валидацию
-- [ ] Создать PR и пройти PR loop до merge-ready
+- [x] Создать PR и пройти PR loop до merge-ready
 - [ ] После human merge развернуть Core
 - [ ] Выполнить live refund и сверить VIP/external/node state

@@ -2,7 +2,7 @@
 
 - Feature ID: `160-vip-external-access-revocation`
 - Feature Branch: `feature/160-vip-external-access-revocation`
-- Status: `local-ready`
+- Status: `merge-ready`
 
 ## Goal
 
@@ -62,3 +62,10 @@
 - `go vet ./...` — green;
 - `git diff --check` — green;
 - настоящие PostgreSQL lifecycle tests требуют `TEST_DATABASE_URL` и выполняются в PR workflow на PostgreSQL 16.
+
+## PR Evidence
+
+- PR: `#166`;
+- checked head: `0757c718bfcacab8add5e30ee58a5ca31e194687`;
+- `AI Review`, `PR Loop Guard`, `PostgreSQL Lifecycle`, `Process Baseline` — green;
+- mergeable state — clean, blocking findings отсутствуют.
