@@ -88,6 +88,8 @@ https://simple-syncbridge.download/v1/payments/webhooks/yookassa
 
 [Тестовый режим ЮKassa](https://yookassa.ru/developers/payment-acceptance/testing-and-going-live/testing) не списывает реальные деньги и требует специальные карты. Срок действия — любая будущая дата, CVC и 3-D Secure code — любые числа.
 
+Workflow `Payment Acceptance` принимает безопасный account UUID-prefix. Действие `read` получает локальные payment/refund rows и через существующие CI secrets делает authenticated GET тех же объектов у ЮKassa; публично выводятся только внутренние восьмизначные prefixes и проверяемые поля. Действие `prepare_partial` предназначено только для живой test-store матрицы: оно выставляет policy interval последнего подходящего `provider_test=true` карточного платежа в точку 8 суток. Production, non-VIP, неподтверждённый, non-card или уже возвращённый платёж workflow менять не может.
+
 | Проверка | Действие | Обязательный readback |
 | --- | --- | --- |
 | Успех | `5555 5555 5555 4477`, завершить 3-D Secure | payment `succeeded`, `provider_test = true`, VIP и срок ровно по продукту |
@@ -102,6 +104,15 @@ https://simple-syncbridge.download/v1/payments/webhooks/yookassa
 | Границы | сразу, ровно 7 суток, после 7 суток, почти в конце и после конца | 100%, 100%, pro rata × 75%, минимум/отказ, автоматического возврата нет |
 
 После каждого сценария читаются собственные payment row и account tier/expiry из живой PostgreSQL либо operator endpoint. Одной картинки успешной страницы недостаточно.
+
+### Подтверждено 31 августа 2026 года
+
+- успешная карточная оплата 399 ₽ канонически активировала VIP; потерянный webhook был восстановлен штатной кнопкой `Проверить оплату` без доверия Android;
+- full refund того же `bank_card` платежа вернул 399 ₽, завершился `succeeded` и только после этого перевёл VIP→FREE;
+- external credential после refund исчез из node list, обе ноды перешли `count=2→1`, а сохранённая ссылка перестала давать интернет;
+- purchases после теста возвращены в состояние `open=true`, `FREE=7 дней`.
+
+Остаются живые: payment failure, пользовательский cancel, webhook и повторная доставка, частичный `bank_card` refund и потеря ответа/retry. Официальная документация описывает `insufficient_funds` как возможную причину отказа refund, но не публикует детерминированный способ вызвать её в test store; этот сценарий нельзя считать живым, пока ЮKassa не даст тестовый механизм. Автоматический provider-error contract при этом покрыт тестами и VIP при ошибке не отключает.
 
 ## Что Не Входит
 

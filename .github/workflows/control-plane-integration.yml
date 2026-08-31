@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - 'control-plane/**'
+      - '.github/scripts/payment_acceptance*.sql'
+      - '.github/scripts/prepare_partial_payment.sql'
+      - '.github/workflows/payment-acceptance.yml'
       - '.github/workflows/control-plane-integration.yml'
   workflow_dispatch:
 
@@ -45,3 +48,69 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://simple_vpn:integration-only@127.0.0.1:5432/simple_vpn_test?sslmode=disable
         run: go test -count=1 ./internal/store
+
+      - name: Exercise the test-only partial-refund preparation
+        env:
+          PGURL: postgres://simple_vpn:integration-only@127.0.0.1:5432/simple_vpn_test?sslmode=disable
+        run: |
+          set -euo pipefail
+          if ! command -v psql >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq postgresql-client
+          fi
+
+          psql "${PGURL}" -v ON_ERROR_STOP=1 -q -f - <<'SQL'
+          insert into accounts (id, email, tier, vip_expires_at) values
+            ('16100000-0000-4000-8000-000000000001',
+             'acceptance-test' || chr(64) || 'example.test',
+             'VIP', now() + interval '1 month'),
+            ('16100001-0000-4000-8000-000000000001',
+             'production-guard' || chr(64) || 'example.test',
+             'VIP', now() + interval '1 month');
+
+          insert into payments (
+            id, account_id, product_id, provider, provider_payment_id,
+            idempotency_key, amount_minor, currency, duration_months,
+            status, provider_test, paid_at, entitlement_applied_at,
+            payment_method, provider_refundable,
+            entitlement_started_at, entitlement_ends_at
+          ) values
+            ('16110000-0000-4000-8000-000000000001',
+             '16100000-0000-4000-8000-000000000001', 'vip_1_month', 'yookassa',
+             'acceptance-provider-test', '16120000-0000-4000-8000-000000000001',
+             39900, 'RUB', 1, 'succeeded', true, now(), now(),
+             'bank_card', true, now(), now() + interval '1 month'),
+            ('16110001-0000-4000-8000-000000000001',
+             '16100001-0000-4000-8000-000000000001', 'vip_1_month', 'yookassa',
+             'acceptance-provider-production', '16120001-0000-4000-8000-000000000001',
+             39900, 'RUB', 1, 'succeeded', false, now(), now(),
+             'bank_card', true, now(), now() + interval '1 month');
+          SQL
+
+          prepared=$(psql "${PGURL}" -v ON_ERROR_STOP=1 -v prefix=16100000 \
+            -qAt -f .github/scripts/prepare_partial_payment.sql)
+          printf '%s' "${prepared}" | grep -q '"prepared": 1'
+
+          age=$(psql "${PGURL}" -Atc \
+            "select extract(epoch from now() - paid_at)::int from payments where id = '16110000-0000-4000-8000-000000000001'")
+          test "${age}" -ge 691100 && test "${age}" -le 691300
+
+          snapshot=$(psql "${PGURL}" -v ON_ERROR_STOP=1 -v prefix=16100000 \
+            -qAt -f .github/scripts/payment_acceptance_snapshot.sql)
+          printf '%s' "${snapshot}" > /tmp/acceptance-snapshot.json
+          python3 - <<'PY'
+          import json
+          snapshot = json.load(open("/tmp/acceptance-snapshot.json"))
+          assert snapshot["match_count"] == 1
+          assert snapshot["payment"]["provider_test"] is True
+          assert snapshot["payment"]["id"].startswith("16110000")
+          PY
+
+          if psql "${PGURL}" -v ON_ERROR_STOP=1 -v prefix=16100001 \
+               -qAt -f .github/scripts/prepare_partial_payment.sql >/tmp/production-guard.txt 2>&1; then
+            echo "A production payment passed the test-only guard."
+            exit 1
+          fi
+          unchanged=$(psql "${PGURL}" -Atc \
+            "select (paid_at > now() - interval '1 minute')::text from payments where id = '16110001-0000-4000-8000-000000000001'")
+          test "${unchanged}" = "true"
