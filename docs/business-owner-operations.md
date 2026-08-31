@@ -245,14 +245,14 @@ Cloudflare proxy допустим для публичного сайта, но �
 ```
 Что это: первый adapter общего платёжного модуля, сейчас test store, разовые VIP-платежи и возвраты через провайдера исходного платежа.
 Где находится: внешний сервис ЮKassa; checkout у провайдера, webhook и entitlement в Core.
-Как проверить: workflow Payment Acceptance по безопасному account UUID-prefix сопоставляет payment/refund rows с authenticated GET ЮKassa; затем сверить tier в Read The Panel и credentials в Device Access/Service Log. Возврат браузера или ответ POST сам по себе не является успехом.
+Как проверить: workflow Payment Acceptance по безопасному account UUID-prefix сопоставляет payment/refund rows с authenticated GET ЮKassa. Payment Webhook Replay повторяет уже завершённые test-store события и доказывает неизменность VIP/refund без раскрытия provider IDs. Затем сверить tier в Read The Panel и credentials в Device Access/Service Log. Возврат браузера или ответ POST сам по себе не является успехом.
 Как перезапустить: неприменимо; при сомнении закрыть новые продажи workflow Purchases, не меняя существующий VIP.
 Где смотреть логи: операции ЮKassa и отфильтрованный Service Log; секреты и provider error body не печатать.
 Что делать при отказе: оставить платёж/refund незавершённым, VIP не активировать и не прекращать; после восстановления перечитать канонический status server API.
 Как восстановить: повторить idempotent server operation или webhook. Для потерянного refund сначала найти операцию по исходному payment в ЮKassa; после 24 часов не создавать её повторно вслепую. Менять провайдера только для новых платежей после завершения взаиморасчётов старого.
 ```
 
-31 августа 2026 года живой карточный full refund на 399 ₽ подтверждён: PostgreSQL и канонический status ЮKassa дали `succeeded`, аккаунт перешёл VIP→FREE, external credential был отозван, ноды перешли `2→1`, сохранённая ссылка фактически перестала давать интернет. Это принимает полный возврат и отзыв доступа, но не заменяет оставшиеся проверки partial refund, failure/cancel и webhook/repeat.
+31 августа — 1 сентября 2026 года подтверждены два живых карточных возврата. Full refund вернул 399 ₽: PostgreSQL и канонический status ЮKassa дали `succeeded`, аккаунт перешёл VIP→FREE, external credential был отозван, ноды перешли `2→1`, сохранённая ссылка перестала давать интернет. Partial refund после точки 8 суток вернул рассчитанные Core `222,01 ₽`: DB/provider дали `succeeded/succeeded`, entitlement был отозван, панель вернулась `VIP 1→0`, `FREE 0→1`. Остаются финальный cancel, независимый webhook replay, lost-response/retry и возврат тестовой настройки FREE-периода с 1 на 7 дней.
 
 ### Официальный APK-канал
 

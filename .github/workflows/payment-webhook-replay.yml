@@ -1,0 +1,95 @@
+name: Payment Webhook Replay
+
+# Re-delivers completed test-store events without accepting a provider ID as
+# input or printing it. Core still fetches the canonical YooKassa object.
+
+on:
+  workflow_dispatch:
+    inputs:
+      account_prefix:
+        description: Unambiguous UUID prefix from Account Tier or Device Access (at least 8 characters).
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    name: Payment Webhook Replay
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate the target
+        env:
+          PREFIX: ${{ inputs.account_prefix }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "${PREFIX}" | grep -qiE '^[0-9a-f-]{8,36}$'; then
+            echo "account_prefix must be 8–36 UUID characters."
+            exit 1
+          fi
+
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh -i ~/.ssh/deploy -o BatchMode=yes -o ConnectTimeout=20 \
+            -o StrictHostKeyChecking=accept-new "root@${HOST}" true
+
+      - name: Fetch the private before snapshot
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          PREFIX: ${{ inputs.account_prefix }}
+        run: |
+          set -euo pipefail
+          {
+            printf '%s\n' "${PREFIX}"
+            cat .github/scripts/payment_acceptance_snapshot.sql
+          } | ssh -i ~/.ssh/deploy -o BatchMode=yes -o ConnectTimeout=20 \
+            "root@${HOST}" \
+            'read -r prefix; psql "$(cat /etc/simple-vpn-cp.dsn)" \
+               -v ON_ERROR_STOP=1 -v prefix="${prefix}" -qAt -f -' \
+            > /tmp/webhook-before.json
+          test -s /tmp/webhook-before.json
+
+      - name: Repeat completed provider notifications
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/payment_webhook_replay.py \
+            replay /tmp/webhook-before.json | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: Fetch the private after snapshot
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          PREFIX: ${{ inputs.account_prefix }}
+        run: |
+          set -euo pipefail
+          {
+            printf '%s\n' "${PREFIX}"
+            cat .github/scripts/payment_acceptance_snapshot.sql
+          } | ssh -i ~/.ssh/deploy -o BatchMode=yes -o ConnectTimeout=20 \
+            "root@${HOST}" \
+            'read -r prefix; psql "$(cat /etc/simple-vpn-cp.dsn)" \
+               -v ON_ERROR_STOP=1 -v prefix="${prefix}" -qAt -f -' \
+            > /tmp/webhook-after.json
+          test -s /tmp/webhook-after.json
+
+      - name: Prove durable state is unchanged
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/payment_webhook_replay.py verify \
+            /tmp/webhook-before.json /tmp/webhook-after.json \
+            | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: Remove private snapshots
+        if: always()
+        run: rm -f /tmp/webhook-before.json /tmp/webhook-after.json

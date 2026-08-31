@@ -19,5 +19,5 @@
 - [x] Развернуть refund Core/API и проверить публичные routes
 - [x] Выполнить живой success + full bank-card refund 399 ₽
 - [x] Сверить full refund VIP→FREE, external revoke и node `2→1`
-- [ ] Выполнить живой partial bank-card refund после 7 дней
+- [x] Выполнить живой partial bank-card refund после 7 дней: 222,01 ₽, DB/provider succeeded
 - [ ] Выполнить живые payment failure/cancel и webhook/repeat
