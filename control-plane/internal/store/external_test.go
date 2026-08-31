@@ -2,6 +2,7 @@ package store
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -42,5 +43,29 @@ func TestExternalDevicesHaveTheirOwnAllowance(t *testing.T) {
 	if !regexp.MustCompile(`(?is)update\s+tier_limits\s+set\s+max_external\s*=\s*0\s+where\s+tier\s*=\s*'FREE'`).
 		MatchString(schema) {
 		t.Error("FREE is not held at zero external devices")
+	}
+}
+
+func TestNodeCredentialListEnforcesTheCurrentExternalAllowance(t *testing.T) {
+	source := readSource(t, "access.go")
+	live := between(source, "func (s *Store) LiveCredentials", "\nfunc ")
+	for _, required := range []string{"tier_limits", "d.kind <> 'external'", "l.max_external"} {
+		if !strings.Contains(live, required) {
+			t.Fatalf("node credential list does not enforce %q", required)
+		}
+	}
+}
+
+func TestEveryOperatorTierPathUsesTheSharedDowngrade(t *testing.T) {
+	source := readSource(t, "access.go")
+	for _, name := range []string{"SetAccountTier", "SetAccountTierByPrefix"} {
+		setter := between(source, "func (s *Store) "+name, "\nfunc ")
+		if !strings.Contains(setter, "setAccountTier") || !strings.Contains(setter, "tx.Commit") {
+			t.Fatalf("%s does not apply and commit the shared tier transition", name)
+		}
+	}
+	shared := between(source, "func setAccountTier", "\nfunc ")
+	if !strings.Contains(shared, "expireAccount") {
+		t.Fatal("shared FREE transition does not revoke VIP-only access")
 	}
 }

@@ -227,7 +227,9 @@ func (s *Store) LiveCredentials(ctx context.Context) ([]string, error) {
 		from device_credentials c
 		join devices d on d.id = c.device_id
 		join accounts a on a.id = d.account_id
+		join tier_limits l on l.tier = a.tier
 		where c.state = 'ACTIVE' and a.state = 'ACTIVE'
+		  and (d.kind <> 'external' or l.max_external is null or l.max_external > 0)
 		order by c.credential_uuid`)
 	if err != nil {
 		return nil, fmt.Errorf("cannot list credentials: %w", err)
@@ -369,29 +371,60 @@ var ErrNoSuchAccount = errors.New("no such account")
 // a list of allowed words in Go and a list of rows in the schema would be two
 // lists, and the day they disagree is the day one of them is wrong.
 func (s *Store) SetAccountTier(ctx context.Context, email, tier string) (AccountTier, error) {
-	var out AccountTier
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return AccountTier{}, fmt.Errorf("cannot begin tier change: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 
-	err := s.pool.QueryRow(ctx, `
-		update accounts set tier = $2, vip_expires_at = null
-		where lower(email) = lower($1)
-		returning id, tier`, email, tier).Scan(&out.AccountID, &out.Tier)
+	var accountID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		select id from accounts where lower(email) = lower($1) for update`, email).
+		Scan(&accountID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AccountTier{}, ErrNoSuchAccount
 	}
 	if err != nil {
 		// The address is not wrapped into the error: an error travels into
 		// logs, and this one would carry a mailbox with it.
+		return AccountTier{}, fmt.Errorf("cannot find the account: %w", err)
+	}
+
+	out, err := setAccountTier(ctx, tx, accountID, tier)
+	if err != nil {
+		return AccountTier{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return AccountTier{}, fmt.Errorf("cannot commit tier change: %w", err)
+	}
+	return out, nil
+}
+
+// setAccountTier is the single operator transition. FREE is not only a word
+// on the account: it is the set of access limits that must become visible in
+// the same transaction, so a node cannot observe FREE with VIP-only access.
+func setAccountTier(
+	ctx context.Context, tx pgx.Tx, accountID uuid.UUID, tier string,
+) (AccountTier, error) {
+	if tier == "FREE" {
+		if err := expireAccount(ctx, tx, accountID); err != nil {
+			return AccountTier{}, err
+		}
+	} else if _, err := tx.Exec(ctx, `
+		update accounts set tier = $2, vip_expires_at = null where id = $1`,
+		accountID, tier); err != nil {
 		return AccountTier{}, fmt.Errorf("cannot set the tier: %w", err)
 	}
 
+	out := AccountTier{AccountID: accountID, Tier: tier}
 	// What the new status means and how many devices are on it, so that the
 	// answer says what happened rather than only that something did.
-	if err := s.pool.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		select l.max_devices, l.max_external,
 		       (select count(*)::int from devices d where d.account_id = $1)
 		from tier_limits l where l.tier = $2`, out.AccountID, out.Tier).
 		Scan(&out.MaxDevices, &out.MaxExternal, &out.Devices); err != nil {
-		return out, fmt.Errorf("cannot read what the tier allows: %w", err)
+		return AccountTier{}, fmt.Errorf("cannot read what the tier allows: %w", err)
 	}
 	return out, nil
 }
@@ -546,6 +579,7 @@ func (s *Store) LimitedCredentials(ctx context.Context) ([]string, int, error) {
 		join accounts a on a.id = d.account_id
 		join tier_limits l on l.tier = a.tier
 		where c.state = 'ACTIVE' and l.speed_mbit is not null
+		  and (d.kind <> 'external' or l.max_external is null or l.max_external > 0)
 		order by c.credential_uuid`)
 	if err != nil {
 		return nil, 0, fmt.Errorf("cannot list limited credentials: %w", err)
@@ -724,13 +758,32 @@ var ErrAmbiguousAccount = errors.New("that prefix matches more than one account"
 func (s *Store) SetAccountTierByPrefix(
 	ctx context.Context, prefix, tier string,
 ) (AccountTier, error) {
-	var matches int
-	if err := s.pool.QueryRow(ctx,
-		`select count(*)::int from accounts where id::text like $1 || '%'`,
-		prefix).Scan(&matches); err != nil {
-		return AccountTier{}, fmt.Errorf("cannot count matching accounts: %w", err)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return AccountTier{}, fmt.Errorf("cannot begin tier change: %w", err)
 	}
-	switch matches {
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx, `
+		select id from accounts where id::text like $1 || '%' for update`, prefix)
+	if err != nil {
+		return AccountTier{}, fmt.Errorf("cannot find matching accounts: %w", err)
+	}
+	ids := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return AccountTier{}, fmt.Errorf("cannot read a matching account: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return AccountTier{}, fmt.Errorf("cannot finish matching accounts: %w", err)
+	}
+
+	switch len(ids) {
 	case 0:
 		return AccountTier{}, ErrNoSuchAccount
 	case 1:
@@ -738,21 +791,12 @@ func (s *Store) SetAccountTierByPrefix(
 		return AccountTier{}, ErrAmbiguousAccount
 	}
 
-	var out AccountTier
-	err := s.pool.QueryRow(ctx, `
-		update accounts set tier = $2, vip_expires_at = null
-		where id::text like $1 || '%'
-		returning id, tier`, prefix, tier).Scan(&out.AccountID, &out.Tier)
+	out, err := setAccountTier(ctx, tx, ids[0], tier)
 	if err != nil {
-		return AccountTier{}, fmt.Errorf("cannot set the tier: %w", err)
+		return AccountTier{}, err
 	}
-
-	if err := s.pool.QueryRow(ctx, `
-		select l.max_devices, l.max_external,
-		       (select count(*)::int from devices d where d.account_id = $1)
-		from tier_limits l where l.tier = $2`, out.AccountID, out.Tier).
-		Scan(&out.MaxDevices, &out.MaxExternal, &out.Devices); err != nil {
-		return out, fmt.Errorf("cannot read what the tier allows: %w", err)
+	if err := tx.Commit(ctx); err != nil {
+		return AccountTier{}, fmt.Errorf("cannot commit tier change: %w", err)
 	}
 	return out, nil
 }

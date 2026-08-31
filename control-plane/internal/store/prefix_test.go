@@ -26,11 +26,12 @@ func TestAnAmbiguousPrefixIsRefused(t *testing.T) {
 			"on an account nobody chose")
 	}
 
-	// Counted before the update rather than after it. An update that hit two
-	// rows has already hit them.
-	counted := regexp.MustCompile(`(?s)select count\(\*\).*update accounts set tier`)
-	if !counted.MatchString(setting) {
-		t.Error("the matches are counted after the update, which is too late")
+	// Selected and locked before the shared transition rather than checked
+	// after it. A transition that hit two rows has already hit them.
+	lockedBeforeChange := regexp.MustCompile(
+		`(?s)select id from accounts.*for update.*ErrAmbiguousAccount.*setAccountTier`)
+	if !lockedBeforeChange.MatchString(setting) {
+		t.Error("matching accounts are not locked and refused before the tier change")
 	}
 }
 
