@@ -47,7 +47,7 @@ Android передаёт только внутренний `payment_id` и яв�
 
 ЮKassa возвращает деньги только на исходный способ оплаты. Минимальный частичный возврат — 1 ₽; сумма всех возвратов не может превысить платёж. До расширения живой матрицы adapter разрешает частичный запрос только для используемого тестами `bank_card`; любой другой способ получает нейтральный отказ без обходного перевода и без изменения VIP. Актуальные provider-правила: [возвраты](https://yookassa.ru/developers/payment-acceptance/after-the-payment/refunds) и [способы оплаты](https://yookassa.ru/developers/payment-acceptance/getting-started/payment-methods).
 
-Ответ создания не считается результатом. Core читает `GET /v3/refunds/{id}` и сверяет refund ID, исходный provider payment ID, внутренний metadata ID, сумму и валюту. Только канонический `succeeded` атомарно завершает refund и прекращает оплаченный VIP; `creating`, `pending`, `canceled`, ошибка и потеря ответа VIP не меняют.
+Ответ создания не считается результатом. Core читает `GET /v3/refunds/{id}` и сверяет refund ID, исходный provider payment ID, внутренний metadata ID, сумму и валюту. Только канонический `succeeded` атомарно завершает refund и запускает общий VIP→FREE transition; `creating`, `pending`, `canceled`, ошибка и потеря ответа VIP не меняют. Правила отзыва VPN-доступа при этом transition описаны в [entitlement model](../architecture/entitlement-model.md#где-применяется-ограничение).
 
 Перед повтором потерянного POST Core запрашивает список возвратов по исходному `payment_id` и ищет собственный metadata ID. ЮKassa гарантирует идемпотентность POST 24 часа; если за это время исход установить не удалось, Core не отправляет новый денежный запрос вслепую. Операция остаётся на ручной сверке, а VIP продолжает работать.
 
@@ -95,8 +95,8 @@ https://simple-syncbridge.download/v1/payments/webhooks/yookassa
 | Пользовательский выход | закрыть/вернуться со страницы до оплаты | VIP не появляется; один возврат не меняет серверный статус |
 | Повторный webhook | повторно доставить `payment.succeeded` для того же provider payment ID | HTTP `200`, `vip_expires_at` не сдвигается |
 | Подмена полей | unit/integration test меняет amount, currency или metadata при том же status | webhook получает non-200, entitlement не меняется |
-| Полный возврат | успешный платёж моложе 7 суток | refund `succeeded`, возвращена вся сумма, VIP прекращён только после canonical GET |
-| Частичный возврат | тестовый paid interval с возрастом больше 7 суток | сумма равна `floor(pro rata × 75%)`, исходный способ принимает частичный refund, VIP прекращён после `succeeded` |
+| Полный возврат | успешный платёж моложе 7 суток | refund `succeeded`, возвращена вся сумма, VIP и внешние credentials прекращены только после canonical GET |
+| Частичный возврат | тестовый paid interval с возрастом больше 7 суток | сумма равна `floor(pro rata × 75%)`, исходный способ принимает частичный refund, VIP и внешние credentials прекращены после `succeeded` |
 | Недостаточный баланс | создать refund при недоступной сумме магазина | refund `canceled/insufficient_funds`, VIP остаётся |
 | Повтор и потеря ответа | повторить webhook/запрос и имитировать потерянный POST response | один provider refund, одна смена entitlement |
 | Границы | сразу, ровно 7 суток, после 7 суток, почти в конце и после конца | 100%, 100%, pro rata × 75%, минимум/отказ, автоматического возврата нет |

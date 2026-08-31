@@ -73,6 +73,11 @@ func TestPaymentLifecycleOnPostgres(t *testing.T) {
 	if err != nil || applied || second.VIPExpiresAt == nil || !second.VIPExpiresAt.Equal(*first.VIPExpiresAt) {
 		t.Fatalf("duplicate application changed expiry: applied=%v record=%+v err=%v", applied, second, err)
 	}
+	appCredential := insertCredential(t, ctx, st, accountID, "app")
+	external, err := st.AddExternalDevice(ctx, accountID, "expiry-test")
+	if err != nil || external.Credential == nil {
+		t.Fatalf("cannot add expiry-test external device: device=%+v err=%v", external, err)
+	}
 
 	if _, err := st.pool.Exec(ctx,
 		`update accounts set vip_expires_at = now() - interval '1 minute' where id = $1`, accountID); err != nil {
@@ -91,6 +96,8 @@ func TestPaymentLifecycleOnPostgres(t *testing.T) {
 	if tier != "FREE" || expiry != nil {
 		t.Fatalf("expired paid VIP became tier=%s expiry=%v", tier, expiry)
 	}
+	assertCredentialState(t, ctx, st, *external.Credential, "REVOKED")
+	assertNodeCredentials(t, ctx, st, []uuid.UUID{appCredential}, []uuid.UUID{*external.Credential})
 
 	adminID := uuid.New()
 	if _, err := st.pool.Exec(ctx, `
@@ -148,6 +155,10 @@ func TestRefundLifecycleOnPostgres(t *testing.T) {
 	if err != nil || !applied {
 		t.Fatalf("payment application: applied=%v record=%+v err=%v", applied, paid, err)
 	}
+	external, err := st.AddExternalDevice(ctx, accountID, "refund-test")
+	if err != nil || external.Credential == nil {
+		t.Fatalf("cannot add refund-test external device: device=%+v err=%v", external, err)
+	}
 	quote := payment.QuoteRefund(paid, paidAt, payment.RefundLimits{
 		Full: true, Partial: true, MinimumMinor: 100,
 	})
@@ -178,6 +189,7 @@ func TestRefundLifecycleOnPostgres(t *testing.T) {
 	if tier != "VIP" {
 		t.Fatal("canceled refund revoked VIP")
 	}
+	assertCredentialState(t, ctx, st, *external.Credential, "ACTIVE")
 	if _, err := st.BeginRefund(ctx, accountID.String(), quote, false); !errors.Is(err, payment.ErrRefundRetryRequired) {
 		t.Fatalf("canceled refund retried without explicit authority: %v", err)
 	}
@@ -214,4 +226,155 @@ func TestRefundLifecycleOnPostgres(t *testing.T) {
 	if tier != "FREE" {
 		t.Fatalf("confirmed refund left tier=%s", tier)
 	}
+	assertCredentialState(t, ctx, st, *external.Credential, "REVOKED")
+	assertNodeCredentials(t, ctx, st, nil, []uuid.UUID{*external.Credential})
+}
+
+func TestManualTierDowngradeRevokesExternalAccessOnPostgres(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	st, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, by := range []string{"email", "prefix"} {
+		t.Run(by, func(t *testing.T) {
+			accountID := uuid.New()
+			email := accountID.String() + "@example.test"
+			if _, err := st.pool.Exec(ctx, `
+				insert into accounts (id, email, tier, vip_expires_at)
+				values ($1, $2, 'VIP', null)`, accountID, email); err != nil {
+				t.Fatal(err)
+			}
+			appCredential := insertCredential(t, ctx, st, accountID, "app")
+			external, err := st.AddExternalDevice(ctx, accountID, "manual-"+by)
+			if err != nil || external.Credential == nil {
+				t.Fatalf("cannot add external device: device=%+v err=%v", external, err)
+			}
+			assertNodeCredentials(t, ctx, st,
+				[]uuid.UUID{appCredential, *external.Credential}, nil)
+
+			if by == "email" {
+				_, err = st.SetAccountTier(ctx, email, "FREE")
+			} else {
+				_, err = st.SetAccountTierByPrefix(ctx, accountID.String()[:8], "FREE")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertCredentialState(t, ctx, st, *external.Credential, "REVOKED")
+			assertNodeCredentials(t, ctx, st,
+				[]uuid.UUID{appCredential}, []uuid.UUID{*external.Credential})
+		})
+	}
+}
+
+func TestNodeListRejectsAStaleFreeExternalCredentialOnPostgres(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	st, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	accountID := uuid.New()
+	if _, err := st.pool.Exec(ctx, `
+		insert into accounts (id, email, tier)
+		values ($1, $2, 'FREE')`, accountID, accountID.String()+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	appCredential := insertCredential(t, ctx, st, accountID, "app")
+	// Deliberately bypass AddExternalDevice to reproduce the live drift: the
+	// row says ACTIVE even though the account's current limit says zero.
+	staleExternal := insertCredential(t, ctx, st, accountID, "external")
+	assertCredentialState(t, ctx, st, staleExternal, "ACTIVE")
+	assertNodeCredentials(t, ctx, st,
+		[]uuid.UUID{appCredential}, []uuid.UUID{staleExternal})
+
+	limited, _, err := st.LimitedCredentials(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsCredential(limited, appCredential) || containsCredential(limited, staleExternal) {
+		t.Fatalf("limited list contains forbidden external access: %v", limited)
+	}
+}
+
+func insertCredential(
+	t *testing.T, ctx context.Context, st *Store, accountID uuid.UUID, kind string,
+) uuid.UUID {
+	t.Helper()
+	deviceID := uuid.New()
+	credential := uuid.New()
+	if _, err := st.pool.Exec(ctx, `
+		insert into devices (id, account_id, kind, label) values ($1, $2, $3, $4)`,
+		deviceID, accountID, kind, kind+"-test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(ctx, `
+		insert into device_credentials (id, device_id, credential_uuid, updated_seq)
+		values ($1, $2, $3, next_seq('credentials'))`,
+		uuid.New(), deviceID, credential); err != nil {
+		t.Fatal(err)
+	}
+	return credential
+}
+
+func assertCredentialState(
+	t *testing.T, ctx context.Context, st *Store, credential uuid.UUID, want string,
+) {
+	t.Helper()
+	var got string
+	if err := st.pool.QueryRow(ctx, `
+		select state from device_credentials where credential_uuid = $1`, credential).
+		Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("credential %s has state %s, want %s", credential, got, want)
+	}
+}
+
+func assertNodeCredentials(
+	t *testing.T, ctx context.Context, st *Store, included, excluded []uuid.UUID,
+) {
+	t.Helper()
+	live, err := st.LiveCredentials(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range included {
+		if !containsCredential(live, credential) {
+			t.Fatalf("node list does not contain allowed credential %s", credential)
+		}
+	}
+	for _, credential := range excluded {
+		if containsCredential(live, credential) {
+			t.Fatalf("node list contains forbidden credential %s", credential)
+		}
+	}
+}
+
+func containsCredential(credentials []string, wanted uuid.UUID) bool {
+	for _, credential := range credentials {
+		if credential == wanted.String() {
+			return true
+		}
+	}
+	return false
 }
