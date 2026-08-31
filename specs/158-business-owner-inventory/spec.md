@@ -2,7 +2,7 @@
 
 - Feature ID: `158-business-owner-inventory`
 - Feature Branch: `feature/158-business-owner-inventory`
-- Status: `review`
+- Status: `merge-ready`
 
 ## Goal
 
