@@ -1,10 +1,10 @@
 # Observability Data Model
 
-Документ описывает, как получаются все метрики из ТЗ 2.5 и классификация нагрузки из ТЗ 2.6, не нарушая ограничений [privacy-model.md](privacy-model.md).
+Документ описывает privacy-safe модель данных и возможную классификацию нагрузки. Операционные показатели, панели и пороги находятся только в [BO-инструкции](../business-owner-operations.md#мониторинг-и-пороги-вмешательства).
 
 ## Что Построено На Самом Деле
 
-Дальше описана целевая форма. Реализация стадии 12 отличается в трёх местах, и отличия сознательные.
+Дальше разделы со схемами описывают переносимый контракт и могут содержать отложенные поля. Текущая реализация отличается в перечисленных ниже местах.
 
 **Стека нет.** Prometheus, Grafana, Alertmanager, node_exporter, blackbox_exporter и OpenTelemetry Collector не разворачивались. Метрики живут в схеме `metrics` того же PostgreSQL, панель отдаёт сам Control Plane по пути `/panel`.
 
@@ -26,19 +26,19 @@ nDPI не подходит технически: Xray — userspace-прокси
 
 **Пути входа проверяет Android.** Обычный запрос останавливается на первом ответившем entry и потому не доказывает работоспособность остальных. Раз в шесть часов, а также сразу после первого входа, приложение в фоне получает последний подписанный bootstrap и обращается к `/v1/config` через каждый entry напрямую, без VPN. В отчёте три поля: публичный `host` нашего entry, успех и latency. URL запроса, посещённые адреса, IP пользователя и идентификатор аккаунта в таблицу probes не попадают. Core принимает `host` только если он находится в собственной таблице включённых bootstrap entries или нод; произвольная цель от изменённого APK отбрасывается.
 
-## Три Контура
+## Логические Контуры И Текущая Реализация
 
 | Контур | Хранилище | Ключ | Вопрос, на который отвечает |
 | --- | --- | --- | --- |
-| Метрики инфраструктуры | Prometheus | `node_id`, инстанс | Как себя чувствует железо и процессы |
-| Технические логи | journald на хостах, архив в Spaces | компонент, `node_id` | Что именно сломалось |
-| Продуктовая аналитика | PostgreSQL, база `analytics` | `analytics_id` | Как ведут себя пользователи в агрегате |
+| Метрики нод и продукта | PostgreSQL, схемы Core | `node_id` и обезличенные агрегаты | Как работает fleet и продукт |
+| Технические логи | journald на хостах, без внешнего архива | компонент, `node_id` | Что именно сломалось |
+| BO-представление | `/panel`, читаемая workflow `Read The Panel` | агрегаты без секретов | Состояние, ёмкость, connectivity и policy |
 
-Транспорт — OpenTelemetry Collector. Он же является местом, где применяются правила фильтрации: событие с запрещённым полем отвергается, а не очищается молча.
+Телеметрию принимают Core endpoints. Событие с запрещённым полем отвергается, а не очищается молча; это проверяется API/schema tests.
 
-На MVP ClickHouse и Loki не разворачиваются, `ADR-018` и `ADR-019`. Аналитика живёт в отдельной базе того же PostgreSQL, логи — в journald с архивом в Spaces. Схемы и форматы при этом обязаны оставаться переносимыми: ограничения, без которых поздний переход потеряет историю, собраны в [deferred-stack-migration.md](deferred-stack-migration.md) и обязательны с первой строки кода.
+ClickHouse, Loki, Prometheus, Grafana и OTel Collector не развёрнуты. Аналитика живёт в PostgreSQL, логи — только в journald. Namespace Spaces для архива подготовлен, но upload job отсутствует. Условия позднего перехода собраны в [deferred-stack-migration.md](deferred-stack-migration.md).
 
-Разделение контуров не косметическое. В Prometheus нет пользовательских ключей вообще, поэтому его компрометация не даёт ничего о людях. В аналитическом хранилище нет ни одного поля, ведущего к аккаунту. Только Control Plane знает связь, и только в момент обработки батча.
+Разделение контуров не косметическое. В инфраструктурных метриках нет пользовательских ключей. В аналитических событиях нет адресов назначения и IP пользователя. Только Core кратковременно знает связь credential с account при проверке доступа.
 
 ## Путь Данных
 
@@ -51,22 +51,19 @@ flowchart LR
         FLOW --> CLASS --> AGG
         FLOW -.->|"сырые записи<br/>уничтожаются"| DROP["не сохраняются"]
     end
-    AGG -->|"по vpn_credential_id"| ING["Telemetry ingest<br/>Control Plane"]
+    AGG -->|"агрегаты"| ING["Telemetry ingest<br/>Core"]
     CLI["Android клиент<br/>события сессий"] --> ING
-    ING -->|"→ analytics_id"| AN[("PostgreSQL: analytics")]
-    NODEM["node_exporter, Xray metrics"] --> PROM["Prometheus"]
-    LOGS["Логи компонентов"] --> JD["journald"]
-    JD -->|"почасовая выгрузка"| SP[("Spaces: logs/")]
-    AN --> GRAF["Grafana"]
-    PROM --> GRAF
-    LOKI --> GRAF
+    AGENT["node/probe agents"] --> ING
+    ING --> AN[("PostgreSQL")]
+    AN --> PANEL["Core /panel"]
+    LOGS["Логи компонентов"] --> JD["journald<br/>локальная ротация"]
 ```
 
 Точка обезличивания одна — `Telemetry ingest`. Всё, что левее, работает с `vpn_credential_id`; всё, что правее, работает с `analytics_id`.
 
 ## Схемы Аналитики
 
-Схемы приведены как контракт данных, а не как финальный DDL. На MVP они реализуются в PostgreSQL, но пишутся как зеркало будущих таблиц ClickHouse: имена и семантика колонок не меняются при переносе, см. [deferred-stack-migration.md](deferred-stack-migration.md).
+Схемы ниже — первоначальный целевой контракт, а не точный DDL действующей PostgreSQL. Перед будущим ClickHouse нужен явный schema mapping и audit фактических migrations, см. [deferred-stack-migration.md](deferred-stack-migration.md).
 
 ### `session_events`
 
@@ -107,7 +104,7 @@ flowchart LR
 | `ts` | DateTime | |
 | `analytics_id` | FixedString(16) | |
 | `node_alias` | LowCardinality(String) | Пусто для попыток bootstrap |
-| `entry_kind` | LowCardinality(String) | `https-direct`, `reality-edge`, `tunnel`, `rescue-mirror`, `rescue-code` |
+| `entry_kind` | LowCardinality(String) | текущие `https-direct`, `https-ip`, `https-edge`; future rescue kinds расширяют список |
 | `transport_kind` | LowCardinality(String) | Инвариант И-15: без него не отличить отказ ноды от отказа транспорта |
 | `segment_class` | LowCardinality(String) | |
 | `result` | Enum | `success`, `timeout`, `refused`, `tls_error`, `auth_error` |
@@ -158,40 +155,9 @@ flowchart LR
 
 Метод для MVP — эвристические правила, а не машинное обучение. Причина: правила объяснимы, отлаживаются и не требуют обучающего датасета, собирать который означало бы хранить как раз то, что запрещено.
 
-## Каталог Метрик Business Owner
+## Показатели И Панели Business Owner
 
-| Требование ТЗ | Как считается | Источник |
-| --- | --- | --- |
-| Active users | uniq `analytics_id` за период | `session_events` |
-| Concurrent sessions | Число открытых сессий по времени | `session_events` |
-| Пики нагрузки | Максимумы по временным окнам | `traffic_agg` |
-| Объём трафика | Сумма `bytes_up + bytes_down` | `traffic_agg` |
-| Bandwidth | Производная объёма по времени | `traffic_agg`, Prometheus |
-| Загрузка каждой node | CPU, память, сеть, сессии | Prometheus |
-| Heavy / light users | Ранжирование `analytics_id` по объёму за эпоху | `traffic_agg` |
-| P50 / P90 / P95 / P99 usage | Перцентили объёма на пользователя | `traffic_agg` |
-| Top 1% traffic share | Доля верхнего процентиля в общем объёме | `traffic_agg` |
-| Session duration | `duration_s` | `session_events` |
-| Reconnect rate | Доля `reconnect` к числу сессий | `session_events` |
-| Connect success | Доля `success` в попытках | `connect_attempts` |
-| Latency | `latency_ms` и метрики ноды | `connect_attempts`, Prometheus |
-| Packet loss | Метрики транспорта на ноде | Prometheus |
-| Traffic mix | Доли классов | `traffic_agg` |
-| Degraded / blocked nodes | Состояния из Fleet manager | Prometheus, Control Plane |
-| Проблемы сетевых сегментов | Connect success в разрезе `segment_class` | `connect_attempts` |
-| Агрегированный retention | uniq `analytics_id` по `cohort` в каждой эпохе, делённое на размер когорты | `session_events` |
-| Здоровье транспорта | Connect success в разрезе `transport_kind` | `connect_attempts` |
-
-Каждая строка достижима без единого запрещённого поля. Это и есть проверка того, что privacy-модель и требования Business Owner совместимы.
-
-## Дашборды
-
-| Дашборд | Аудитория | Содержание |
-| --- | --- | --- |
-| Business | Business Owner | Active users, сессии, объём, traffic mix, распределение нагрузки по пользователям |
-| Fleet | Эксплуатация | Состояния нод, загрузка, ёмкость, кандидаты на замену |
-| Connectivity | Эксплуатация | Connect success по нодам, точкам входа и сегментам сети |
-| Quality | Эксплуатация | Latency, packet loss, reconnect rate |
+Единый каталог действующих показателей, нормальных значений и порогов вмешательства находится в [BO-инструкции](../business-owner-operations.md#мониторинг-и-пороги-вмешательства). В этом техническом документе он намеренно не повторяется.
 
 ## Retention
 
@@ -199,15 +165,12 @@ flowchart LR
 | --- | --- | --- |
 | Сырые признаки потоков | ≤ 60 секунд, только память | Требование приватности |
 | `traffic_agg`, `session_events`, `connect_attempts` | 13 месяцев | Годовое сравнение с запасом |
-| Архив логов в Spaces | 14 суток | Архив нужен против ротации journald, а не для удлинения хранения |
-| Prometheus raw | 15 суток | Достаточно для расследования инцидента |
-| Prometheus downsampled | 13 месяцев | Тренды по инфраструктуре |
-| journald на хосте | До ротации по размеру | На дроплетах 10 GB диска ротация быстрая, поэтому и нужен архив |
+| journald на хосте | До локальной ротации по размеру | Внешнего архива сейчас нет; это открытый риск |
 
-Retention описывается как код и применяется автоматически. Ручное продление срока хранения для аналитического контура не предусмотрено.
+Retention PostgreSQL применяется серверным кодом. Retention будущего log archive не считается реализованным до появления upload/delete job и проверки восстановления.
 
 ## Дисциплина Кардинальности
 
-- запрещены метки с неограниченным множеством значений в Prometheus: никаких `analytics_id`, `session_id`, IP
+- для любого будущего metrics backend запрещены метки с неограниченным множеством значений: никаких `analytics_id`, `session_id`, IP
 - `node_alias`, `segment_class`, `class`, `app_version` — единственные допустимые низкокардинальные метки в аналитике
 - пользовательская гранулярность живёт только в аналитическом хранилище, а не в метриках

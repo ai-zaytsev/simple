@@ -170,7 +170,7 @@ sequenceDiagram
     participant E as Новая edge-нода
     participant C as Клиенты
 
-    CP->>E: provisioning, WG, регистрация
+    CP->>E: provisioning, TLS/edge path, регистрация
     E-->>CP: health OK
     CP->>CP: новый descriptor, seq+1
     C->>CP: очередной refresh

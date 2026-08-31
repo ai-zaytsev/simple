@@ -4,16 +4,22 @@
 
 `docs/` — durable memory проекта:
 
+**Business Owner**
+
+- [business-owner-operations.md](business-owner-operations.md) — единственный операционный источник истины: действующее размещение, состояние, панели, отказы, восстановление и рост нагрузки
+
+Живые числа не переписываются в другие документы: инструкция указывает workflow или provider panel, в котором они проверяются. Технические документы ниже объясняют контракты реализации и ссылаются на BO-инструкцию вместо повторения эксплуатационных сведений.
+
 **Процесс**
 
 - `docs/ai-pr-workflow.md` — completion contract через PR loop
 - `docs/worker-orchestration.md` — локальный branch-based orchestration flow
 - `docs/environment.md` — состояние локальной среды и требования к ней
-- `docs/stack.md` — зафиксированный стек MVP и его следствия для process-layer
+- `docs/stack.md` — фактически используемый стек и отложенные технологии
 
 **Архитектура**
 
-- `docs/architecture/` — целевая архитектура MVP: границы компонентов, threat model, privacy model, модель идентификаторов, remote config, bootstrap и восстановление, жизненный цикл нод, observability, entitlement, секреты, инфраструктура, сценарии отказа, инварианты развития, ADR и prerequisites. Карта документов — в `docs/architecture/README.md`
+- `docs/architecture/` — техническая архитектура: границы компонентов, threat model, privacy model, модель идентификаторов, remote config, bootstrap и восстановление, жизненный цикл нод, observability, entitlement, секреты, инфраструктура, сценарии отказа, инварианты развития, ADR и prerequisites. Карта документов — в `docs/architecture/README.md`
 
 **Интеграции**
 
@@ -21,7 +27,7 @@
 - `docs/integrations/dns.md` — DNS: провайдеры, роли доменов, конвенции записей, запрет проксирования на точках входа
 - `docs/release-apk.md` — официальный APK: release signing, неизменяемая история, `latest` и штатная публикация
 - `docs/app-updates.md` — единая latest/min policy, direct APK install и граница будущего Google Play
-- `docs/integrations/digitalocean.md` — DigitalOcean: фактическая область токена, Spaces, retention, границы бюджета
+- `docs/integrations/digitalocean.md` — DigitalOcean: область токена, Spaces и технический контракт публикации
 - `docs/integrations/libxray.md` — транспортный движок: закреплённая версия, контрольная сумма, публичная сигнатура
 - `docs/integrations/yookassa.md` — разовые платежи VIP: provider boundary, webhook, секреты и test-store matrix
 

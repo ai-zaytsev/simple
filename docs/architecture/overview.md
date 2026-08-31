@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Целевая архитектура MVP Android VPN. Документ задаёт компоненты, их границы и то, чего каждый компонент делать не должен.
+Действующая логическая архитектура Android VPN. Документ задаёт компоненты, их границы и то, чего каждый компонент делать не должен. Физическое размещение и эксплуатация находятся только в [BO-инструкции](../business-owner-operations.md).
 
 Связанные документы: [threat-model.md](threat-model.md), [privacy-model.md](privacy-model.md), [identity-model.md](identity-model.md), [remote-config.md](remote-config.md), [bootstrap-recovery.md](bootstrap-recovery.md), [node-lifecycle.md](node-lifecycle.md), [observability.md](observability.md), [entitlement-model.md](entitlement-model.md), [secrets-model.md](secrets-model.md), [infrastructure.md](infrastructure.md), [failure-scenarios.md](failure-scenarios.md), [decisions.md](decisions.md).
 
@@ -50,23 +50,19 @@ flowchart TB
         NODEAPI --> PG
     end
 
-    subgraph nodes["VPN nodes (Ubuntu 24.04)"]
-        XRAYN["Xray-core: VLESS + REALITY"]
+    subgraph nodes["VPN nodes"]
+        NGINX["Nginx: cover + WebSocket/TLS + Core edge"]
+        XRAYN["Xray-core: VLESS"]
         AGENT["node-agent"]
+        NGINX --> XRAYN
         AGENT --> XRAYN
     end
 
-    subgraph obs["Observability plane"]
-        OTEL["OTel Collector"]
-        PROM["Prometheus"]
-        AN[("PostgreSQL: analytics")]
-        ARCH[("Spaces: logs/")]
-        GRAF["Grafana"]
-        OTEL --> PROM
-        OTEL --> AN
-        OTEL --> ARCH
-        PROM --> GRAF
-        AN --> GRAF
+    subgraph obs["Observability в Core"]
+        METRICS[("PostgreSQL: metrics / analytics")]
+        PANEL["Core /panel"]
+        JOURNAL["journald на хостах"]
+        METRICS --> PANEL
     end
 
     subgraph prov["Provisioning"]
@@ -79,12 +75,13 @@ flowchart TB
     PAY["Payment provider"]
 
     CORE -->|"signed plan, telemetry"| API
-    XRAY -->|"VLESS + REALITY"| XRAYN
+    XRAY -->|"VLESS over WebSocket/TLS"| NGINX
     AUTH --> EMAIL
     ENT --> PAY
-    NODEAPI -->|"WireGuard mgmt network"| AGENT
-    AGENT -->|"metrics, aggregates"| OTEL
-    API -->|"business metrics"| OTEL
+    NODEAPI -->|"HTTPS control"| AGENT
+    AGENT -->|"metrics, aggregates"| API
+    API --> METRICS
+    AGENT --> JOURNAL
     VPSAPI -.->|"создаёт"| nodes
     TF -.->|"регистрирует"| NODEAPI
 ```
@@ -113,7 +110,7 @@ flowchart TB
 - хранить или отображать список fleet
 - содержать в APK приватные ключи: в APK лежат только публичные ключи для проверки подписи
 - принимать решение о деградации ноды — он только сообщает наблюдения
-- показывать пользователю VLESS, REALITY, UUID, endpoint в основном потоке
+- показывать пользователю transport params, UUID или endpoint в основном потоке
 - хранить платёжные секреты, вычислять цену или активировать VIP по возврату браузера
 - решать самостоятельно, обязательна ли новая версия, или устанавливать APK с неверным hash
 
@@ -138,7 +135,7 @@ flowchart TB
 - сборку и подпись connection plan: `primary` + 2 reserve
 - remote config, kill-switch и минимально поддерживаемую версию приложения
 - общую latest/min update policy, channel artifacts и серверный отказ старому app_version до выдачи VPN-плана
-- управление нодами через node-agent по management-сети
+- управление нодами через node-agent и ограниченный management-доступ
 - приём агрегированной телеметрии и её нормализацию
 
 Не отвечает и не имеет права:
@@ -155,7 +152,7 @@ PostgreSQL — единственный source of truth для аккаунто�
 
 Отвечает за:
 
-- терминацию VLESS + REALITY на `:443`
+- терминацию основного VLESS over WebSocket/TLS через Nginx на `:443`
 - применение конфигурации, полученной от Control Plane
 - локальный расчёт агрегатов трафика и классификацию нагрузки
 - health-репортинг и self-probe
@@ -166,11 +163,11 @@ PostgreSQL — единственный source of truth для аккаунто�
 - писать access log, DNS log, SNI log
 - хранить flow metadata дольше окна классификации
 - видеть `account_id`, email или `analytics_id`: нода оперирует только `vpn_credential_id`
-- принимать управляющие подключения из публичной сети — control-канал живёт только внутри WireGuard
+- принимать SSH от произвольного публичного адреса; доступ разрешён только от Core, CI использует его как jump host
 
-### Observability plane
+### Observability
 
-Отвечает за приём, хранение и визуализацию метрик, логов и агрегированной аналитики. Не отвечает за принятие решений: деградацию ноды объявляет Fleet manager, а не Grafana.
+Core/PostgreSQL принимают, хранят и показывают агрегированные метрики. Логи остаются в journald. Отдельного observability plane сейчас нет; деградацию ноды объявляет Fleet manager, а не панель.
 
 ### Provisioning
 
@@ -198,7 +195,7 @@ sequenceDiagram
     A->>CP: GET /v1/session/plan
     CP->>CP: entitlement, allocation, credential
     CP-->>A: signed connection plan
-    A->>N: VLESS + REALITY handshake
+    A->>N: VLESS over WebSocket/TLS
     N-->>A: туннель установлен
     A->>CP: телеметрия подключения
 ```
@@ -255,10 +252,10 @@ sequenceDiagram
 | Не входит | Почему |
 | --- | --- |
 | Kubernetes | Нод десятки, а не тысячи; Terraform и node-agent проще и отлаживаемее |
-| Kafka | Объём телеметрии MVP покрывается OTel Collector и батчевой вставкой |
+| Kafka | Объём телеметрии покрывается прямым ingest Core и батчевой вставкой |
 | Elasticsearch | Полнотекстовый поиск по логам не нужен |
 | Redis cluster | Нет состояния, требующего распределённого кэша |
-| Service mesh | Один Control Plane и ноды за WireGuard — mesh нечего решать |
+| Service mesh | Один Core и небольшой fleet — mesh нечего решать |
 | Микросервисы | Control Plane это один Go-бинарь с внутренними модулями |
 | Автоматический autoscaling | По ТЗ не обязателен; обязательна штатная операция добавления ноды |
 | Выбор страны или сервера в UI | Прямо запрещено ТЗ |

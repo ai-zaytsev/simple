@@ -1,16 +1,8 @@
 # Официальная Публикация APK
 
-Официальный адрес: `https://simple-vpn.download`. Сайт и Control Plane намеренно живут на разных доменах и разных адресах.
+Технический контракт подписи, immutable history и publication workflow. Официальный адрес, размещение, текущее состояние и восстановление находятся только в [BO-инструкции](business-owner-operations.md#официальный-apk-канал).
 
-## Где Что Живёт
-
-| Часть | Место |
-| --- | --- |
-| HTML, CSS, JavaScript, Nginx | `site-1`, DigitalOcean `ams3`, 1 vCPU / 512 МБ / 10 ГБ |
-| Все APK и manifest | DigitalOcean Spaces, prefix `apk/` |
-| DNS и внешний proxy | Cloudflare |
-| APK signing key | офлайн у Business Owner; рабочая копия в GitHub Secrets |
-| Сборка и публикация | GitHub Actions `Publish APK` |
+Сайт и Core намеренно живут на разных доменах и адресах. Все APK и manifest хранятся как objects под prefix `apk/`; origin stateless. Signing key имеет офлайн-копию у Business Owner, рабочая копия доступна только release workflow.
 
 ## Ссылки
 
@@ -35,15 +27,7 @@ Signing key — единственный артефакт, без которог
 
 ## Штатный Выпуск
 
-1. Изменить `versionName` и увеличить `versionCode` ровно на один в `android/app/build.gradle.kts`.
-2. Провести изменение через обычный feature branch, PR, checks, AI review и human merge.
-3. Убедиться, что в `docs/release-blockers.md` не осталось открытых блокеров.
-4. Запустить `Publish APK` на `main` с `confirm_publish=true`.
-5. Прочитать summary: version, SHA-256, latest link и permanent link.
-6. Workflow скачивает APK через официальный домен, повторно проверяет hash/подпись и только после этого продвигает Core latest для `direct_apk`.
-7. Открыть официальный домен и сверить те же значения; запустить `Application Updates / show` и сверить тот же versionCode в Core.
-
-HTML сайта при этом не меняется: он читает manifest. Ручная загрузка через Spaces panel нештатна, потому что обходит проверку подписи, последовательности и неизменяемости.
+Операторская последовательность и recovery находятся в [BO-инструкции](business-owner-operations.md#официальный-apk-канал). Здесь остаётся только техническое правило: `Publish APK` на `main` собирает release, сначала пишет immutable versioned object, затем `latest` и manifest, публично повторяет hash/signature и только после этого продвигает Core latest. HTML не переделывается при новом релизе. Ручная загрузка через Spaces panel запрещена, потому что обходит проверки последовательности и неизменяемости.
 
 ## Инварианты
 
@@ -64,8 +48,6 @@ HTML сайта при этом не меняется: он читает manifes
 
 Минимальная поддерживаемая версия управляется отдельно workflow `Application Updates`. Сначала версия публикуется и проходит добровольное обновление, затем при необходимости оператор меняет minimum. Полный runtime contract — [app-updates.md](app-updates.md).
 
-## Восстановление Сайта
+## Восстановление
 
-Потеря `site-1` не означает потерю истории: APK живут в Spaces. Новый host создаётся тем же `Deploy APK Site`, DNS переводится на него, а страница снова читает существующий manifest.
-
-Потеря signing key хуже потери всей инфраструктуры: выпустить совместимое обновление станет невозможно. Это максимальный инцидент из [architecture/secrets-model.md](architecture/secrets-model.md), а не задача восстановления сервера.
+Операционный порядок восстановления сайта находится в [BO-инструкции](business-owner-operations.md#сайт-site-1). Технический инвариант: потеря stateless origin не удаляет историю objects, а потеря signing key делает совместимое обновление невозможным и является максимальным инцидентом из [secrets-model.md](architecture/secrets-model.md).

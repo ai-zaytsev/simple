@@ -20,8 +20,8 @@
 | Публичные ключи в APK | Производные от plan signing key | В коде приложения | Клиент | Через выпуск сборки | Ничего, они публичны |
 | Node enrollment token | Control Plane | Одноразово в cloud-init | Новая нода | Одноразовый, TTL минуты | Возможность зарегистрировать чужую ноду один раз |
 | Node token | Control Plane | На ноде, файл с ограниченными правами | node-agent | При пересоздании ноды | Управляющий доступ к одной ноде |
-| WireGuard keys | Нода и Control Plane | На соответствующих сторонах | Management network | При пересоздании ноды | Доступ в management-сеть с одной ноды |
-| REALITY private key | Control Plane, на ноду | На ноде, только в рантайме | Xray | При пересоздании или подозрении | Возможность выдать себя за ноду |
+| Deploy SSH key | CI/Core jump path | GitHub Secrets и authorized_keys | Update/Inspect/Retire нод | При подозрении | Управление fleet в пределах firewall path |
+| REALITY private key | Core, на ноду при включении запасного transport | На ноде, файл с ограниченными правами | Xray | При пересоздании или подозрении | Возможность выдать себя за запасной transport ноды |
 | VPN credentials | Control Plane | PostgreSQL и конфигурация ноды | Xray, клиент | Плановая и по событию | Бесплатное использование конкретной ноды |
 | DB credentials | Оператор | Secrets store среды | Control Plane | Плановая | Полный доступ к аккаунтам. Критично |
 | Analytics epoch key `K_epoch` | Control Plane | Только в памяти и защищённом хранилище | Обезличивание | Каждую эпоху, старый уничтожается | Возможность связать `analytics_id` с аккаунтом в текущей эпохе |
@@ -65,7 +65,7 @@ sequenceDiagram
     TF->>N: cloud-init с token
     N->>CP: enroll(token)
     CP->>CP: token валиден и не использован
-    CP-->>N: node token, WG peer, REALITY key, конфигурация
+    CP-->>N: node token и transport configuration
     CP->>CP: token помечен использованным
 ```
 
@@ -78,7 +78,7 @@ sequenceDiagram
 | Plan signing key | Расписание или подозрение | Новый `key_id` подписывает, старый публичный ключ ещё принимается клиентами до истечения переходного окна |
 | VPN credentials | Расписание, смена ноды, подозрение | Новый credential приходит с новым планом, старый отзывается после перехода |
 | `K_epoch` | Каждая эпоха | Новый ключ с началом эпохи, старый уничтожается после закрытия окна |
-| Node token, WG, REALITY | Пересоздание ноды | Ноды расходуемые, ротация = замена |
+| Node token, TLS/transport material | Пересоздание ноды | Ноды расходуемые, ротация = замена |
 | Provider и SaaS токены | Расписание | Замена в secrets store, перезапуск потребителя |
 | DB credentials | Расписание | Параллельная учётная запись, затем вывод старой |
 
@@ -90,7 +90,7 @@ sequenceDiagram
 | --- | --- |
 | Утечка plan signing key | Выпуск нового `key_id`, отзыв старого через remote config, ускоренный refresh планов, оценка необходимости новой сборки |
 | Утечка DB | Смена всех DB credentials, оценка объёма раскрытия email, уведомление пользователей, ротация `K_epoch` |
-| Изъятие ноды | `BLOCKED`, отзыв её credentials, удаление WG peer, пересоздание, разбор причин |
+| Изъятие ноды | `BLOCKED`, отзыв её credentials/tokens, пересоздание, разбор причин |
 | Утечка provider token | Отзыв в панели провайдера, аудит созданных и удалённых ресурсов |
 | Утечка email provider key | Отзыв, проверка отправленных писем, инвалидация активных magic links |
 | Утечка APK signing key | Максимальный инцидент: новое приложение, уведомление, kill switch для старых версий |

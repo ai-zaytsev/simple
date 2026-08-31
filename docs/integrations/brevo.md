@@ -16,16 +16,7 @@
 
 ## Текущее Состояние
 
-| Что | Статус |
-| --- | --- |
-| Домен отправителя `mail.simple-vpn.download` | Аутентифицирован |
-| DKIM, DMARC | Настроены |
-| Отправитель | `Simple VPN <no-reply@mail.simple-vpn.download>` |
-| Reply-To | `vars.CP_REPLY_TO`, если задан |
-| Ключ API | В GitHub Secrets |
-| Проверочный workflow | Готов, запускается после merge в `main` |
-| Клиент Brevo в Control Plane | Не реализован: Control Plane ещё не существует |
-| Webhook доставки | Не настроен: требует публичного HTTPS-эндпоинта Control Plane |
+Brevo adapter развёрнут в Core и отправляет magic links; delivery проверяется `Email Provider Check`. Текущий operational status, панели, последствия отказа и recovery находятся только в [BO-инструкции](../business-owner-operations.md#почта). Provider webhook доставки пока не настроен; workflow делает канонический polling provider events.
 
 ## Конфигурация
 
@@ -34,7 +25,7 @@
 | `BREVO_API_KEY` | Secret | API-ключ v3 |
 | `EMAIL_TEST_GMAIL` | Secret | Проверочный ящик Gmail |
 | `EMAIL_TEST_YANDEX` | Secret | Проверочный ящик Yandex |
-| `BREVO_SENDER_EMAIL` | Variable | Адрес отправителя |
+| `BREVO_SENDER_EMAIL` | Secret | Адрес отправителя; deployment читает его вместе с server-only mail configuration |
 | `CP_REPLY_TO` | Variable | Куда уходит ответ на наше письмо |
 | `CP_ALERT_EMAIL` | Secret | Куда приходят предупреждения о мощности |
 

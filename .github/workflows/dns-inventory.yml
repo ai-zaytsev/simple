@@ -2,13 +2,15 @@ name: DNS Inventory
 
 # Read-only inventory of DNS state across both providers.
 #
-# Writes nothing. It answers three questions:
+# Writes nothing. It answers four questions:
 #   1. Do the API credentials work and what scope do they have?
 #   2. Which provider serves which domain?
-#   3. Is any VPN entry record proxied by Cloudflare?
+#   3. Are the stable Core and site domains inventoried too?
+#   4. Is any VPN entry record proxied by Cloudflare?
 #
 # The last question matters most: a proxied record terminates TLS at
-# Cloudflare and breaks VLESS + REALITY outright. See docs/integrations/dns.md.
+# Cloudflare and breaks the end-to-end VPN TLS/WebSocket transport. See
+# docs/integrations/dns.md.
 #
 # A failing provider never hides the state of the other one: both are probed,
 # the inventory runs for whatever works, and the verdict comes last.
@@ -23,6 +25,11 @@ jobs:
   dns-inventory:
     name: DNS Inventory
     runs-on: ubuntu-latest
+    env:
+      # Stable product identity, intentionally repository-visible. Keeping it
+      # here prevents the critical Core zone from disappearing from inventory
+      # when a repository variable is renamed or omitted.
+      CONTROL_PLANE_DOMAIN: simple-syncbridge.download
 
     steps:
       - name: Check configuration
@@ -40,6 +47,7 @@ jobs:
           [ -n "${SPACESHIP_API_SECRET}" ] || missing="${missing} secrets.SPACESHIP_API_SECRET"
           [ -n "${VPN_ENTRY_DOMAINS}" ] || missing="${missing} vars.VPN_ENTRY_DOMAINS"
           [ -n "${SITE_DOMAIN}" ] || missing="${missing} vars.SITE_DOMAIN"
+          [ -n "${CONTROL_PLANE_DOMAIN}" ] || missing="${missing} CONTROL_PLANE_DOMAIN"
 
           if [ -n "${missing}" ]; then
             echo "Not configured:${missing}"
@@ -219,7 +227,7 @@ jobs:
             fi
 
             if [ "${role}" = "vpn-entry" ] && [ "${proxied}" != "n/a" ] && [ "${proxied}" != "-" ] && [ "${proxied}" != "0" ]; then
-              echo "VIOLATION: ${domain} has ${proxied} proxied record(s). Proxying breaks REALITY."
+              echo "VIOLATION: ${domain} has ${proxied} proxied record(s). Proxying breaks the VPN TLS/WebSocket transport."
               proxy_violation=1
               proxied="${proxied} VIOLATION"
             fi
@@ -227,6 +235,8 @@ jobs:
             echo "${domain}: provider=${provider} records=${count} types=[${types}] proxied=${proxied}"
             echo "| ${domain} | ${role} | ${provider} | ${count} | ${types:--} | ${proxied} |" >> "${GITHUB_STEP_SUMMARY}"
           }
+
+          inspect "$(printf '%s' "${CONTROL_PLANE_DOMAIN}" | tr -d '[:space:]')" "control-plane"
 
           IFS=',' read -ra entries <<< "${VPN_ENTRY_DOMAINS}"
           for d in "${entries[@]}"; do
