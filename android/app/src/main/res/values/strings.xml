@@ -116,7 +116,7 @@
     <string name="refund_checking">Проверяем сумму возврата…</string>
     <string name="refund_confirm_title">Вернуть VIP и отключить его</string>
     <string name="refund_confirm_full">ЮKassa вернёт %1$s на тот же способ оплаты. После подтверждения возврата VIP сразу прекратится.</string>
-    <string name="refund_confirm_partial">По правилу pro rata с удержанием 25%% ЮKassa вернёт %1$s на тот же способ оплаты. После подтверждения возврата VIP сразу прекратится.</string>
+    <string name="refund_confirm_partial">По правилу pro rata с удержанием четверти ЮKassa вернёт %1$s на тот же способ оплаты. После подтверждения возврата VIP сразу прекратится.</string>
     <string name="refund_confirm">Подтвердить возврат</string>
     <string name="refund_pending">Возврат обрабатывается платёжной системой. Пока успех не подтверждён, VIP продолжает работать.</string>
     <string name="refund_succeeded">Возврат подтверждён. VIP прекращён.</string>

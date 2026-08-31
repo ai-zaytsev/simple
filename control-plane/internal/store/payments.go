@@ -278,8 +278,8 @@ func (s *Store) ApplySucceeded(
 		update accounts
 		set tier = 'VIP',
 		    vip_expires_at = case
-		      when tier = 'VIP' and vip_expires_at is null then null
-		      else $2
+		      when tier = 'VIP' and vip_expires_at is null then null::timestamptz
+		      else $2::timestamptz
 		    end
 		where id = $1`, record.AccountID, entitlementEndsAt); err != nil {
 		return payment.Record{}, false, fmt.Errorf("cannot activate VIP: %w", err)
