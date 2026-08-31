@@ -37,7 +37,7 @@ func TestWebhookFetchesCanonicalStateAndAppliesOnlyOnce(t *testing.T) {
 	}
 }
 
-func TestReturnOrPendingStateCannotActivateVIP(t *testing.T) {
+func TestReturnOrCanonicalPendingStateCannotActivateVIP(t *testing.T) {
 	repo := newFakeRepo()
 	provider := &fakeProvider{canonical: Canonical{
 		ProviderPaymentID: "provider-1", PaymentID: "our-1",
@@ -46,13 +46,75 @@ func TestReturnOrPendingStateCannotActivateVIP(t *testing.T) {
 	service, _ := NewService(repo, provider, "https://simple-syncbridge.download/v1/payments/return")
 
 	current, err := service.Current(context.Background(), "account-1")
-	if err != nil || current.EntitlementAppliedAt != nil || provider.gets != 0 {
-		t.Fatal("reading after return changed the payment")
+	if err != nil || current.EntitlementAppliedAt != nil || provider.gets != 1 {
+		t.Fatal("canonical pending state changed the payment")
 	}
 
 	updated, applied, err := service.Handle(context.Background(), "provider-1")
 	if err != nil || applied || updated.Status != StatusPending || updated.VIPExpiresAt != nil {
 		t.Fatalf("pending payment activated VIP: %+v applied=%v err=%v", updated, applied, err)
+	}
+}
+
+func TestCurrentRecoversSucceededPaymentExactlyOnce(t *testing.T) {
+	repo := newFakeRepo()
+	provider := &fakeProvider{canonical: Canonical{
+		ProviderPaymentID: "provider-1", PaymentID: "our-1",
+		AmountMinor: 39900, Currency: "RUB", Status: StatusSucceeded,
+		Paid: true, Test: true,
+	}}
+	service, _ := NewService(repo, provider, "https://simple-syncbridge.download/v1/payments/return")
+
+	first, err := service.Current(context.Background(), "account-1")
+	if err != nil || first.Status != StatusSucceeded || first.EntitlementAppliedAt == nil {
+		t.Fatalf("manual check did not recover succeeded payment: record=%+v err=%v", first, err)
+	}
+	expires := *first.VIPExpiresAt
+	second, err := service.Current(context.Background(), "account-1")
+	if err != nil || second.Status != StatusSucceeded || !second.VIPExpiresAt.Equal(expires) {
+		t.Fatalf("second read changed entitlement: record=%+v err=%v", second, err)
+	}
+	if provider.gets != 1 || repo.applies != 1 {
+		t.Fatalf("completed payment was reapplied: provider gets=%d applies=%d", provider.gets, repo.applies)
+	}
+}
+
+func TestCurrentClosesCanonicalCanceledPaymentWithoutVIP(t *testing.T) {
+	repo := newFakeRepo()
+	provider := &fakeProvider{canonical: Canonical{
+		ProviderPaymentID: "provider-1", PaymentID: "our-1",
+		AmountMinor: 39900, Currency: "RUB", Status: StatusCanceled,
+	}}
+	service, _ := NewService(repo, provider, "https://simple-syncbridge.download/v1/payments/return")
+
+	current, err := service.Current(context.Background(), "account-1")
+	if err != nil || current.Status != StatusCanceled || current.VIPExpiresAt != nil || repo.applies != 0 {
+		t.Fatalf("manual check mishandled cancellation: record=%+v err=%v", current, err)
+	}
+}
+
+func TestCurrentProviderFailureLeavesPaymentPending(t *testing.T) {
+	repo := newFakeRepo()
+	provider := &fakeProvider{getErr: ErrUnavailable}
+	service, _ := NewService(repo, provider, "https://simple-syncbridge.download/v1/payments/return")
+
+	if _, err := service.Current(context.Background(), "account-1"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("provider failure was hidden: %v", err)
+	}
+	if repo.record.Status != StatusPending || repo.applies != 0 {
+		t.Fatalf("provider failure changed payment: %+v", repo.record)
+	}
+}
+
+func TestCurrentDoesNotQueryAnUnattachedPayment(t *testing.T) {
+	repo := newFakeRepo()
+	repo.record.ProviderPaymentID = ""
+	provider := &fakeProvider{}
+	service, _ := NewService(repo, provider, "https://simple-syncbridge.download/v1/payments/return")
+
+	current, err := service.Current(context.Background(), "account-1")
+	if err != nil || current.ProviderPaymentID != "" || provider.gets != 0 {
+		t.Fatalf("unattached payment reached provider: record=%+v gets=%d err=%v", current, provider.gets, err)
 	}
 }
 
@@ -94,6 +156,31 @@ func TestMismatchNeverReachesEntitlement(t *testing.T) {
 	}
 }
 
+func TestCurrentMismatchNeverReachesEntitlement(t *testing.T) {
+	for name, mutate := range map[string]func(*Canonical){
+		"provider id": func(p *Canonical) { p.ProviderPaymentID = "other" },
+		"amount":      func(p *Canonical) { p.AmountMinor++ },
+		"currency":    func(p *Canonical) { p.Currency = "USD" },
+		"metadata":    func(p *Canonical) { p.PaymentID = "other" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := newFakeRepo()
+			canonical := Canonical{
+				ProviderPaymentID: "provider-1", PaymentID: "our-1",
+				AmountMinor: 39900, Currency: "RUB", Status: StatusSucceeded, Paid: true,
+			}
+			mutate(&canonical)
+			service, _ := NewService(repo, &fakeProvider{canonical: canonical}, "https://simple-syncbridge.download/v1/payments/return")
+			if _, err := service.Current(context.Background(), "account-1"); err == nil {
+				t.Fatal("manual check accepted a mismatched provider object")
+			}
+			if repo.applies != 0 || repo.record.Status != StatusPending {
+				t.Fatalf("mismatched manual check changed payment: %+v", repo.record)
+			}
+		})
+	}
+}
+
 func TestStartRetriesOneProviderOperation(t *testing.T) {
 	repo := newFakeRepo()
 	repo.record.ProviderPaymentID = ""
@@ -128,6 +215,7 @@ type fakeProvider struct {
 	refundGets      int
 	refundFinds     int
 	refundFind      *CanonicalRefund
+	getErr          error
 	refundCreateErr error
 }
 
@@ -140,7 +228,7 @@ func (p *fakeProvider) Create(context.Context, CreateRequest) (Checkout, error) 
 }
 func (p *fakeProvider) Get(context.Context, string) (Canonical, error) {
 	p.gets++
-	return p.canonical, nil
+	return p.canonical, p.getErr
 }
 
 func (p *fakeProvider) RefundLimits(string) RefundLimits {

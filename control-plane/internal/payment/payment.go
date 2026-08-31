@@ -224,7 +224,23 @@ func (s *Service) Start(ctx context.Context, accountID, productID string) (Recor
 }
 
 func (s *Service) Current(ctx context.Context, accountID string) (Record, error) {
-	return s.repo.CurrentPayment(ctx, accountID)
+	record, err := s.repo.CurrentPayment(ctx, accountID)
+	if err != nil {
+		return Record{}, err
+	}
+	// Returning from the browser is not evidence of payment. For an operation
+	// that is still open, however, an explicit read is a safe recovery path:
+	// Core asks the original provider over its authenticated API and applies
+	// exactly the same canonical checks as the webhook path.
+	if record.Status != StatusPending || record.ProviderPaymentID == "" {
+		return record, nil
+	}
+	provider, err := s.provider(record.Provider)
+	if err != nil {
+		return Record{}, err
+	}
+	updated, _, err := s.reconcilePayment(ctx, provider, record)
+	return updated, err
 }
 
 // Handle treats the webhook only as a wake-up signal. The object used below
@@ -245,6 +261,19 @@ func (s *Service) HandlePayment(
 	record, err := s.repo.PaymentByProviderID(ctx, provider.Name(), providerPaymentID)
 	if err != nil {
 		return Record{}, false, err
+	}
+	return s.reconcilePayment(ctx, provider, record)
+}
+
+// reconcilePayment is the one canonical transition for both provider push
+// and user-requested recovery. Keeping the transition here prevents a manual
+// check from becoming a weaker second authority for VIP.
+func (s *Service) reconcilePayment(
+	ctx context.Context, provider Provider, record Record,
+) (Record, bool, error) {
+	providerPaymentID := record.ProviderPaymentID
+	if providerPaymentID == "" {
+		return Record{}, false, errors.New("provider payment id is empty")
 	}
 	canonical, err := provider.Get(ctx, providerPaymentID)
 	if err != nil {

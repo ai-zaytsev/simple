@@ -32,6 +32,8 @@ Android не знает имя провайдера, shop ID, Secret Key, сум
 
 Webhook body не активирует VIP. По object ID Core выполняет authenticated `GET /v3/payments/{id}` и сверяет provider payment ID, metadata `payment_id`, amount, currency, status и `paid`. Только `succeeded + paid` применяется к entitlement. Повторная доставка возвращает `200`, но `entitlement_applied_at` не позволяет добавить срок второй раз.
 
+Кнопка Android `Проверить оплату` — recovery для потерянного или задержанного webhook, а не второй источник истины. Для сохранённого `pending` Core сам читает тот же payment через authenticated provider API и проводит его через ту же каноническую сверку. Android и страница возврата не передают статус. После `succeeded` обычное чтение больше не обращается к провайдеру, а транзакционный `entitlement_applied_at` защищает от одновременного webhook и нажатия кнопки.
+
 ## Возвраты
 
 Политика принадлежит Core и считается в целых копейках:

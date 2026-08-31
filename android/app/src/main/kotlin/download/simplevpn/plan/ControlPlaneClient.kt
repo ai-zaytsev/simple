@@ -231,10 +231,11 @@ class ControlPlaneClient(
     }
 
     /**
-     * Reads only Core's durable state after returning from the browser.
+     * Asks Core for the durable payment state after returning from the browser.
      *
-     * This call cannot confirm a payment: Core updates this state from a
-     * verified webhook, not from the fact that Android resumed.
+     * The return itself proves nothing. For a pending operation Core may use
+     * its own provider credentials to read and verify the canonical payment;
+     * Android supplies no status, amount, account or provider fields.
      */
     fun currentPayment(): PaymentState? {
         val token = accounts.deviceToken ?: return null
