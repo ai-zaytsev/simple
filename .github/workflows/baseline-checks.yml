@@ -289,6 +289,10 @@ jobs:
         shell: bash
         run: python3 .github/scripts/test_payment_acceptance.py
 
+      - name: Payment webhook replay is redacted and idempotent
+        shell: bash
+        run: python3 .github/scripts/test_payment_webhook_replay.py
+
       - name: A workflow that runs a repository file must check it out
         shell: bash
         # Purchases changed a live setting and then failed on the line

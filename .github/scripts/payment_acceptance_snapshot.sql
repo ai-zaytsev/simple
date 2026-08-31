@@ -71,5 +71,25 @@ select jsonb_build_object(
                 limit 1
             )
         ) from latest_refund r
+    ),
+    'refund_count', (
+        select count(*) from refunds r
+        where r.payment_id = (select id from latest_payment)
+    ),
+    'succeeded_refund_count', (
+        select count(*) from refunds r
+        where r.payment_id = (select id from latest_payment)
+          and r.status = 'succeeded'
+    ),
+    'succeeded_refund_total_minor', (
+        select coalesce(sum(r.amount_minor), 0) from refunds r
+        where r.payment_id = (select id from latest_payment)
+          and r.status = 'succeeded'
+    ),
+    'refund_attempt_count', (
+        select count(*)
+        from refund_attempts ra
+        join refunds r on r.id = ra.refund_id
+        where r.payment_id = (select id from latest_payment)
     )
 );

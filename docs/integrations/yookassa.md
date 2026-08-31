@@ -90,12 +90,14 @@ https://simple-syncbridge.download/v1/payments/webhooks/yookassa
 
 Workflow `Payment Acceptance` принимает безопасный account UUID-prefix. Действие `read` получает локальные payment/refund rows и через существующие CI secrets делает authenticated GET тех же объектов у ЮKassa; публично выводятся только внутренние восьмизначные prefixes и проверяемые поля. Действие `prepare_partial` предназначено только для живой test-store матрицы: оно выставляет policy interval последнего подходящего `provider_test=true` карточного платежа в точку 8 суток. Production, non-VIP, неподтверждённый, non-card или уже возвращённый платёж workflow менять не может.
 
+Workflow `Payment Webhook Replay` предназначен для проверки повторной доставки уже завершённой test-store цепочки. Он сам получает private provider IDs из PostgreSQL, дважды повторяет `payment.succeeded` и `refund.succeeded`, требует четыре ответа `HTTP 200 / received=true / applied=false`, затем повторно читает durable state. Full provider IDs не являются input/output и не печатаются. Workflow отказывается работать, если аккаунт не `FREE`, payment/refund не `succeeded`, `provider_test` не равен `true`, возвратов или provider attempts не ровно по одному либо сумма/entitlement изменились.
+
 | Проверка | Действие | Обязательный readback |
 | --- | --- | --- |
 | Успех | `5555 5555 5555 4477`, завершить 3-D Secure | payment `succeeded`, `provider_test = true`, VIP и срок ровно по продукту |
 | Неуспех | `5555 5555 5555 4600` (`insufficient_funds`) | payment `canceled`, tier остаётся FREE |
 | Пользовательский выход | закрыть/вернуться со страницы до оплаты | VIP не появляется; один возврат не меняет серверный статус |
-| Повторный webhook | повторно доставить `payment.succeeded` для того же provider payment ID | HTTP `200`, `vip_expires_at` не сдвигается |
+| Повторный webhook | `Payment Webhook Replay` для завершённой test-store цепочки | четыре HTTP `200`, все `applied=false`; tier/expiry/timestamps/refund count и сумма не меняются |
 | Подмена полей | unit/integration test меняет amount, currency или metadata при том же status | webhook получает non-200, entitlement не меняется |
 | Полный возврат | успешный платёж моложе 7 суток | refund `succeeded`, возвращена вся сумма, VIP и внешние credentials прекращены только после canonical GET |
 | Частичный возврат | тестовый paid interval с возрастом больше 7 суток | сумма равна `floor(pro rata × 75%)`, исходный способ принимает частичный refund, VIP и внешние credentials прекращены после `succeeded` |
@@ -105,14 +107,17 @@ Workflow `Payment Acceptance` принимает безопасный account UU
 
 После каждого сценария читаются собственные payment row и account tier/expiry из живой PostgreSQL либо operator endpoint. Одной картинки успешной страницы недостаточно.
 
-### Подтверждено 31 августа 2026 года
+### Подтверждено 31 августа — 1 сентября 2026 года
 
 - успешная карточная оплата 399 ₽ канонически активировала VIP; потерянный webhook был восстановлен штатной кнопкой `Проверить оплату` без доверия Android;
 - full refund того же `bank_card` платежа вернул 399 ₽, завершился `succeeded` и только после этого перевёл VIP→FREE;
 - external credential после refund исчез из node list, обе ноды перешли `count=2→1`, а сохранённая ссылка перестала давать интернет;
-- purchases после теста возвращены в состояние `open=true`, `FREE=7 дней`.
+- вторая карточная оплата 399 ₽ после одной неуспешной попытки на checkout завершилась `succeeded`, Core и ЮKassa совпали, панель показала `VIP=1`, `FREE=0`;
+- partial refund после подготовленной точки 8 суток вернул `222,01 ₽` на исходную `bank_card`, Core и ЮKassa дали `succeeded/succeeded`, entitlement был отозван, панель вернулась к `VIP=0`, `FREE=1`;
+- Business Owner настроил test-store webhook на `payment.succeeded`, `payment.canceled` и `refund.succeeded`; независимый replay/readback выполняется задачей `162-payment-webhook-replay`;
+- на время оставшейся live matrix purchases оставлены `open=true`, `FREE=1 день`; перед завершением их обязательно вернуть на продуктовые 7 дней и прочитать панель.
 
-Остаются живые: payment failure, пользовательский cancel, webhook и повторная доставка, частичный `bank_card` refund и потеря ответа/retry. Официальная документация описывает `insufficient_funds` как возможную причину отказа refund, но не публикует детерминированный способ вызвать её в test store; этот сценарий нельзя считать живым, пока ЮKassa не даст тестовый механизм. Автоматический provider-error contract при этом покрыт тестами и VIP при ошибке не отключает.
+Остаются живые: финальный `payment.canceled`/пользовательский выход, независимый webhook replay, потеря ответа/retry и возврат purchases на 7 дней. Попытка карты `5555 5555 5555 4600` показала пользователю `insufficient_funds` и не включила VIP, но checkout оставил объект `pending`, разрешая другую карту; это ещё не финальный `payment.canceled`. Официальная документация описывает `insufficient_funds` как возможную причину отказа refund, но не публикует детерминированный способ вызвать её в test store; этот сценарий нельзя считать живым, пока ЮKassa не даст тестовый механизм. Автоматический provider-error contract при этом покрыт тестами и VIP при ошибке не отключает.
 
 ## Что Не Входит
 
