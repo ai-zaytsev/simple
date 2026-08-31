@@ -176,9 +176,9 @@ CLAUDE.md называет `tasks.md` фактическим состояние�
 
 ### Test-store ЮKassa не пройден полностью через живой APK
 
-**Риск:** payment/refund Core, canonical verification и Android external checkout/refund UI проходят автоматические проверки, но живая матрица success/failure/cancel/repeated webhook, полного/частичного refund и VIP readback не выполнена на телефоне. Настройка `refund.succeeded` webhook в кабинете test store не подтверждена. Зелёный код ещё не доказывает пользовательский денежный путь.
+**Риск:** успешная карточная оплата и полный refund 399 ₽ уже прошли через живой Android; VIP→FREE, external revoke и node `2→1` подтверждены. Но failure/cancel, repeated webhook, частичный refund и потерянный ответ/retry ещё не приняты. Настройка `payment.succeeded`, `payment.canceled`, `refund.succeeded` webhook в кабинете test store не подтверждена: первая успешная оплата потребовала штатного ручного reconcile. Официально описанная ошибка refund `insufficient_funds` не имеет опубликованного детерминированного test-store trigger.
 
-**Закрывается:** в тестовом магазине настроены payment/refund webhook, установлен подписанный APK и на живых тестовых аккаунтах пройдена матрица из `docs/integrations/yookassa.md` с readback payment/refund rows, tier, expiry, исходного способа и неизменного состояния после повторов/ошибок.
+**Закрывается:** в тестовом магазине настроены payment/refund webhook и на живых тестовых платежах завершена оставшаяся матрица из `docs/integrations/yookassa.md`; workflow Payment Acceptance показывает совпадение DB/provider status, суммы, test flag и исходного способа. Для `refund insufficient_funds` получен официальный test trigger ЮKassa либо явно принято документированное ограничение провайдера без имитации успеха.
 
 ### Direct APK update не пройден между двумя подписанными выпусками
 

@@ -16,6 +16,10 @@ bin/
 *.test
 *.out
 
+# Python validation caches
+__pycache__/
+*.pyc
+
 # Android / Gradle
 .gradle/
 build/

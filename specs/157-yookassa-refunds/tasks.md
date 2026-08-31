@@ -16,3 +16,8 @@
 - [x] Создать PR и пройти PR loop до merge-ready
 - [ ] После human merge развернуть и выполнить live test-store matrix
 - [ ] Сверить живые payment/refund/VIP состояния после deploy
+- [x] Развернуть refund Core/API и проверить публичные routes
+- [x] Выполнить живой success + full bank-card refund 399 ₽
+- [x] Сверить full refund VIP→FREE, external revoke и node `2→1`
+- [ ] Выполнить живой partial bank-card refund после 7 дней
+- [ ] Выполнить живые payment failure/cancel и webhook/repeat

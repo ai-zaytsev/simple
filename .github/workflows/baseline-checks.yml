@@ -285,6 +285,10 @@ jobs:
           sys.exit(bad)
           PY
 
+      - name: Payment acceptance output is redacted and test-only
+        shell: bash
+        run: python3 .github/scripts/test_payment_acceptance.py
+
       - name: A workflow that runs a repository file must check it out
         shell: bash
         # Purchases changed a live setting and then failed on the line

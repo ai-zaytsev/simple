@@ -2,7 +2,7 @@
 
 - Feature ID: `160-vip-external-access-revocation`
 - Feature Branch: `feature/160-vip-external-access-revocation`
-- Status: `merge-ready`
+- Status: `live-accepted`
 
 ## Goal
 
@@ -69,3 +69,7 @@
 - checked head: `0757c718bfcacab8add5e30ee58a5ca31e194687`;
 - `AI Review`, `PR Loop Guard`, `PostgreSQL Lifecycle`, `Process Baseline` — green;
 - mergeable state — clean, blocking findings отсутствуют.
+
+## Live Evidence
+
+31 августа 2026 года merged Core развернут с `main`. Перед full refund обе ноды стабильно получали две credentials; после канонического refund account стал FREE, external credential — неактивным, а обе ноды на ближайшем poll перешли к одной app credential. Business Owner отдельно подтвердил, что сохранённая VIP-ссылка перестала давать интернет. Purchases setting после теста возвращён с 1 на 7 дней.

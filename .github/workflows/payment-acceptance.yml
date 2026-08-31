@@ -1,0 +1,107 @@
+name: Payment Acceptance
+
+# Reads the live test-store payment/refund from both PostgreSQL and YooKassa.
+# Full provider identifiers and secrets remain in short-lived runner files;
+# the public output contains only internal eight-character prefixes and the
+# fields needed to decide whether both sources agree.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Read current state, or prepare one test payment for an 8-day partial-refund quote.
+        required: true
+        default: read
+        type: choice
+        options:
+          - read
+          - prepare_partial
+      account_prefix:
+        description: Unambiguous UUID prefix from Account Tier or Device Access (at least 8 characters).
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: Payment Acceptance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate the target
+        env:
+          PREFIX: ${{ inputs.account_prefix }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "${PREFIX}" | grep -qiE '^[0-9a-f-]{8,36}$'; then
+            echo "account_prefix must be 8–36 UUID characters."
+            exit 1
+          fi
+
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/deploy -o BatchMode=yes -o ConnectTimeout=20 "root@${HOST}" true
+
+      - name: Prepare an eight-day test payment
+        if: inputs.action == 'prepare_partial'
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          PREFIX: ${{ inputs.account_prefix }}
+        run: |
+          set -euo pipefail
+          {
+            printf '%s\n' "${PREFIX}"
+            cat .github/scripts/prepare_partial_payment.sql
+          } | ssh -i ~/.ssh/deploy -o BatchMode=yes -o ConnectTimeout=20 "root@${HOST}" \
+            'read -r prefix; psql "$(cat /etc/simple-vpn-cp.dsn)" \
+               -v ON_ERROR_STOP=1 -v prefix="${prefix}" -qAt -f -' \
+            > /tmp/prepared.json
+
+          if ! grep -q '"prepared": 1' /tmp/prepared.json \
+             || ! grep -q '"account_updated": 1' /tmp/prepared.json; then
+            echo "No eligible test payment was changed. Required: one VIP account, " \
+                 "succeeded refundable test bank-card payment, and no refund."
+            exit 1
+          fi
+          echo "Prepared one test payment at the 8-day policy point."
+
+      - name: Fetch the private snapshot
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          PREFIX: ${{ inputs.account_prefix }}
+        run: |
+          set -euo pipefail
+          {
+            printf '%s\n' "${PREFIX}"
+            cat .github/scripts/payment_acceptance_snapshot.sql
+          } | ssh -i ~/.ssh/deploy -o BatchMode=yes -o ConnectTimeout=20 "root@${HOST}" \
+            'read -r prefix; psql "$(cat /etc/simple-vpn-cp.dsn)" \
+               -v ON_ERROR_STOP=1 -v prefix="${prefix}" -qAt -f -' \
+            > /tmp/payment-acceptance.json
+          test -s /tmp/payment-acceptance.json
+
+      - name: Compare PostgreSQL with YooKassa
+        env:
+          YOOKASSA_SHOP_ID: ${{ secrets.YOOKASSA_TEST_SHOP_ID }}
+          YOOKASSA_SECRET_KEY: ${{ secrets.YOOKASSA_TEST_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/payment_acceptance.py /tmp/payment-acceptance.json \
+            | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: Remove private snapshots
+        if: always()
+        run: rm -f /tmp/payment-acceptance.json /tmp/prepared.json

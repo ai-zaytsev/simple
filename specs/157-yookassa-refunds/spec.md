@@ -74,3 +74,12 @@ VIP прекращается только после канонически по
 ## Legacy Workspace Assessment
 
 Зависимости от отдельного workspace path нет. Работа идет в обычной feature branch от актуального `origin/main` по веточному PR loop.
+
+## Live Evidence: 31 августа 2026 года
+
+- signed APK прошёл успешную карточную оплату 399 ₽ до канонической активации VIP;
+- потерянный payment webhook выявил и исправил штатный recovery через `Проверить оплату`;
+- full `bank_card` refund вернул 399 ₽ и канонически завершился до VIP→FREE;
+- external access был активен перед refund (`node count=2`) и отозван после него (`count=1`); сохранённая ссылка фактически перестала работать;
+- временный FREE period 1 день возвращён на продуктовые 7 дней;
+- partial refund, failure/cancel, webhook/repeat и lost-response live scenarios остаются открыты.
