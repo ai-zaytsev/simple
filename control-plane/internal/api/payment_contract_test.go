@@ -65,6 +65,22 @@ func TestPaymentEndpointsHaveTheRequiredAuthority(t *testing.T) {
 	}
 }
 
+func TestCurrentPaymentUsesCanonicalServiceRecovery(t *testing.T) {
+	body, err := os.ReadFile("payments.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := between(string(body), "func (s *Server) currentPayment", "\nfunc ")
+	if !strings.Contains(current, "s.payments.Current") {
+		t.Fatal("payment check bypasses the provider-neutral payment service")
+	}
+	for _, forbidden := range []string{"decode(", "URL.Query(", "FormValue(", "checkout_url", "return_url"} {
+		if strings.Contains(current, forbidden) {
+			t.Fatalf("payment check trusts client or browser field %q", forbidden)
+		}
+	}
+}
+
 func TestWebhookRejectsMoreThanOneJSONValue(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(

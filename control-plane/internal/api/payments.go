@@ -94,9 +94,10 @@ func (s *Server) createPayment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, paymentJSON(record, true))
 }
 
-// currentPayment reports only our durable state. It deliberately does not ask
-// the provider: returning from checkout and calling this endpoint cannot turn
-// a pending payment into a successful one.
+// currentPayment returns our durable state and, while that state is pending,
+// asks the original provider for a canonical refresh. Browser return remains
+// untrusted: amount, currency, metadata, paid and status are all obtained over
+// the authenticated provider API before payment.Service can activate VIP.
 func (s *Server) currentPayment(w http.ResponseWriter, r *http.Request) {
 	device, ok := s.device(w, r)
 	if !ok {
@@ -116,8 +117,11 @@ func (s *Server) currentPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("cannot read current payment", "error", err)
-		writeError(w, http.StatusInternalServerError, "cannot read payment")
+		// A failed refresh leaves the durable payment and VIP untouched. Treat it
+		// as temporary even when the underlying problem is storage: Android may
+		// retry, but it must not mistake an old pending row for a completed check.
+		s.log.Error("cannot refresh current payment", "error", err)
+		writeError(w, http.StatusServiceUnavailable, "payment state is temporarily unavailable")
 		return
 	}
 	writeJSON(w, http.StatusOK, paymentJSON(record, record.Status == payment.StatusPending))
