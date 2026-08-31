@@ -132,6 +132,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/devices/revoke", s.revokeDevice)
 	mux.HandleFunc("POST /v1/payments", s.createPayment)
 	mux.HandleFunc("GET /v1/payments/current", s.currentPayment)
+	mux.HandleFunc("POST /v1/refunds/quote", s.refundQuote)
+	mux.HandleFunc("POST /v1/refunds", s.createRefund)
+	mux.HandleFunc("POST /v1/refunds/current", s.currentRefund)
 	mux.HandleFunc("POST /v1/payments/webhooks/yookassa", s.paymentWebhook)
 	mux.HandleFunc("GET /v1/payments/return", s.paymentReturn)
 
@@ -299,11 +302,11 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC()
 	plan := document.Plan{
-		V:           1,
-		PlanID:      uuid.NewString(),
-		Seq:         seq,
-		IssuedAt:    now.Format(time.RFC3339),
-		ExpiresAt:   now.Add(s.planTTL).Format(time.RFC3339),
+		V:         1,
+		PlanID:    uuid.NewString(),
+		Seq:       seq,
+		IssuedAt:  now.Format(time.RFC3339),
+		ExpiresAt: now.Add(s.planTTL).Format(time.RFC3339),
 		// The account's, read with the device and never written here. A
 		// literal in this field was correct for as long as there was one tier
 		// and silently wrong the moment there were two, which is the kind of

@@ -246,6 +246,27 @@ func run(log *slog.Logger) error {
 		}
 	}()
 
+	// Successful refunds have a webhook; canceled ones do not. Polling only
+	// our own unresolved rows also recovers a lost create response even when
+	// Android never opens again, while a provider outage leaves VIP untouched.
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				completed, refundErr := payments.ReconcileRefunds(ctx, 100)
+				if refundErr != nil {
+					log.Error("cannot reconcile pending refunds")
+				} else if completed > 0 {
+					log.Info("pending refunds reached a final state", "refunds", completed)
+				}
+			}
+		}
+	}()
+
 	// Our own addresses are checked from here, and the same addresses are
 	// checked by devices. Neither reads user traffic to find out whether a way
 	// in still works, which is the point: the sensor is a test of our own, not

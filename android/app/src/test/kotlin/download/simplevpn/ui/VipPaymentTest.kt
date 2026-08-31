@@ -8,6 +8,7 @@ class VipPaymentTest {
     private val root = java.io.File("src/main")
     private val client = java.io.File(root, "kotlin/download/simplevpn/plan/ControlPlaneClient.kt").readText()
     private val screen = java.io.File(root, "kotlin/download/simplevpn/ui/VpnScreen.kt").readText()
+    private val devices = java.io.File(root, "kotlin/download/simplevpn/ui/ExternalDevicesScreen.kt").readText()
     private val gradle = java.io.File("build.gradle.kts").readText()
 
     @Test
@@ -38,5 +39,21 @@ class VipPaymentTest {
         assertFalse(all.contains("YOOKASSA_TEST_SECRET_KEY"))
         assertFalse(all.contains("YOOKASSA_TEST_MOBILE_SDK_KEY"))
         assertFalse(all.lowercase().contains("yookassa"))
+    }
+
+    @Test
+    fun `refund amount and provider stay owned by Core`() {
+        assertTrue(client.contains("fun refundQuote(paymentId: String)"))
+        assertTrue(client.contains("fun startRefund(paymentId: String, retry: Boolean)"))
+        assertTrue(client.contains("put(\"payment_id\", paymentId)"))
+        assertTrue(client.contains("put(\"retry\", retry)"))
+
+        val start = client.substringAfter("fun startRefund(paymentId: String, retry: Boolean)")
+            .substringBefore("fun currentRefund")
+        assertFalse(start.contains("put(\"amount"))
+        assertFalse(start.contains("put(\"currency"))
+        assertFalse(start.contains("put(\"provider"))
+        assertTrue(devices.contains("client.refundQuote(payment.id)"))
+        assertTrue(devices.contains("client.startRefund(quote.paymentId, quote.retry)"))
     }
 }

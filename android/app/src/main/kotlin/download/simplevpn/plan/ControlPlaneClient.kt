@@ -203,6 +203,26 @@ class ControlPlaneClient(
         val checkoutUrl: String,
     )
 
+    data class RefundQuote(
+        val paymentId: String,
+        val available: Boolean,
+        val retry: Boolean,
+        val reason: String,
+        val amountMinor: Long,
+        val currency: String,
+        val mode: String,
+    )
+
+    data class RefundState(
+        val id: String,
+        val paymentId: String,
+        val status: String,
+        val amountMinor: Long,
+        val currency: String,
+        val mode: String,
+        val reason: String,
+    )
+
     /** Starts the server-owned product and returns an external checkout. */
     fun startPayment(productId: String): PaymentState? {
         val token = accounts.deviceToken ?: return null
@@ -276,6 +296,66 @@ class ControlPlaneClient(
     fun sendReport(body: String): Boolean {
         val token = accounts.deviceToken ?: return false
         return send(REPORT_PATH, body, token) is Result.Received
+    }
+
+    /** Reads Core's current policy amount without moving money or VIP. */
+    fun refundQuote(paymentId: String): RefundQuote? {
+        val token = accounts.deviceToken ?: return null
+        val body = org.json.JSONObject().put("payment_id", paymentId).toString()
+        val answer = send("/v1/refunds/quote", body, token)
+        if (answer !is Result.Received) return null
+        return try {
+            val json = org.json.JSONObject(answer.envelopeJson)
+            RefundQuote(
+                paymentId = json.optString("payment_id"),
+                available = json.optBoolean("available"),
+                retry = json.optBoolean("retry"),
+                reason = json.optString("reason"),
+                amountMinor = json.optLong("amount_minor"),
+                currency = json.optString("currency"),
+                mode = json.optString("mode"),
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "cannot read refund quote", t)
+            null
+        }
+    }
+
+    /** Starts the exact amount Core quoted; Android supplies no money fields. */
+    fun startRefund(paymentId: String, retry: Boolean): RefundState? {
+        val token = accounts.deviceToken ?: return null
+        val body = org.json.JSONObject()
+            .put("payment_id", paymentId)
+            .put("retry", retry)
+            .toString()
+        return refundFrom(send("/v1/refunds", body, token))
+    }
+
+    /** Canonically rereads a pending refund through Core and its provider. */
+    fun currentRefund(paymentId: String): RefundState? {
+        val token = accounts.deviceToken ?: return null
+        val body = org.json.JSONObject().put("payment_id", paymentId).toString()
+        return refundFrom(send("/v1/refunds/current", body, token))
+    }
+
+    private fun refundFrom(result: Result): RefundState? {
+        if (result !is Result.Received) return null
+        return try {
+            val json = org.json.JSONObject(result.envelopeJson)
+            val id = json.optString("refund_id").ifBlank { return null }
+            RefundState(
+                id = id,
+                paymentId = json.optString("payment_id"),
+                status = json.optString("status"),
+                amountMinor = json.optLong("amount_minor"),
+                currency = json.optString("currency"),
+                mode = json.optString("mode"),
+                reason = json.optString("reason"),
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "cannot read refund state", t)
+            null
+        }
     }
 
     /**
