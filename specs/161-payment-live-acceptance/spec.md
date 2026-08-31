@@ -2,7 +2,7 @@
 
 - Feature ID: `161-payment-live-acceptance`
 - Feature Branch: `feature/161-payment-live-acceptance`
-- Status: `local-ready`
+- Status: `merge-ready`
 
 ## Goal
 
@@ -68,3 +68,10 @@
 - repository-tool checkout, stray escape и address masking checks — green;
 - `git diff --check` — green;
 - настоящий PostgreSQL 16 syntax/transaction/production guard выполняется отдельным PR check, потому что локальный Docker daemon недоступен.
+
+## PR Evidence
+
+- PR `#167`, implementation head `e089306`;
+- `AI Review`, `PR Loop Guard`, `PostgreSQL Lifecycle`, `Process Baseline` — green;
+- PostgreSQL check исполнил prepare/snapshot SQL, подтвердил 8 суток и отказ для `provider_test=false`;
+- merge state clean, blocking findings отсутствуют.

@@ -11,7 +11,7 @@
 - [x] Добавить process/source/fixture tests
 - [x] Обновить durable docs и связанные feature-memory
 - [x] Выполнить локальную валидацию
-- [ ] Создать PR и пройти PR loop
+- [x] Создать PR и пройти PR loop
 - [ ] После human merge выполнить оставшуюся live matrix
 - [ ] Настроить и проверить webhook в кабинете test store
 - [ ] Вернуть и подтвердить purchases FREE period 7 дней после тестов
