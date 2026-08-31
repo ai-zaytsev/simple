@@ -10,9 +10,9 @@
 - [x] Расширить provider contract и YooKassa adapter
 - [x] Реализовать Core refund orchestration, canonical reconciliation и recovery потерянного ответа
 - [x] Добавить Core API и Android flow возврата
-- [ ] Покрыть payment/refund/boundary/error сценарии тестами
+- [x] Покрыть payment/refund/boundary/error сценарии тестами
 - [x] Обновить architecture/integration/API docs, BO-инструкцию и tech debt
-- [ ] Выполнить локальную валидацию, включая чистый PostgreSQL lifecycle
-- [ ] Создать PR и пройти PR loop до merge-ready
+- [x] Выполнить локальную валидацию и чистый PostgreSQL lifecycle в CI
+- [x] Создать PR и пройти PR loop до merge-ready
 - [ ] После human merge развернуть и выполнить live test-store matrix
 - [ ] Сверить живые payment/refund/VIP состояния после deploy
