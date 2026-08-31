@@ -41,3 +41,7 @@
 - `go vet ./...` — green;
 - `git diff --check` — green;
 - отдельный `-race` на Windows недоступен, потому что локальный Go запущен без CGO; это не заменяет и не блокирует штатные CI checks.
+
+## PR Loop Readback
+
+PR №165 на implementation SHA `44b2b1a53cd5f501309e6850e10ae767d61f9b8a` получил green `AI Review`, `Android Build`, `PR Loop Guard`, `PostgreSQL Lifecycle` и `Process Baseline`; blocking findings и merge conflicts отсутствовали. Финальный memory-only commit должен повторно пройти те же required checks перед human merge.

@@ -9,6 +9,6 @@
 - [x] Добавить unit/API regression tests
 - [x] Обновить durable integration docs
 - [x] Выполнить локальную валидацию
-- [ ] Создать PR и пройти PR loop до merge-ready
+- [x] Создать PR и пройти PR loop до merge-ready
 - [ ] После human merge развернуть Core/APK
 - [ ] Повторить live payment readback и продолжить refund matrix

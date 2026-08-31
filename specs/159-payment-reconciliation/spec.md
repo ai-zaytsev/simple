@@ -2,7 +2,7 @@
 
 - Feature ID: `159-payment-reconciliation`
 - Feature Branch: `feature/159-payment-reconciliation`
-- Status: `local-ready`
+- Status: `merge-ready`
 
 ## Goal
 
