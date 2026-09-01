@@ -2,7 +2,7 @@
 
 - Feature ID: `164-yookassa-live-closeout`
 - Feature Branch: `feature/164-yookassa-live-closeout`
-- Status: `local-ready`
+- Status: `live-accepted`
 
 ## Goal
 

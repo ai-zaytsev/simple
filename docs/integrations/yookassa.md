@@ -119,7 +119,7 @@ Workflow `Refund Lost Response` воспроизводит потерю отве
 - Business Owner настроил test-store webhook на `payment.succeeded`, `payment.canceled` и `refund.succeeded`; два повтора payment и два refund notification получили `HTTP 200 / applied=false`, refund count/amount и VIP не изменились (`Payment Webhook Replay` run `33475060953`);
 - exact POST partial refund с исходным idempotency key получил `HTTP 200`, вернул тот же provider refund, а provider list сохранил ровно одну операцию; DB осталась с одним refund/attempt на `222,01 ₽` (`Refund Lost Response` run `33476438881`);
 - отдельный checkout, закрытый до ввода карты, через часовое окно стал `canceled/canceled`; DB уже содержала `canceled` до read workflow, при этом аккаунт остался FREE без `paid_at` и entitlement (`Payment Acceptance` run `33480834901`);
-- purchases возвращены в продуктовое состояние `open=true`, `FREE=7 дней`; финальная панель: `FREE=1`, `VIP=0` (`Purchases` run `33480898240`, `Read The Panel` run `33480936292`).
+- purchases возвращены в продуктовое состояние `open=true`, `FREE=7 дней`; post-merge панель: `FREE=1`, `VIP=0` (`Purchases` run `33480898240`, финальный `Read The Panel` run `33481599092`).
 
 Все воспроизводимые live-сценарии test store завершены. Попытка карты `5555 5555 5555 4600` показала пользователю `insufficient_funds` и не включила VIP, но checkout штатно сохранил payment `pending` для другой карты; terminal cancel поэтому проверен отдельным брошенным checkout. Единственное provider limitation: официальная документация описывает `insufficient_funds` для refund, но не публикует детерминированный test-store trigger. Этот исход не имитировался и не объявляется живым; automated provider-error contract покрыт тестами, незавершённый refund VIP не отключает.
 
