@@ -131,5 +131,37 @@ class PaymentAcceptanceTest(unittest.TestCase):
         self.assertNotIn("entitlement_started_at - interval", source)
 
 
+
+
+class LiveStoreReadback(unittest.TestCase):
+    """The store moved from test to live; the readback has to move with it."""
+
+    def _live(self):
+        data = snapshot()
+        data["payment"]["provider_test"] = False
+        return data
+
+    def _live_provider(self, kind, object_id):
+        answer = provider(kind, object_id)
+        if kind == "payments":
+            answer = dict(answer, test=False)
+        return answer
+
+    def test_a_real_payment_is_not_a_problem(self):
+        # The check used to demand test=true on both sides. Left alone it would
+        # have called every real payment a mismatch from the first sale on.
+        report, ok = acceptance.build_report(self._live(), self._live_provider)
+        self.assertTrue(ok, report)
+        self.assertNotIn("MISMATCH", report)
+
+    def test_disagreement_about_the_store_is_still_a_problem(self):
+        # Core saying test while the provider says live (or the reverse) means
+        # the two are not talking about the same shop, which is the failure
+        # this line exists to catch and the one the switch could cause.
+        report, ok = acceptance.build_report(self._live(), provider)
+        self.assertFalse(ok)
+        self.assertIn("test flag", report)
+
+
 if __name__ == "__main__":
     unittest.main()

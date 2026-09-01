@@ -62,6 +62,12 @@ jobs:
 
       - name: Repeat the exact provider request
         env:
+          # Deliberately still the test store. This repeats a refund POST that
+          # already succeeded, to prove the idempotency key returns the same
+          # refund rather than issuing a second one. Repeating that against the
+          # live store is a request to move real money, and the fixture it
+          # needs - a payment completed and then fully refunded - exists only
+          # in the test store. It stays here as the evidence it was.
           YOOKASSA_SHOP_ID: ${{ secrets.YOOKASSA_TEST_SHOP_ID }}
           YOOKASSA_SECRET_KEY: ${{ secrets.YOOKASSA_TEST_SECRET_KEY }}
         run: |

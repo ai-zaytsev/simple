@@ -332,6 +332,12 @@ jobs:
         # restore into production as a failure.
         run: bash .github/scripts/check-one-health-check.sh
 
+      - name: Core and the payment readback use one store
+        shell: bash
+        # Different stores would make the readback report every real payment
+        # as missing from the provider - a check that lies, not one that fails.
+        run: bash .github/scripts/check-one-payment-store.sh
+
       - name: An address published to a step output must be masked first
         shell: bash
         run: bash .github/scripts/check-masked-addresses.sh
