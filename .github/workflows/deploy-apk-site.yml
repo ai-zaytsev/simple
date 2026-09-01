@@ -13,6 +13,11 @@ on:
         required: true
         default: false
         type: boolean
+      recover_origin:
+        description: Power on or power-cycle the existing site-1 only when its direct health check fails.
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -92,19 +97,107 @@ jobs:
 
           count=$(jq -r '(.droplets // []) | length' /tmp/droplets.json)
           site_count=$(jq -r '(.droplets // []) | map(select(.name == "site-1")) | length' /tmp/droplets.json)
+          adopt=false
 
-          if [ "${known}" = "false" ] && [ "${count}" != "0" ]; then
-            echo "First apply refused: Business Owner said site-1 must be the first DigitalOcean droplet, but live inventory is not empty."
-            exit 1
+          if [ "${known}" = "false" ]; then
+            if [ "${count}" = "0" ]; then
+              echo "No live Droplet exists; a normal first apply remains possible."
+            elif [ "${count}" = "1" ] && [ "${site_count}" = "1" ]; then
+              jq -e '
+                .droplets[0]
+                | .name == "site-1"
+                  and .region.slug == "ams3"
+                  and .size_slug == "s-1vcpu-512mb-10gb"
+                  and (.status == "active" or .status == "off")
+              ' /tmp/droplets.json >/dev/null || {
+                echo "The unrecorded site-1 does not match the approved region, size or status; refusing adoption."
+                exit 1
+              }
+              adopt=true
+              echo "The only live Droplet is the approved site-1; state adoption is allowed."
+            else
+              echo "First apply refused: live inventory is not empty and is not the single approved site-1."
+              exit 1
+            fi
           fi
           if [ "${known}" = "true" ] && { [ "${count}" != "1" ] || [ "${site_count}" != "1" ]; }; then
             echo "Maintenance refused: live inventory must contain only the recorded site-1."
             exit 1
           fi
 
+          droplet_id=""
+          droplet_status=""
+          if [ "${count}" = "1" ] && [ "${site_count}" = "1" ]; then
+            droplet_id=$(jq -r '.droplets[0].id' /tmp/droplets.json)
+            droplet_status=$(jq -r '.droplets[0].status' /tmp/droplets.json)
+            echo "::add-mask::${droplet_id}"
+            jq -r '
+              .droplets[0].networks
+              | [.v4[]?.ip_address, .v6[]?.ip_address]
+              | .[] | select(type == "string" and length > 0)
+            ' /tmp/droplets.json | sort -u | while IFS= read -r address; do
+              echo "::add-mask::${address}"
+            done
+          fi
+
           echo "known=${known}" >> "${GITHUB_OUTPUT}"
+          echo "adopt=${adopt}" >> "${GITHUB_OUTPUT}"
           echo "droplet_count=${count}" >> "${GITHUB_OUTPUT}"
-          echo "Live inventory accepted: droplets=${count}, recorded_site=${known}."
+          echo "droplet_id=${droplet_id}" >> "${GITHUB_OUTPUT}"
+          echo "droplet_status=${droplet_status}" >> "${GITHUB_OUTPUT}"
+          echo "Live inventory accepted: droplets=${count}, recorded_site=${known}, adoption=${adopt}."
+
+      - name: Reconcile exact existing site resources into Terraform state
+        if: ${{ inputs.apply && steps.inventory.outputs.droplet_count == '1' }}
+        working-directory: infra/terraform
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          SITE_DROPLET_ID: ${{ steps.inventory.outputs.droplet_id }}
+        run: |
+          set -euo pipefail
+          [ -n "${SITE_DROPLET_ID}" ] || { echo "The approved Droplet ID was not captured."; exit 1; }
+
+          droplet_recorded=false
+          firewall_recorded=false
+          terraform state list | grep -Fxq 'digitalocean_droplet.site[0]' && droplet_recorded=true
+          terraform state list | grep -Fxq 'digitalocean_firewall.site[0]' && firewall_recorded=true
+
+          firewall_id=""
+          if [ "${firewall_recorded}" = "false" ]; then
+            token=$(printf '%s' "${DIGITALOCEAN_TOKEN}" | tr -d '[:space:]')
+            code=$(curl -sS -o /tmp/firewalls.json -w '%{http_code}' \
+              -H "Authorization: Bearer ${token}" \
+              -H 'accept: application/json' \
+              'https://api.digitalocean.com/v2/firewalls?per_page=100' || echo 000)
+            [ "${code}" = "200" ] || { echo "Firewall inventory failed: HTTP ${code}."; exit 1; }
+
+            firewall_count=$(jq -r '(.firewalls // []) | map(select(.name == "site-1-public-web-only")) | length' /tmp/firewalls.json)
+            if [ "${firewall_count}" = "1" ]; then
+              jq -e --argjson droplet_id "${SITE_DROPLET_ID}" '
+                (.firewalls // [])
+                | map(select(.name == "site-1-public-web-only"))[0]
+                | (.droplet_ids | length) == 1 and .droplet_ids[0] == $droplet_id
+              ' /tmp/firewalls.json >/dev/null || {
+                echo "The named firewall is not attached only to the approved site-1; refusing adoption."
+                exit 1
+              }
+              firewall_id=$(jq -r '(.firewalls // []) | map(select(.name == "site-1-public-web-only"))[0].id' /tmp/firewalls.json)
+              echo "::add-mask::${firewall_id}"
+            elif [ "${firewall_count}" != "0" ]; then
+              echo "More than one site firewall exists; refusing ambiguous adoption."
+              exit 1
+            fi
+          fi
+
+          [ "${droplet_recorded}" = "true" ] || terraform import 'digitalocean_droplet.site[0]' "${SITE_DROPLET_ID}"
+          if [ "${firewall_recorded}" = "false" ] && [ -n "${firewall_id}" ]; then
+            terraform import 'digitalocean_firewall.site[0]' "${firewall_id}"
+          fi
+
+          bash ../../.github/scripts/mask-terraform-state-addresses.sh
+          echo "Existing site resources are reconciled; no Droplet was created."
 
       - name: Remove the state record of the already deleted test node
         if: ${{ inputs.apply && steps.inventory.outputs.known == 'false' && steps.inventory.outputs.droplet_count == '0' }}
@@ -122,6 +215,7 @@ jobs:
           echo "Only stale records for the provider-confirmed absent test node were removed from state."
 
       - name: Plan the approved host
+        if: ${{ steps.inventory.outputs.adopt != 'true' || inputs.apply }}
         working-directory: infra/terraform
         env:
           DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
@@ -177,6 +271,66 @@ jobs:
           echo "::add-mask::${ip}"
           echo "SITE_IP=${ip}" >> "${GITHUB_ENV}"
           echo "site-1 is recorded in Terraform state."
+
+      - name: Recover the existing origin when direct health fails
+        if: ${{ inputs.apply && inputs.recover_origin && steps.inventory.outputs.droplet_count == '1' }}
+        working-directory: infra/terraform
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          SITE_DROPLET_ID: ${{ steps.inventory.outputs.droplet_id }}
+          SITE_DROPLET_STATUS: ${{ steps.inventory.outputs.droplet_status }}
+        run: |
+          set -euo pipefail
+          ip=$(terraform output -raw site_ip)
+          [ -n "${ip}" ] || { echo "Terraform returned no site address."; exit 1; }
+          echo "::add-mask::${ip}"
+
+          if curl -fsS --max-time 8 --resolve "${SITE_DOMAIN}:80:${ip}" \
+               "http://${SITE_DOMAIN}/healthz" -o /dev/null; then
+            echo "Direct origin health is already good; no power action was sent."
+            exit 0
+          fi
+
+          case "${SITE_DROPLET_STATUS}" in
+            off) action_type=power_on ;;
+            active) action_type=power_cycle ;;
+            *) echo "Unsupported Droplet status for recovery; refusing a power action."; exit 1 ;;
+          esac
+
+          token=$(printf '%s' "${DIGITALOCEAN_TOKEN}" | tr -d '[:space:]')
+          jq -n --arg type "${action_type}" '{type:$type}' > /tmp/site-action.json
+          answer=$(curl -fsS -X POST \
+            -H "Authorization: Bearer ${token}" \
+            -H 'content-type: application/json' \
+            --data-binary @/tmp/site-action.json \
+            "https://api.digitalocean.com/v2/droplets/${SITE_DROPLET_ID}/actions")
+          action_id=$(printf '%s' "${answer}" | jq -r '.action.id // empty')
+          [ -n "${action_id}" ] || { echo "DigitalOcean did not accept the recovery action."; exit 1; }
+          echo "::add-mask::${action_id}"
+          echo "A ${action_type} action was accepted for the existing site-1."
+
+          for attempt in $(seq 1 60); do
+            status=$(curl -fsS \
+              -H "Authorization: Bearer ${token}" \
+              -H 'accept: application/json' \
+              "https://api.digitalocean.com/v2/actions/${action_id}" \
+              | jq -r '.action.status // "unknown"')
+            [ "${status}" = "completed" ] && break
+            [ "${status}" != "errored" ] || { echo "The recovery action failed."; exit 1; }
+            [ "${attempt}" -lt 60 ] || { echo "The recovery action did not complete in time."; exit 1; }
+            sleep 5
+          done
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS --max-time 8 --resolve "${SITE_DOMAIN}:80:${ip}" \
+                 "http://${SITE_DOMAIN}/healthz" -o /dev/null; then
+              echo "Direct origin health recovered on the existing site-1."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "The existing site-1 restarted but direct health is still unavailable."
+          exit 1
 
       - name: Point the official domain at the origin
         if: ${{ inputs.apply }}
@@ -300,7 +454,9 @@ jobs:
         if: always()
         env:
           APPLIED: ${{ inputs.apply }}
+          RECOVER_ORIGIN: ${{ inputs.recover_origin }}
           INVENTORY_KNOWN: ${{ steps.inventory.outputs.known }}
+          INVENTORY_ADOPTED: ${{ steps.inventory.outputs.adopt }}
         run: |
           {
             echo "## APK Site"
@@ -308,7 +464,9 @@ jobs:
             echo "| Item | Value |"
             echo "| --- | --- |"
             echo "| Apply | ${APPLIED} |"
+            echo "| Recover existing origin | ${RECOVER_ORIGIN} |"
             echo "| Existing site in state before run | ${INVENTORY_KNOWN:-unknown} |"
+            echo "| Existing site selected for adoption | ${INVENTORY_ADOPTED:-false} |"
             echo "| Provider | DigitalOcean |"
             echo "| Region | ams3 |"
             echo "| Size | 1 vCPU / 512 MB / 10 GB |"
