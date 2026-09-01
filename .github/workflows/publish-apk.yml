@@ -158,8 +158,41 @@ jobs:
           apksigner=$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)
           [ -n "${apksigner}" ] || { echo "Android build tools contain no apksigner."; exit 1; }
           "${apksigner}" verify --verbose --print-certs "${file}" > /tmp/apksigner.txt
-          cert=$(sed -nE 's/^Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]+)$/\1/p' /tmp/apksigner.txt | head -1 | tr 'A-F' 'a-f')
-          [[ "${cert}" =~ ^[0-9a-f]{64}$ ]] || { echo "Could not read the signing certificate fingerprint."; exit 1; }
+
+          # Every digest line, whatever apksigner calls the signer.
+          #
+          # The first version matched "Signer #1 certificate SHA-256 digest:"
+          # exactly, and the first real release failed on it: newer build tools
+          # print one block per supported SDK range - "Signer
+          # (minSdkVersion=24, maxSdkVersion=32) certificate SHA-256 digest:" -
+          # so the anchored pattern matched nothing. The signature was fine and
+          # the APK was correct; only the reading of it was wrong.
+          #
+          # And it said so in three words, without showing what it had read,
+          # which turned a one-line format change into a hunt.
+          mapfile -t certs < <(
+            grep -oiE 'certificate SHA-256 digest: *[0-9a-f]{64}' /tmp/apksigner.txt \
+              | grep -oiE '[0-9a-f]{64}' | tr 'A-F' 'a-f' | sort -u
+          )
+
+          if [ "${#certs[@]}" -eq 0 ]; then
+            echo "Could not read the signing certificate fingerprint. apksigner said:"
+            sed 's/^/  /' /tmp/apksigner.txt
+            exit 1
+          fi
+
+          # More than one distinct certificate across the signer blocks would
+          # mean the APK is signed by different keys for different Android
+          # versions. Nothing here builds that on purpose, so it is a fault
+          # rather than a case to handle - and one that would split the user
+          # base into two update paths, only one of which we hold the key for.
+          if [ "${#certs[@]}" -ne 1 ]; then
+            echo "The APK carries more than one signing certificate:"
+            printf '  %s\n' "${certs[@]}"
+            exit 1
+          fi
+
+          cert="${certs[0]}"
           sha=$(sha256sum "${file}" | cut -d' ' -f1)
           size=$(stat -c%s "${file}")
 
