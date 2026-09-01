@@ -138,7 +138,21 @@ ssh -i "${work}/deploy-key" \
 set -euo pipefail
 stage=$(mktemp -d /var/www/simple-vpn-stage.XXXXXX)
 archive=/tmp/simple-vpn-site-content.tar.gz.new
-trap 'rm -rf -- "${stage}"; rm -f -- "${archive}"' EXIT
+nginx_target=/etc/nginx/sites-available/simple-vpn
+nginx_backup=/tmp/simple-vpn-nginx.conf.backup
+restore_nginx=false
+cleanup() {
+  status=$?
+  trap - EXIT
+  if [ "${restore_nginx}" = "true" ] && [ -f "${nginx_backup}" ]; then
+    mv -f "${nginx_backup}" "${nginx_target}"
+    nginx -t >/dev/null 2>&1 || true
+  fi
+  rm -rf -- "${stage}"
+  rm -f -- "${archive}" "${nginx_backup}"
+  exit "${status}"
+}
+trap cleanup EXIT
 tar -xzf "${archive}" -C "${stage}"
 for file in index.html 404.html styles.css app.js; do
   test -s "${stage}/${file}"
@@ -147,10 +161,30 @@ done
 for file in index.html 404.html styles.css app.js; do
   mv -f "/var/www/simple-vpn/${file}.new" "/var/www/simple-vpn/${file}"
 done
+cp -a "${nginx_target}" "${nginx_backup}"
+restore_nginx=true
+if ! grep -Eq '^[[:space:]]*listen[[:space:]].*443' "${nginx_target}"; then
+  certbot --nginx --non-interactive --agree-tos \
+    --register-unsafely-without-email --redirect --reinstall \
+    -d simple-vpn.download
+fi
+if ! grep -Fq 'expires -1;' "${nginx_target}"; then
+  sed -i '/^[[:space:]]*location \/ {$/a\        expires -1;' "${nginx_target}"
+fi
+nginx -t
+systemctl reload nginx
+systemctl is-active --quiet nginx
+restore_nginx=false
 REMOTE
 
-curl -fsS --max-time 15 --resolve "${SITE_DOMAIN}:443:${SITE_IP}" \
-  "https://${SITE_DOMAIN}/" -o "${work}/origin-index.html"
+for attempt in $(seq 1 12); do
+  if curl -fsS --max-time 15 --resolve "${SITE_DOMAIN}:443:${SITE_IP}" \
+       "https://${SITE_DOMAIN}/" -o "${work}/origin-index.html"; then
+    break
+  fi
+  [ "${attempt}" -lt 12 ] || { echo "The origin did not recover after the verified Nginx reload."; exit 1; }
+  sleep 2
+done
 grep -q 'data-install-guide' "${work}/origin-index.html" || {
   echo "The origin does not serve the new mobile installation guide."
   exit 1
