@@ -2,7 +2,7 @@
 
 - Feature ID: `174-site-access-preflight`
 - Feature Branch: `feature/174-site-access-preflight`
-- Status: `in-progress`
+- Status: `local-ready`
 
 ## Goal
 
@@ -51,4 +51,22 @@ CI deploy key, чтобы исключить очередную догадку �
 - `python .github/scripts/test_deploy_apk_site.py`;
 - YAML parse и repository test suite;
 - `Process Baseline`, `PR Loop Guard`, `AI Review` на PR head.
+
+## Live Results
+
+- `33504349657`: read-only dry run, единственный `site-1`, Terraform `No
+  changes`; зарегистрированный site key доказательно сопоставлен с локальным
+  public-key fingerprint;
+- `33505335277`: существующий CI public key установлен через точный operator
+  `/32`; bootstrap и content SSH правила удалены; adaptive page выложена,
+  Cloudflare включён;
+- `33506736236`: финальный deploy после исправления cache/TLS; Terraform
+  `0 added / 0 changed / 0 destroyed`, Certbot переустановил существующий
+  сертификат без renewal, Nginx config valid, content deploy успешен, firewall
+  web-only, Cloudflare readback успешен;
+- публичный readback: `/` = 200, `/healthz` = 204, `Server: cloudflare`, есть
+  `CF-RAY`, HTML содержит Android/Samsung guide, `Cache-Control: no-cache`;
+- `/releases.json` = 403, потому что первый официальный APK ещё не опубликован;
+  UI штатно показывает отсутствие версии, этот release gate уже записан в
+  `docs/release-blockers.md`.
 

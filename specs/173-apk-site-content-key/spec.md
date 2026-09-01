@@ -2,7 +2,13 @@
 
 - Feature ID: `173-apk-site-content-key`
 - Feature Branch: `feature/173-apk-site-content-key`
-- Status: `local-ready`
+- Status: `superseded-by-174`
+
+Post-merge run `33503379160` подтвердил, что secret существует, но его public
+key не был установлен на `site-1`: SSH завершился `Permission denied
+(publickey)`, после чего временный `/32` был удалён. Доказательная диагностика,
+bootstrap доступа и успешный live deploy перенесены в
+`174-site-access-preflight`.
 
 ## Goal
 
