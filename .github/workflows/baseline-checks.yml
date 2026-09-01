@@ -297,6 +297,10 @@ jobs:
         shell: bash
         run: python3 .github/scripts/test_refund_lost_response.py
 
+      - name: APK site recovery consumes the address produced by apply
+        shell: bash
+        run: python3 .github/scripts/test_deploy_apk_site.py
+
       - name: A workflow that runs a repository file must check it out
         shell: bash
         # Purchases changed a live setting and then failed on the line
