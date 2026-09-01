@@ -5,5 +5,5 @@
 - [x] Обновить BO/integration/debt живыми результатами
 - [x] Закрыть связанные feature tasks
 - [x] Выполнить локальную валидацию: 16 payment/refund tests, docs search, diff check
-- [ ] Опубликовать PR и пройти PR loop
-- [ ] После merge прочитать финальную панель
+- [x] Опубликовать PR #170 и пройти PR loop
+- [x] После merge прочитать финальную панель run 33481599092: sales open, FREE 7, FREE=1, VIP=0
