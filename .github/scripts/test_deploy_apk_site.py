@@ -66,7 +66,9 @@ assert "| grep -q 'data-install-guide'" not in content_script
 assert "index.html 404.html styles.css app.js nginx.conf" in content_script
 assert "nginx -t" in content_script
 assert "systemctl reload nginx" in content_script
+assert "systemctl is-active --quiet nginx" in content_script
 assert "restore_nginx=true" in content_script
+assert "The origin did not recover after the verified Nginx reload" in content_script
 
 nginx_config = Path("sites/official/nginx.conf").read_text()
 assert "expires -1;" in nginx_config

@@ -167,11 +167,18 @@ restore_nginx=true
 install -o root -g root -m 0644 "${stage}/nginx.conf" "${nginx_target}"
 nginx -t
 systemctl reload nginx
+systemctl is-active --quiet nginx
 restore_nginx=false
 REMOTE
 
-curl -fsS --max-time 15 --resolve "${SITE_DOMAIN}:443:${SITE_IP}" \
-  "https://${SITE_DOMAIN}/" -o "${work}/origin-index.html"
+for attempt in $(seq 1 12); do
+  if curl -fsS --max-time 15 --resolve "${SITE_DOMAIN}:443:${SITE_IP}" \
+       "https://${SITE_DOMAIN}/" -o "${work}/origin-index.html"; then
+    break
+  fi
+  [ "${attempt}" -lt 12 ] || { echo "The origin did not recover after the verified Nginx reload."; exit 1; }
+  sleep 2
+done
 grep -q 'data-install-guide' "${work}/origin-index.html" || {
   echo "The origin does not serve the new mobile installation guide."
   exit 1
