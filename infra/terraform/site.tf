@@ -49,6 +49,12 @@ resource "digitalocean_droplet" "site" {
 
   lifecycle {
     prevent_destroy = true
+
+    # DigitalOcean does not return the original cloud-init payload when an
+    # existing Droplet is imported. Treating that unreadable value as drift
+    # would request a replacement of the permanent site host. Site content is
+    # maintained by the host bootstrap/recovery path, not by replacing it.
+    ignore_changes = [user_data]
   }
 }
 

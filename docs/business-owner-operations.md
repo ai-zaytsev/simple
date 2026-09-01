@@ -186,10 +186,10 @@ Cloudflare proxy допустим для публичного сайта, но �
 Что это: Nginx с главной страницей и proxy к публичным APK-объектам Spaces.
 Где находится: DigitalOcean ams3; simple-vpn.download за Cloudflare.
 Как проверить: / и /healthz должны отвечать 200 через публичный домен; Infra Inventory должен видеть ровно один Droplet нужного размера.
-Как перезапустить: DigitalOcean → site-1 → Web Console → systemctl restart nginx; затем проверить /healthz. Публичный SSH закрыт firewall.
+Как перезапустить: Deploy APK Site с `apply=true`, `recover_origin=true`: workflow проверяет прямой /healthz и только при отказе делает power-on/power-cycle существующего site-1. Для ручной диагностики: DigitalOcean → site-1 → Web Console → systemctl restart nginx. Публичный SSH закрыт firewall.
 Где смотреть логи: journalctl -u nginx и nginx error log через Web Console; access log не нужен.
-Что делать при отказе: 521 означает, что Cloudflare не достигает origin — проверить power/status, firewall, nginx и origin TLS. Не переключать DNS на Core.
-Как восстановить: если host потерян, Deploy APK Site создаёт одобренный site-1, настраивает DNS/TLS и читает существующий manifest из Spaces. История APK находится не на Droplet.
+Что делать при отказе: 521 означает, что Cloudflare не достигает origin — запустить Infra Inventory, затем Deploy APK Site recovery. Если Droplet существует, но отсутствует в Terraform state, workflow принимает только единственный точный site-1 в ams3 нужного размера; любой другой inventory останавливает операцию. Не переключать DNS на Core.
+Как восстановить: существующий host возвращается в state и перезапускается тем же workflow без нового Droplet. Если provider действительно показывает ноль Droplet, остановиться: создание нового сервера требует подтверждения Business Owner. История APK находится не на Droplet, а в Spaces.
 ```
 
 ### DNS и домены
@@ -309,7 +309,7 @@ Cloudflare proxy допустим для публичного сайта, но �
 | Новые пользователи не могут войти | Core bootstrap, затем Email Provider Check | Восстановить Core или Brevo; существующий VPN не отключать |
 | VPN не подключается у части пользователей | Endpoint и node verdict в панели | Если один node/edge плох — Lifecycle/замена; если один сегмент — не выводить весь fleet |
 | VPN не подключается у всех | Core plan доступен? обе ноды? kill switch/minimum? | Сначала отменить ошибочную policy, затем восстановить/заменить ноды |
-| Сайт/скачивание не работает | `/healthz`, Cloudflare error, Infra Inventory | При 521 проверить `site-1` power/firewall/nginx/TLS через Web Console |
+| Сайт/скачивание не работает | `/healthz`, Cloudflare error, Infra Inventory | При 521 запустить Deploy APK Site с recovery; Web Console использовать для оставшейся диагностики |
 | Оплата вернулась, VIP не появился | Canonical payment status и webhook | Не активировать вручную по странице; восстановить webhook/API и повторить безопасную обработку |
 | Аккаунт уже FREE, но старая внешняя ссылка подключается | Tier аккаунта и число credentials в Service Log | Считать access-control инцидентом: закрыть новые продажи, проверить Core deploy и node sync; для FREE нода должна получать только app credential |
 | Панель недоступна, VPN работает | Core/DB и Read The Panel | Считать потерей видимости; восстановить мониторинг до изменений fleet |
