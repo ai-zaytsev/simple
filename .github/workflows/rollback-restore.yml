@@ -99,6 +99,13 @@ jobs:
             "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${live} rename to ${failed}'"
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
             "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${KEPT} rename to ${live}'"
+          # Cleared before starting, because a unit that has hit its restart
+          # limit refuses to start and systemd says nothing about why. That is
+          # what made the rollback look like it had failed: the database was
+          # already back and the service was serving out a backoff from the
+          # forty-four restarts of the broken one.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "systemctl reset-failed simple-vpn-core || true"
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" "systemctl start simple-vpn-core"
 
           echo "failed=${failed}" >> "${GITHUB_OUTPUT}"
@@ -109,14 +116,24 @@ jobs:
           HOST: ${{ secrets.CP_DEPLOY_HOST }}
         run: |
           set -euo pipefail
+          # Twenty tries, not ten. A service that has just been handed a
+          # different database opens a pool and runs migrations before it
+          # listens, and the first attempt at this gave up while that was
+          # still happening - reporting a failure that had already
+          # finished succeeding.
           code=000
-          for _ in 1 2 3 4 5 6 7 8 9 10; do
+          for _ in $(seq 1 20); do
             code=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
               'curl -sS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:8080/healthz' || true)
             [ "${code}" = "204" ] && break
             sleep 5
           done
-          [ "${code}" = "204" ] || { echo "The service still does not answer (last code ${code})."; exit 1; }
+          [ "${code}" = "204" ] || {
+            ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              'systemctl is-active simple-vpn-core; journalctl -u simple-vpn-core -n 15 --no-pager -o cat' || true
+            echo "The service still does not answer (last code ${code})."
+            exit 1
+          }
           echo "The service answers again."
 
       - name: Say what happened
