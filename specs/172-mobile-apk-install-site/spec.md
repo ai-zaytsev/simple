@@ -2,7 +2,14 @@
 
 - Feature ID: `172-mobile-apk-install-site`
 - Feature Branch: `feature/172-mobile-apk-install-site`
-- Status: `local-ready`
+- Status: `superseded-by-173`
+
+Post-merge run `33502414855` подтвердил `No changes` и
+`0 added / 0 changed / 0 destroyed`, но content deploy остановился до открытия
+firewall: workflow ссылался на отсутствующий secret `DEPLOY_KEY`. В репозитории
+штатно используется существующий `CP_DEPLOY_SSH_KEY`; исправление перенесено в
+`173-apk-site-content-key`. Поскольку run упал до `Put Cloudflare in front`,
+публичный сайт временно отвечает напрямую с origin, HTTP 200.
 
 ## Goal
 

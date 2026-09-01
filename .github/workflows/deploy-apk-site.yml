@@ -417,7 +417,7 @@ jobs:
         env:
           DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
           SITE_DROPLET_ID: ${{ steps.inventory.outputs.droplet_id }}
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
         run: bash .github/scripts/deploy-apk-site-content.sh
 
       - name: Put Cloudflare in front
