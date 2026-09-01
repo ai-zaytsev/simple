@@ -42,7 +42,12 @@ on:
         default: ""
         type: string
       tier:
-        description: Which status to give. Ignored when listing.
+        description: >
+          Which status to give. Ignored when listing. FREE is destructive:
+          it revokes every external device link on the account in the same
+          transaction, and putting VIP back does not bring them back - the
+          person has to add their router and television again. Not a switch
+          to flip while looking at something.
         required: true
         default: FREE
         type: choice
