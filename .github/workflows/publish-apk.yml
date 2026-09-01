@@ -43,11 +43,12 @@ jobs:
           set -euo pipefail
           [ "${GITHUB_REF}" = "refs/heads/main" ] || { echo "Official APKs are built only from merged main."; exit 1; }
           [ "${CONFIRM}" = "true" ] || { echo "Publication was not confirmed."; exit 1; }
-          if grep -q '^\*\*Статус:\*\* открыт' docs/release-blockers.md; then
-            echo "Release blockers are still open. The official channel must not publish around them."
-            grep -B 2 '^\*\*Статус:\*\* открыт' docs/release-blockers.md | grep '^## ' || true
-            exit 1
-          fi
+
+          # A plain grep for an open status was right until the list contained
+          # "the first official APK has not been published". That item closes
+          # by publishing, so the grep refused the only run that could clear
+          # it - and refused it in language that reads like the gate working.
+          bash .github/scripts/check-release-blockers.sh
 
       - name: Take the release signing key
         env:
