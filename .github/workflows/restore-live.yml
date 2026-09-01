@@ -296,47 +296,20 @@ jobs:
           KEPT: ${{ steps.swap.outputs.kept }}
         run: |
           set -euo pipefail
-
           # Not "systemctl says active". The service can be running and unable
           # to reach its database, which is the failure this operation could
           # plausibly cause.
-          # Twenty tries, not ten. A service that has just been handed a
-          # different database opens a pool and runs migrations before it
-          # listens, and the first attempt at this gave up while that was
-          # still happening - reporting a failure that had already
-          # finished succeeding.
-          # What the service says, not a number I remembered.
           #
-          # This waited for 204. The handler returns 200 with {"status":"ok"},
-          # and the restore that finally worked was reported as a failure
-          # because of it - the fourth time in this piece of work that the
-          # check was the thing that broke rather than the thing checked.
-          #
-          # deploy-control-plane.yml has always asked for a non-empty answer
-          # instead of a code, and was right. This now does the same: the body
-          # has to say ok, which cannot drift the way a status code I typed
-          # from memory can.
-          answer=""
-          for _ in $(seq 1 20); do
-            answer=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-              'curl -sS --max-time 10 http://127.0.0.1:8080/healthz' || true)
-            case "${answer}" in *'"ok"'*) break ;; esac
-            sleep 5
-          done
-
-          case "${answer}" in *'"ok"'*) ;; *)
-            # What systemd and the service itself say, rather than only
-            # that curl got nothing. "No answer" is the symptom; these are
-            # the two places the reason is written.
-            ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-              'systemctl is-active simple-vpn-core; journalctl -u simple-vpn-core -n 15 --no-pager -o cat' || true
-            echo "The service did not answer after the swap. It said: ${answer:-nothing}"
+          # The asking itself lives in one script, shared with the deploy and
+          # the rollback, because this step once waited for a status code the
+          # handler never returns and reported the first working restore as a
+          # failure.
+          if ! bash .github/scripts/wait-for-core-health.sh "${HOST}"; then
             echo "The previous database is still on the host as ${KEPT}."
             echo "To go back: run the Rollback Restore workflow with ${KEPT}."
             exit 1
-            ;;
-          esac
-          echo "The service answers on the restored database: ${answer}"
+          fi
+          echo "It answered on the restored database."
 
       - name: Say what happened
         if: always()

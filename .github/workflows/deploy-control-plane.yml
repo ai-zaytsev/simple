@@ -193,14 +193,12 @@ jobs:
           # A deploy that reports success without the service answering is a
           # deploy nobody can trust. The health check runs against the running
           # process, not against systemd's opinion of it.
-          answer=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            'curl -sS --max-time 10 http://127.0.0.1:8080/healthz' || echo "")
-          echo "Health: ${answer:-no answer}"
-          if [ -z "${answer}" ]; then
-            ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-              'journalctl -u simple-vpn-core -n 20 --no-pager' || true
-            exit 1
-          fi
+          #
+          # Same script as the restore and the rollback. This one asked for a
+          # non-empty answer and was right where the others were wrong; it now
+          # asks for the word, which is stricter, and there is one copy to
+          # keep true instead of three.
+          bash .github/scripts/wait-for-core-health.sh "${HOST}"
           echo "| Control Plane | answering |" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Prove the public name answers
