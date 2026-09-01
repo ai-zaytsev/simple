@@ -84,7 +84,8 @@ jobs:
         run: |
           set -euo pipefail
           known=false
-          if terraform state list 2>/dev/null | grep -q '^digitalocean_droplet.site\[0\]$'; then
+          if terraform state list > /tmp/site-state-list.txt 2>/dev/null && \
+             grep -Fxq 'digitalocean_droplet.site[0]' /tmp/site-state-list.txt; then
             known=true
           fi
 
@@ -161,8 +162,9 @@ jobs:
 
           droplet_recorded=false
           firewall_recorded=false
-          terraform state list | grep -Fxq 'digitalocean_droplet.site[0]' && droplet_recorded=true
-          terraform state list | grep -Fxq 'digitalocean_firewall.site[0]' && firewall_recorded=true
+          terraform state list > /tmp/site-state-list.txt
+          grep -Fxq 'digitalocean_droplet.site[0]' /tmp/site-state-list.txt && droplet_recorded=true
+          grep -Fxq 'digitalocean_firewall.site[0]' /tmp/site-state-list.txt && firewall_recorded=true
 
           firewall_id=""
           if [ "${firewall_recorded}" = "false" ]; then

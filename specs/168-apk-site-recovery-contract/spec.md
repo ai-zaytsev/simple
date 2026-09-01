@@ -2,7 +2,7 @@
 
 - Feature ID: `168-apk-site-recovery-contract`
 - Feature Branch: `feature/168-apk-site-recovery-contract`
-- Status: `local-ready`
+- Status: `live-accepted`
 
 ## Goal
 

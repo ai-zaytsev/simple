@@ -2,7 +2,7 @@
 
 - Feature ID: `166-apk-site-recovery`
 - Feature Branch: `feature/166-apk-site-recovery`
-- Status: `merge-ready`
+- Status: `live-accepted`
 
 ## Goal
 
