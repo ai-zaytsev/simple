@@ -18,6 +18,11 @@ on:
         required: true
         default: false
         type: boolean
+      bootstrap_cidr:
+        description: Optional exact operator IPv4 /32 for one-time installation of the existing CI public key.
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -74,7 +79,7 @@ jobs:
           trap 'rm -rf "${work}"' EXIT
           printf '%s\n' "${DEPLOY_KEY}" > "${work}/deploy-key"
           chmod 600 "${work}/deploy-key"
-          deploy_fingerprint=$(ssh-keygen -lf "${work}/deploy-key" | awk '{print $2}')
+          deploy_fingerprint=$(ssh-keygen -E md5 -lf "${work}/deploy-key" | awk '{print $2}' | sed 's/^MD5://')
 
           token=$(printf '%s' "${DIGITALOCEAN_TOKEN}" | tr -d '[:space:]')
           code=$(curl -sS -o "${work}/keys.json" -w '%{http_code}' \
@@ -444,6 +449,15 @@ jobs:
             [ "${attempt}" -lt 40 ] || { echo "The ACME certificate was not obtained."; exit 1; }
             sleep 15
           done
+
+      - name: Bootstrap CI access to the existing site
+        if: ${{ inputs.apply && inputs.bootstrap_cidr != '' }}
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          SITE_DROPLET_ID: ${{ steps.inventory.outputs.droplet_id }}
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          BOOTSTRAP_CIDR: ${{ inputs.bootstrap_cidr }}
+        run: bash .github/scripts/bootstrap-apk-site-access.sh
 
       - name: Deploy the repository-owned static site content
         if: ${{ inputs.apply }}

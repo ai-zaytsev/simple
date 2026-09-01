@@ -18,11 +18,18 @@ inventory_env = steps["Confirm live inventory"]["env"]
 reconcile_script = steps["Reconcile exact existing site resources into Terraform state"]["run"]
 content_step = steps["Deploy the repository-owned static site content"]
 fingerprint_step = steps["Show deployment key fingerprints"]
+bootstrap_step = steps["Bootstrap CI access to the existing site"]
 
 assert fingerprint_step["env"]["DEPLOY_KEY"] == "${{ secrets.CP_DEPLOY_SSH_KEY }}"
 assert "/v2/account/keys?per_page=200" in fingerprint_step["run"]
 assert "simple-vpn-ssh-key" in fingerprint_step["run"]
-assert "ssh-keygen -lf" in fingerprint_step["run"]
+assert "ssh-keygen -E md5 -lf" in fingerprint_step["run"]
+assert bootstrap_step["run"] == "bash .github/scripts/bootstrap-apk-site-access.sh"
+assert bootstrap_step["env"]["BOOTSTRAP_CIDR"] == "${{ inputs.bootstrap_cidr }}"
+assert bootstrap_step["env"]["DEPLOY_KEY"] == "${{ secrets.CP_DEPLOY_SSH_KEY }}"
+assert step_names.index("Wait for cloud-init and HTTPS") < step_names.index(
+    "Bootstrap CI access to the existing site"
+) < step_names.index("Deploy the repository-owned static site content")
 
 assert "terraform apply -input=false -auto-approve /tmp/site.tfplan" in apply_script
 assert "ip=$(terraform output -raw site_ip)" in apply_script
@@ -56,5 +63,15 @@ assert "0.0.0.0/0" not in content_script
 assert content_script.index("firewall_open=true") < content_script.index("open-answer.json")
 assert "origin-index.html" in content_script
 assert "| grep -q 'data-install-guide'" not in content_script
+
+bootstrap_script = Path(".github/scripts/bootstrap-apk-site-access.sh").read_text()
+assert 'BOOTSTRAP_CIDR' in bootstrap_script
+assert '/32' in bootstrap_script
+assert "trap finish EXIT" in bootstrap_script
+assert "firewall-original.json" in bootstrap_script
+assert "firewall_open=true" in bootstrap_script
+assert "Bootstrap SSH access was removed" in bootstrap_script
+assert "0.0.0.0/0" not in bootstrap_script
+assert "site-1 now accepts the CI deployment key" in bootstrap_script
 
 print("ok: remote state has credentials, avoids pipefail/SIGPIPE, and SITE_IP crosses steps")
