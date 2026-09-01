@@ -5,6 +5,6 @@
 - [x] Передать обе credential variables без раскрытия значений
 - [x] Расширить regression test
 - [x] Исправить ошибочное описание root cause в feature 169
-- [ ] Пройти PR loop и получить human merge
-- [ ] Выполнить post-merge dry-run: recorded=true, adoption=false, no changes
-- [ ] Подтвердить публичные `/` = 200 и `/healthz` = 204
+- [x] Пройти PR loop и получить human merge (PR #176)
+- [x] Выполнить post-merge dry-run `33500134659`: recorded=true, adoption=false, no changes
+- [x] Подтвердить публичные `/` = 200 и `/healthz` = 204

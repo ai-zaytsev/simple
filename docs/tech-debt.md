@@ -188,6 +188,20 @@ CLAUDE.md называет `tasks.md` фактическим состояние�
 
 ## Process-Layer
 
+### GitHub Actions принудительно запускает Node 20 actions на Node 24
+
+**Риск:** GitHub помечает `actions/checkout@v4` и `hashicorp/setup-terraform@v3`
+как использующие deprecated Node.js 20 и пока принудительно запускает их на
+Node.js 24. Сейчас workflows проходят, но временная совместимость может быть
+убрана платформой.
+
+**Обнаружено:** post-merge dry-run APK-сайта `33500134659` 2026-09-01; на
+результат read-only проверки предупреждение не повлияло.
+
+**Закрывается:** зависимости обновлены до официальных версий с поддержкой
+актуального GitHub Actions runtime, после чего baseline и инфраструктурные
+dry-run workflows проходят без этой annotation.
+
 ### Publish-FeaturePR не создаёт первый PR и пишет literal-переменные в body
 
 **Риск:** первая публикация новой feature branch пушит commit, но падает на обращении к `Count` у пустого результата `gh pr list`; PR приходится создавать вручную. Сгенерированный body содержит `$resolvedFeatureId` и `$branch` буквально, поэтому даже успешный путь передаёт ревьюеру неверную feature-memory.
