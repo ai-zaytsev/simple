@@ -269,6 +269,13 @@ jobs:
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
             "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${SIDE} rename to ${LIVE}'"
 
+          # Cleared before starting, because a unit that has hit its restart
+          # limit refuses to start and systemd says nothing about why. That is
+          # what made the rollback look like it had failed: the database was
+          # already back and the service was serving out a backoff from the
+          # forty-four restarts of the broken one.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "systemctl reset-failed simple-vpn-core || true"
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" "systemctl start simple-vpn-core"
 
           echo "kept=${kept}" >> "${GITHUB_OUTPUT}"
@@ -284,8 +291,13 @@ jobs:
           # Not "systemctl says active". The service can be running and unable
           # to reach its database, which is the failure this operation could
           # plausibly cause.
+          # Twenty tries, not ten. A service that has just been handed a
+          # different database opens a pool and runs migrations before it
+          # listens, and the first attempt at this gave up while that was
+          # still happening - reporting a failure that had already
+          # finished succeeding.
           code=000
-          for _ in 1 2 3 4 5 6 7 8 9 10; do
+          for _ in $(seq 1 20); do
             code=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
               'curl -sS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:8080/healthz' || true)
             [ "${code}" = "204" ] && break
@@ -293,6 +305,11 @@ jobs:
           done
 
           [ "${code}" = "204" ] || {
+            # What systemd and the service itself say, rather than only
+            # that curl got nothing. "No answer" is the symptom; these are
+            # the two places the reason is written.
+            ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              'systemctl is-active simple-vpn-core; journalctl -u simple-vpn-core -n 15 --no-pager -o cat' || true
             echo "The service did not answer after the swap (last code ${code})."
             echo "The previous database is still on the host as ${KEPT}."
             echo "To go back: systemctl stop simple-vpn-core, rename the databases back, start it."
