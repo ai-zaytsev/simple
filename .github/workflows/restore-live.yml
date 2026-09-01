@@ -125,6 +125,11 @@ jobs:
 
       - name: Load it beside production, not over it
         id: side
+        # Bounded, because the first attempt at this hung for sixteen minutes
+        # on a psql waiting for a password nobody was going to type. A step
+        # that cannot end is worse than one that fails: it holds the whole
+        # operation open while production sits half-prepared.
+        timeout-minutes: 15
         env:
           HOST: ${{ secrets.CP_DEPLOY_HOST }}
         run: |
@@ -161,7 +166,7 @@ jobs:
           # thing on that host this workflow deliberately never handles.
           # Ownership is corrected immediately afterwards instead.
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d ${side} > /tmp/load.log 2>&1" \
+            "sudo -u postgres psql -w -v ON_ERROR_STOP=1 -d ${side} > /tmp/load.log 2>&1" \
             < /tmp/backup.sql || {
               ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'tail -40 /tmp/load.log'
               ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" "sudo -u postgres dropdb ${side}"
@@ -173,12 +178,12 @@ jobs:
           # service role's. Scoped to this database by REASSIGN OWNED itself,
           # so nothing elsewhere on the cluster is touched.
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d ${side} -c 'reassign owned by postgres to ${owner}'"
+            "sudo -u postgres psql -w -v ON_ERROR_STOP=1 -d ${side} -c 'reassign owned by postgres to ${owner}'"
 
           # Proved rather than assumed: the role must be able to read the one
           # table whose refusal stopped the service last time.
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            "sudo -u postgres psql -tAc \"select count(*) from schema_migrations\" -U ${owner} -d ${side}" \
+            "sudo -u postgres psql -w -v ON_ERROR_STOP=1 -d ${side} -c \"set role ${owner}; select count(*) from schema_migrations\"" \
             >/dev/null 2>&1 || {
               echo "The service role still cannot read schema_migrations in ${side}."
               ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" "sudo -u postgres dropdb ${side}"
@@ -194,6 +199,7 @@ jobs:
 
       - name: Compare what is there with what would replace it
         id: compare
+        timeout-minutes: 10
         env:
           HOST: ${{ secrets.CP_DEPLOY_HOST }}
           LIVE: ${{ steps.side.outputs.live }}
@@ -204,7 +210,7 @@ jobs:
 
           count() {
             ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-              "sudo -u postgres psql -tAc 'select count(*) from $2' -d $1" 2>/dev/null \
+              "sudo -u postgres psql -w -tAc 'select count(*) from $2' -d $1" 2>/dev/null \
               | tr -d '[:space:]' || echo 0
           }
 
@@ -246,6 +252,7 @@ jobs:
 
       - name: Swap, with the old one kept
         id: swap
+        timeout-minutes: 10
         env:
           HOST: ${{ secrets.CP_DEPLOY_HOST }}
           LIVE: ${{ steps.side.outputs.live }}
@@ -263,11 +270,11 @@ jobs:
           # dated name, which is what makes a wrong restore a rename away from
           # being undone rather than a recovery from object storage.
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c \"select pg_terminate_backend(pid) from pg_stat_activity where datname in ('${LIVE}','${SIDE}') and pid <> pg_backend_pid()\"" >/dev/null
+            "sudo -u postgres psql -w -v ON_ERROR_STOP=1 -d postgres -c \"select pg_terminate_backend(pid) from pg_stat_activity where datname in ('${LIVE}','${SIDE}') and pid <> pg_backend_pid()\"" >/dev/null
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${LIVE} rename to ${kept}'"
+            "sudo -u postgres psql -w -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${LIVE} rename to ${kept}'"
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${SIDE} rename to ${LIVE}'"
+            "sudo -u postgres psql -w -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${SIDE} rename to ${LIVE}'"
 
           # Cleared before starting, because a unit that has hit its restart
           # limit refuses to start and systemd says nothing about why. That is
