@@ -3,4 +3,4 @@
 - [x] Создать docs-only feature-memory от merged main
 - [x] Зафиксировать PR #170 и post-merge panel run
 - [x] Проверить непротиворечивость docs/specs
-- [x] Подготовить docs-only closure к PR loop
+- [x] Пройти docs-only PR loop без blocking findings

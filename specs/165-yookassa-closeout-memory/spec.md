@@ -2,7 +2,7 @@
 
 - Feature ID: `165-yookassa-closeout-memory`
 - Feature Branch: `feature/165-yookassa-closeout-memory`
-- Status: `local-ready`
+- Status: `merge-ready`
 
 ## Goal
 
