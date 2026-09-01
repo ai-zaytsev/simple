@@ -441,15 +441,6 @@ jobs:
             sleep 10
           done
 
-          for attempt in $(seq 1 40); do
-            if curl -fsS --max-time 12 "https://${SITE_DOMAIN}/healthz" -o /dev/null; then
-              echo "Origin certificate is valid."
-              break
-            fi
-            [ "${attempt}" -lt 40 ] || { echo "The ACME certificate was not obtained."; exit 1; }
-            sleep 15
-          done
-
       - name: Bootstrap CI access to the existing site
         if: ${{ inputs.apply && inputs.bootstrap_cidr != '' }}
         env:

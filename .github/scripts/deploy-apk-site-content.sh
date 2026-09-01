@@ -124,7 +124,7 @@ for attempt in $(seq 1 24); do
 done
 
 tar -C sites/official -czf "${work}/site-content.tar.gz" \
-  index.html 404.html styles.css app.js nginx.conf
+  index.html 404.html styles.css app.js
 
 scp -i "${work}/deploy-key" \
   -o BatchMode=yes -o ConnectTimeout=10 \
@@ -158,13 +158,19 @@ for file in index.html 404.html styles.css app.js; do
   test -s "${stage}/${file}"
   install -o root -g www-data -m 0644 "${stage}/${file}" "/var/www/simple-vpn/${file}.new"
 done
-test -s "${stage}/nginx.conf"
 for file in index.html 404.html styles.css app.js; do
   mv -f "/var/www/simple-vpn/${file}.new" "/var/www/simple-vpn/${file}"
 done
 cp -a "${nginx_target}" "${nginx_backup}"
 restore_nginx=true
-install -o root -g root -m 0644 "${stage}/nginx.conf" "${nginx_target}"
+if ! grep -Eq '^[[:space:]]*listen[[:space:]].*443' "${nginx_target}"; then
+  certbot --nginx --non-interactive --agree-tos \
+    --register-unsafely-without-email --redirect --reinstall \
+    -d simple-vpn.download
+fi
+if ! grep -Fq 'expires -1;' "${nginx_target}"; then
+  sed -i '/^[[:space:]]*location \/ {$/a\        expires -1;' "${nginx_target}"
+fi
 nginx -t
 systemctl reload nginx
 systemctl is-active --quiet nginx

@@ -63,7 +63,11 @@ assert "0.0.0.0/0" not in content_script
 assert content_script.index("firewall_open=true") < content_script.index("open-answer.json")
 assert "origin-index.html" in content_script
 assert "| grep -q 'data-install-guide'" not in content_script
-assert "index.html 404.html styles.css app.js nginx.conf" in content_script
+assert "index.html 404.html styles.css app.js" in content_script
+assert "index.html 404.html styles.css app.js nginx.conf" not in content_script
+assert "certbot --nginx --non-interactive" in content_script
+assert "--redirect --reinstall" in content_script
+assert "expires -1;" in content_script
 assert "nginx -t" in content_script
 assert "systemctl reload nginx" in content_script
 assert "systemctl is-active --quiet nginx" in content_script
