@@ -2,7 +2,7 @@
 
 - Feature ID: `183-a-rollback-that-exists`
 - Feature Branch: `feature/183-a-rollback-that-exists`
-- Status: `local-ready`
+- Status: `live-accepted`
 
 ## Что Обнаружилось
 

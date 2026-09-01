@@ -2,7 +2,7 @@
 
 - Feature ID: `188-one-copy-of-the-health-check`
 - Feature Branch: `feature/188-one-copy-of-the-health-check`
-- Status: `local-ready`
+- Status: `merged-not-yet-exercised`
 
 ## Почему Это Отдельная Работа
 

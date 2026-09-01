@@ -2,7 +2,7 @@
 
 - Feature ID: `184-let-the-service-actually-start`
 - Feature Branch: `feature/184-let-the-service-actually-start`
-- Status: `local-ready`
+- Status: `live-accepted`
 
 ## Что Соврало
 

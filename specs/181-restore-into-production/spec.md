@@ -2,7 +2,7 @@
 
 - Feature ID: `181-restore-into-production`
 - Feature Branch: `feature/181-restore-into-production`
-- Status: `local-ready`
+- Status: `live-accepted`
 
 ## Что Это
 

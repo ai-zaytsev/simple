@@ -2,7 +2,7 @@
 
 - Feature ID: `185-a-check-that-cannot-hang`
 - Feature Branch: `feature/185-a-check-that-cannot-hang`
-- Status: `local-ready`
+- Status: `live-accepted`
 
 ## Что Произошло
 

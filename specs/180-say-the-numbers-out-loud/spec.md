@@ -2,7 +2,7 @@
 
 - Feature ID: `180-say-the-numbers-out-loud`
 - Feature Branch: `feature/180-say-the-numbers-out-loud`
-- Status: `local-ready`
+- Status: `live-accepted`
 
 ## Что Не Так
 
