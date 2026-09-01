@@ -141,11 +141,25 @@ jobs:
           [ -n "${live}" ] || { echo "Could not read the database name."; exit 1; }
           echo "Production database is named ${live}."
 
-          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            "sudo -u postgres createdb ${side}"
+          # Owned by the role the service connects as, not by postgres.
+          #
+          # The first live run created it as the superuser and loaded a dump
+          # taken with --no-owner, so every table belonged to postgres. The
+          # swap succeeded and the service then would not start: permission
+          # denied for schema_migrations. The data was fine and the ownership
+          # was not, which is a distinction that only shows after the swap.
+          owner=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sed -nE 's#^[a-z]+://([^:/@]+).*#\\1#p' /etc/simple-vpn-cp.dsn | head -1")
+          [ -n "${owner}" ] || { echo "Could not read the database role."; exit 1; }
+          echo "The service connects as ${owner}."
 
-          # Streamed in. The plaintext dump is never written to the host disk,
-          # exactly as it was never written on the way out.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sudo -u postgres createdb -O ${owner} ${side}"
+
+          # Loaded as postgres over the local socket, because connecting as the
+          # service role would need its password, and the password is the one
+          # thing on that host this workflow deliberately never handles.
+          # Ownership is corrected immediately afterwards instead.
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
             "sudo -u postgres psql -v ON_ERROR_STOP=1 -d ${side} > /tmp/load.log 2>&1" \
             < /tmp/backup.sql || {
@@ -155,10 +169,28 @@ jobs:
               exit 1
             }
 
+          # Everything postgres just created in this database becomes the
+          # service role's. Scoped to this database by REASSIGN OWNED itself,
+          # so nothing elsewhere on the cluster is touched.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d ${side} -c 'reassign owned by postgres to ${owner}'"
+
+          # Proved rather than assumed: the role must be able to read the one
+          # table whose refusal stopped the service last time.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sudo -u postgres psql -tAc \"select count(*) from schema_migrations\" -U ${owner} -d ${side}" \
+            >/dev/null 2>&1 || {
+              echo "The service role still cannot read schema_migrations in ${side}."
+              ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" "sudo -u postgres dropdb ${side}"
+              echo "Production was not touched."
+              exit 1
+            }
+
           echo "live=${live}" >> "${GITHUB_OUTPUT}"
           echo "side=${side}" >> "${GITHUB_OUTPUT}"
           echo "stamp=${stamp}" >> "${GITHUB_OUTPUT}"
-          echo "Loaded into ${side}. Production untouched so far."
+          echo "owner=${owner}" >> "${GITHUB_OUTPUT}"
+          echo "Loaded into ${side}, owned by ${owner}. Production untouched so far."
 
       - name: Compare what is there with what would replace it
         id: compare
