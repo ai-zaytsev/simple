@@ -6,5 +6,5 @@
 - [x] Добавить manual workflow и tests
 - [x] Обновить durable docs
 - [x] Выполнить локальную валидацию: 6 retry, 6 webhook, 4 acceptance tests и diff check
-- [ ] Опубликовать PR и получить green checks/AI review
-- [ ] После human merge выполнить live retry и панель
+- [x] Опубликовать PR #169 и получить green checks/AI review
+- [x] После human merge: same refund HTTP 200, provider list=1; панель FREE=1, VIP=0

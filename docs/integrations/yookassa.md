@@ -97,8 +97,8 @@ Workflow `Refund Lost Response` воспроизводит потерю отве
 | Проверка | Действие | Обязательный readback |
 | --- | --- | --- |
 | Успех | `5555 5555 5555 4477`, завершить 3-D Secure | payment `succeeded`, `provider_test = true`, VIP и срок ровно по продукту |
-| Неуспех | `5555 5555 5555 4600` (`insufficient_funds`) | payment `canceled`, tier остаётся FREE |
-| Пользовательский выход | закрыть/вернуться со страницы до оплаты | VIP не появляется; один возврат не меняет серверный статус |
+| Неуспешная попытка карты | `5555 5555 5555 4600` (`insufficient_funds`) | checkout показывает отказ, tier остаётся FREE; redirect checkout может оставить payment `pending` для другой карты |
+| Пользовательский выход | закрыть страницу до ввода карты и не открывать payment снова | после часового окна DB/provider `canceled/canceled`, VIP не появляется |
 | Повторный webhook | `Payment Webhook Replay` для завершённой test-store цепочки | четыре HTTP `200`, все `applied=false`; tier/expiry/timestamps/refund count и сумма не меняются |
 | Подмена полей | unit/integration test меняет amount, currency или metadata при том же status | webhook получает non-200, entitlement не меняется |
 | Полный возврат | успешный платёж моложе 7 суток | refund `succeeded`, возвращена вся сумма, VIP и внешние credentials прекращены только после canonical GET |
@@ -116,10 +116,12 @@ Workflow `Refund Lost Response` воспроизводит потерю отве
 - external credential после refund исчез из node list, обе ноды перешли `count=2→1`, а сохранённая ссылка перестала давать интернет;
 - вторая карточная оплата 399 ₽ после одной неуспешной попытки на checkout завершилась `succeeded`, Core и ЮKassa совпали, панель показала `VIP=1`, `FREE=0`;
 - partial refund после подготовленной точки 8 суток вернул `222,01 ₽` на исходную `bank_card`, Core и ЮKassa дали `succeeded/succeeded`, entitlement был отозван, панель вернулась к `VIP=0`, `FREE=1`;
-- Business Owner настроил test-store webhook на `payment.succeeded`, `payment.canceled` и `refund.succeeded`; независимый replay/readback выполняется задачей `162-payment-webhook-replay`;
-- на время оставшейся live matrix purchases оставлены `open=true`, `FREE=1 день`; перед завершением их обязательно вернуть на продуктовые 7 дней и прочитать панель.
+- Business Owner настроил test-store webhook на `payment.succeeded`, `payment.canceled` и `refund.succeeded`; два повтора payment и два refund notification получили `HTTP 200 / applied=false`, refund count/amount и VIP не изменились (`Payment Webhook Replay` run `33475060953`);
+- exact POST partial refund с исходным idempotency key получил `HTTP 200`, вернул тот же provider refund, а provider list сохранил ровно одну операцию; DB осталась с одним refund/attempt на `222,01 ₽` (`Refund Lost Response` run `33476438881`);
+- отдельный checkout, закрытый до ввода карты, через часовое окно стал `canceled/canceled`; DB уже содержала `canceled` до read workflow, при этом аккаунт остался FREE без `paid_at` и entitlement (`Payment Acceptance` run `33480834901`);
+- purchases возвращены в продуктовое состояние `open=true`, `FREE=7 дней`; финальная панель: `FREE=1`, `VIP=0` (`Purchases` run `33480898240`, `Read The Panel` run `33480936292`).
 
-Остаются живые: финальный `payment.canceled`/пользовательский выход, независимый webhook replay, потеря ответа/retry и возврат purchases на 7 дней. Попытка карты `5555 5555 5555 4600` показала пользователю `insufficient_funds` и не включила VIP, но checkout оставил объект `pending`, разрешая другую карту; это ещё не финальный `payment.canceled`. Официальная документация описывает `insufficient_funds` как возможную причину отказа refund, но не публикует детерминированный способ вызвать её в test store; этот сценарий нельзя считать живым, пока ЮKassa не даст тестовый механизм. Автоматический provider-error contract при этом покрыт тестами и VIP при ошибке не отключает.
+Все воспроизводимые live-сценарии test store завершены. Попытка карты `5555 5555 5555 4600` показала пользователю `insufficient_funds` и не включила VIP, но checkout штатно сохранил payment `pending` для другой карты; terminal cancel поэтому проверен отдельным брошенным checkout. Единственное provider limitation: официальная документация описывает `insufficient_funds` для refund, но не публикует детерминированный test-store trigger. Этот исход не имитировался и не объявляется живым; automated provider-error contract покрыт тестами, незавершённый refund VIP не отключает.
 
 ## Что Не Входит
 

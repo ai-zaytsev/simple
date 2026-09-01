@@ -9,4 +9,4 @@
 - [x] Выполнить локальную валидацию: 6 replay tests, 4 acceptance tests, `git diff --check`
 - [x] Опубликовать PR #168 и получить green checks/AI review
 - [x] После human merge выполнить live replay: 4 × HTTP 200, все applied=false
-- [x] Прочитать панель: FREE=1, VIP=0, purchases open, FREE-период временно 1 день
+- [x] Прочитать панель сразу после replay: FREE=1, VIP=0; итоговое восстановление 7 дней зафиксировано в задаче 161

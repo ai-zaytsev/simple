@@ -174,11 +174,11 @@ CLAUDE.md называет `tasks.md` фактическим состояние�
 
 ## Приёмка Платежей И Обновлений
 
-### Test-store ЮKassa не пройден полностью через живой APK
+### ЮKassa не даёт test-store trigger недостаточного баланса для refund
 
-**Риск:** две успешные карточные оплаты, full refund 399 ₽ и partial refund 222,01 ₽ уже прошли через живой Android; оба возврата дали DB/provider `succeeded/succeeded` и VIP→FREE, для полного дополнительно подтверждены external revoke и node `2→1`. Business Owner настроил три test-store webhook. Четыре независимых повтора webhook уже дали `HTTP 200 / applied=false` и не изменили деньги/VIP. Но финальный payment cancel и provider POST lost-response/retry ещё не приняты. Неуспешная карточная попытка показала `insufficient_funds` и не включила VIP, однако checkout сохранил сам payment `pending` для повтора другой картой — это не финальный `payment.canceled`. Официально описанная ошибка refund `insufficient_funds` не имеет опубликованного детерминированного test-store trigger.
+**Риск:** воспроизводимая матрица оплаты и возврата завершена: success/failure attempt/cancel, full 399 ₽, partial 222,01 ₽, webhook repeats, exact lost-response retry, VIP/access revoke и финальные 7 дней приняты живыми readbacks. Но невозможно доказать на тестовом магазине конкретный отрицательный refund outcome `insufficient_funds`: ЮKassa документирует причину, однако не публикует способ детерминированно создать недостаточный баланс test store. Имитация такого ответа не является живой проверкой.
 
-**Закрывается:** Payment Webhook Replay показывает четыре `HTTP 200 / applied=false` и неизменные tier/expiry/refund count/amount; отдельный payment реально достигает `canceled`; lost-response/retry принят; purchases возвращены на продуктовые 7 дней. Payment Acceptance должен сохранить совпадение DB/provider status, суммы, test flag и исходного способа. Для `refund insufficient_funds` получен официальный test trigger ЮKassa либо явно принято документированное ограничение провайдера без имитации успеха.
+**Закрывается:** ЮKassa предоставляет официальный test-store trigger для refund `insufficient_funds` либо сценарий безопасно воспроизводится на production sandbox/согласованном тестовом магазине. До этого Core contract покрыт automated provider-error tests: ошибочный/незавершённый refund VIP не отключает.
 
 ### Direct APK update не пройден между двумя подписанными выпусками
 

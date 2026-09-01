@@ -4,7 +4,7 @@
 - [x] Создать active feature-memory и зафиксировать отсутствие legacy workspace dependency
 - [x] Проверить существующие payment/entitlement/provider/Android contracts
 - [x] Проверить официальные refunds API, webhook и 24-часовой idempotency contract
-- [ ] Проверить в test store ограничения реально используемых способов оплаты
+- [x] Проверить реально используемый `bank_card`: full и partial refund поддержаны живым test store
 - [x] Зафиксировать точную policy math и refund state machine
 - [x] Добавить schema/store модель возвратов и provider attempts
 - [x] Расширить provider contract и YooKassa adapter
@@ -14,10 +14,10 @@
 - [x] Обновить architecture/integration/API docs, BO-инструкцию и tech debt
 - [x] Выполнить локальную валидацию и чистый PostgreSQL lifecycle в CI
 - [x] Создать PR и пройти PR loop до merge-ready
-- [ ] После human merge развернуть и выполнить live test-store matrix
-- [ ] Сверить живые payment/refund/VIP состояния после deploy
+- [x] После human merge развернуть и выполнить воспроизводимую live test-store matrix
+- [x] Сверить живые payment/refund/VIP состояния после deploy
 - [x] Развернуть refund Core/API и проверить публичные routes
 - [x] Выполнить живой success + full bank-card refund 399 ₽
 - [x] Сверить full refund VIP→FREE, external revoke и node `2→1`
 - [x] Выполнить живой partial bank-card refund после 7 дней: 222,01 ₽, DB/provider succeeded
-- [ ] Выполнить живые payment failure/cancel; webhook repeat принят 4 × HTTP 200/applied=false
+- [x] Выполнить живые payment failure/cancel и webhook repeat 4 × HTTP 200/applied=false

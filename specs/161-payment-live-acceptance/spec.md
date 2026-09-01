@@ -2,7 +2,7 @@
 
 - Feature ID: `161-payment-live-acceptance`
 - Feature Branch: `feature/161-payment-live-acceptance`
-- Status: `local-ready`
+- Status: `live-accepted-with-provider-limitation`
 
 ## Goal
 

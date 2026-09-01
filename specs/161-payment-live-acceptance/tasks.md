@@ -12,7 +12,7 @@
 - [x] Обновить durable docs и связанные feature-memory
 - [x] Выполнить локальную валидацию
 - [x] Создать PR и пройти PR loop (PR #167 merged)
-- [ ] После human merge выполнить оставшуюся live matrix
+- [x] После human merge выполнить воспроизводимую оставшуюся live matrix
 - [x] Настроить webhook в кабинете test store (`payment.succeeded`, `payment.canceled`, `refund.succeeded`)
 - [x] Повторить payment/refund webhook по два раза: HTTP 200, applied=false, durable state unchanged
-- [ ] Вернуть и подтвердить purchases FREE period 7 дней после тестов
+- [x] Вернуть и подтвердить purchases: open=true, FREE period 7 дней
