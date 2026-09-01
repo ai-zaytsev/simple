@@ -2,7 +2,7 @@
 
 - Feature ID: `166-apk-site-recovery`
 - Feature Branch: `feature/166-apk-site-recovery`
-- Status: `local-ready`
+- Status: `merge-ready`
 
 ## Goal
 
@@ -64,4 +64,6 @@
 
 Локально 01.09.2026 проверены YAML parse, обязательные recovery steps и
 `git diff --check`. Terraform CLI на рабочей машине отсутствует, поэтому fmt и
-validate выполняет обязательный `Process Baseline` на PR head.
+validate выполнены обязательными `Terraform Check` и `Process Baseline` на PR
+head. Read-only dry-run `33483427971` подтвердил `droplets=1`,
+`recorded_site=false`, `adoption=true` без live mutation.

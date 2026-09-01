@@ -7,6 +7,6 @@
 - [x] Добавить безопасный adoption существующего site-1
 - [x] Добавить условный power-on/power-cycle существующего origin
 - [x] Выполнить доступную локальную валидацию; Terraform validate передан обязательному CI
-- [ ] Пройти PR loop и получить human merge
+- [x] Пройти PR loop без blocking findings; получить human merge
 - [ ] Выполнить live recovery без нового Droplet
 - [ ] Проверить HTTPS, latest/history и повторный state-known dry-run
