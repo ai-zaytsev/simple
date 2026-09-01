@@ -2,7 +2,7 @@
 
 - Feature ID: `170-apk-site-state-credentials`
 - Feature Branch: `feature/170-apk-site-state-credentials`
-- Status: `in-progress`
+- Status: `live-accepted`
 
 ## Goal
 
@@ -43,3 +43,11 @@ Terraform apply, power action, новый Droplet, DNS, публикация APK
 
 Изменение workflow/test/docs выполняется одной feature branch от актуального
 `main`; альтернативная workspace-топология не требуется.
+
+## Live Acceptance
+
+PR #176 merged as `165e240b114156e6512294daaa867369b66e94f2`.
+Post-merge read-only run `33500134659` reported exactly one Droplet,
+`recorded_site=true`, `adoption=false` and `No changes`. No apply, recovery,
+power, DNS or Cloudflare mutation step ran. Public checks returned `/` = 200
+and `/healthz` = 204.
