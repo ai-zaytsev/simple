@@ -4,5 +4,5 @@
 - [x] Исправить Apply и Recovery явно по именам шагов
 - [x] Добавить автоматический producer/consumer test
 - [x] Выполнить локальный contract test и diff check
-- [ ] Пройти PR loop и получить human merge
-- [ ] Выполнить live recovery и внешнюю проверку
+- [x] Пройти PR #174 loop и получить human merge
+- [x] Выполнить live recovery run 33486380735 и внешнюю проверку `/` 200, `/healthz` 204

@@ -8,5 +8,5 @@
 - [x] Добавить условный power-on/power-cycle существующего origin
 - [x] Выполнить доступную локальную валидацию; Terraform validate передан обязательному CI
 - [x] Пройти PR loop без blocking findings; получить human merge
-- [ ] Выполнить live recovery без нового Droplet
-- [ ] Проверить HTTPS, latest/history и повторный state-known dry-run
+- [x] Выполнить live recovery без нового Droplet: run 33486380735, power-cycle existing site-1
+- [x] Проверить HTTPS: `/` 200, `/healthz` 204; UI корректно показывает отсутствие первого published release

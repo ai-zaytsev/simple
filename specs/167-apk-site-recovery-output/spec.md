@@ -2,7 +2,7 @@
 
 - Feature ID: `167-apk-site-recovery-output`
 - Feature Branch: `feature/167-apk-site-recovery-output`
-- Status: `local-ready`
+- Status: `superseded-by-168`
 
 ## Goal
 
