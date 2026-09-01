@@ -181,6 +181,13 @@ jobs:
             exit 1
           }
 
+          # Printed to the log as well as the summary. The drill asserted
+          # these and said none of them: a check that knows a number and
+          # keeps it is the same defect this project has been fixing all
+          # week, and here it hid the one thing somebody actually wants -
+          # how much came back.
+          echo "accounts=${accounts} devices=${devices} tier_rows=${tiers} orphans=${orphans}"
+
           {
             echo "## Проверка восстановления"
             echo
