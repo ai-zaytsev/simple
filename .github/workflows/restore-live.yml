@@ -161,24 +161,26 @@ jobs:
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
             "sudo -u postgres createdb -O ${owner} ${side}"
 
-          # Loaded as postgres over the local socket, because connecting as the
-          # service role would need its password, and the password is the one
-          # thing on that host this workflow deliberately never handles.
-          # Ownership is corrected immediately afterwards instead.
-          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            "sudo -u postgres psql -w -v ON_ERROR_STOP=1 -d ${side} > /tmp/load.log 2>&1" \
-            < /tmp/backup.sql || {
+          # SET ROLE first, then the dump, in one stream.
+          #
+          # Objects belong to whoever creates them, and psql runs as the
+          # superuser because connecting as the service role would need its
+          # password. Switching role for the session makes the superuser
+          # create everything as that role without ever authenticating as it.
+          #
+          # The attempt before this loaded as postgres and tried to hand
+          # ownership over afterwards with REASSIGN OWNED. That cannot work:
+          # postgres also owns objects the database system requires, and the
+          # command refuses outright rather than reassigning the subset that
+          # came from the dump.
+          { printf 'set role %s;\n' "${owner}"; cat /tmp/backup.sql; } \
+            | ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              "sudo -u postgres psql -w -v ON_ERROR_STOP=1 -d ${side} > /tmp/load.log 2>&1" || {
               ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'tail -40 /tmp/load.log'
               ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" "sudo -u postgres dropdb ${side}"
               echo "The backup did not load. Production was not touched."
               exit 1
             }
-
-          # Everything postgres just created in this database becomes the
-          # service role's. Scoped to this database by REASSIGN OWNED itself,
-          # so nothing elsewhere on the cluster is touched.
-          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            "sudo -u postgres psql -w -v ON_ERROR_STOP=1 -d ${side} -c 'reassign owned by postgres to ${owner}'"
 
           # Proved rather than assumed: the role must be able to read the one
           # table whose refusal stopped the service last time.
