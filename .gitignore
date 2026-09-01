@@ -47,3 +47,13 @@ Thumbs.db
 android/app/libs/*.aar
 android/app/src/main/assets/geoip.dat
 vpncore/go.sum
+
+# Закрытые ключи не попадают сюда даже по ошибке.
+#
+# Открытые ключи получателей лежат в infra/backup-recipients.txt и секретом не
+# являются. Закрытые живут у Business Owner и в Environment disaster-recovery;
+# в репозитории им места нет, и .gitignore здесь - последняя сетка, а не
+# основная защита.
+*.key
+*.p12
+*.age

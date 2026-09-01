@@ -1,0 +1,162 @@
+name: Backup Database
+
+# The daily copy of everything a person is to us: accounts, tiers, devices,
+# payments. Losing the Core disk currently loses all of it, which is written
+# down as an open operational risk and is what this closes.
+#
+# Encrypted before it lands anywhere, to three age recipients, and the
+# pipeline holds the private half of none of the first two. A compromised
+# runner can therefore make a backup and cannot read one - which matters here
+# because this pipeline already reaches production by design.
+#
+# The plaintext dump exists only inside a pipe. It is never written to disk on
+# the host, never written to disk on the runner, and never passed as an
+# argument; pg_dump's output goes straight through ssh into age and out as
+# ciphertext.
+
+on:
+  schedule:
+    # Daily, at a quiet hour for the audience this serves.
+    - cron: '15 1 * * *'
+  workflow_dispatch:
+  workflow_call:
+    # Called by the Core deploy before it touches anything, so that the last
+    # good state is always newer than the last change.
+    inputs:
+      reason:
+        required: false
+        type: string
+        default: manual
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup-database
+  cancel-in-progress: false
+
+env:
+  SPACES_BUCKET: simple-vpn-infra-backups
+  SPACES_PREFIX: db
+  SPACES_ENDPOINT: https://ams3.digitaloceanspaces.com
+
+jobs:
+  backup:
+    name: Backup Database
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Take age and the recipients
+        run: |
+          set -euo pipefail
+          version=v1.2.1
+          curl -fsSL --max-time 60 \
+            "https://github.com/FiloSottile/age/releases/download/${version}/age-${version}-linux-amd64.tar.gz" \
+            -o /tmp/age.tgz
+          tar -xzf /tmp/age.tgz -C /tmp
+          install -m 0755 /tmp/age/age /usr/local/bin/age
+          age --version
+
+          # Recipients live in the repository on purpose. A public key is not
+          # a secret, so there is nothing here to rotate or leak - and a
+          # changed recipient shows up as a diff somebody reviews rather than
+          # as a secret quietly edited to somebody else's key.
+          grep -cE '^age1' infra/backup-recipients.txt > /tmp/count
+          [ "$(cat /tmp/count)" -ge 2 ] || {
+            echo "Fewer than two recipients. One lost key would make every"
+            echo "backup unreadable, which is the failure this exists to avoid."
+            exit 1
+          }
+
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" true
+          echo "Host reachable."
+
+      - name: Dump, encrypt, and never write the plaintext
+        id: dump
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+
+          recipients=()
+          while IFS= read -r key; do
+            recipients+=(-r "${key}")
+          done < <(grep -E '^age1' infra/backup-recipients.txt)
+
+          stamp=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+          file="/tmp/simple-vpn-${stamp}.sql.age"
+
+          # One pipeline, and pipefail is what makes it honest: without it a
+          # failing pg_dump would still produce a small, perfectly valid
+          # encrypted file, and the failure would be discovered by whoever
+          # needed to restore it.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            'pg_dump --no-owner --no-privileges "$(cat /etc/simple-vpn-cp.dsn)"' \
+            | age "${recipients[@]}" > "${file}"
+
+          size=$(stat -c%s "${file}")
+          # A dump of a live schema is never a few hundred bytes. This catches
+          # the shape of failure that still exits zero.
+          [ "${size}" -gt 4096 ] || {
+            echo "The encrypted dump is ${size} bytes, which is too small to be one."
+            exit 1
+          }
+
+          echo "file=${file}" >> "${GITHUB_OUTPUT}"
+          echo "name=$(basename "${file}")" >> "${GITHUB_OUTPUT}"
+          echo "size=${size}" >> "${GITHUB_OUTPUT}"
+          echo "Encrypted dump is ${size} bytes."
+
+      - name: Put it where it survives the host
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          FILE: ${{ steps.dump.outputs.file }}
+          NAME: ${{ steps.dump.outputs.name }}
+        run: |
+          set -euo pipefail
+
+          # No ACL argument at all. The bucket is private and objects inherit
+          # that; the APK is public because publish-apk.yml says so explicitly,
+          # object by object. Saying nothing here is the whole of the
+          # difference, and check-backup-privacy.sh refuses the day somebody
+          # adds one.
+          aws s3 cp "${FILE}" "s3://${SPACES_BUCKET}/${SPACES_PREFIX}/${NAME}" \
+            --endpoint-url "${SPACES_ENDPOINT}"
+
+          # Read back, because an upload that reported success and stored
+          # nothing is exactly the backup somebody discovers at the worst
+          # moment.
+          remote=$(aws s3api head-object --bucket "${SPACES_BUCKET}" \
+            --key "${SPACES_PREFIX}/${NAME}" \
+            --endpoint-url "${SPACES_ENDPOINT}" --query ContentLength --output text)
+          [ "${remote}" = "$(stat -c%s "${FILE}")" ] || {
+            echo "The stored object is ${remote} bytes and the file was $(stat -c%s "${FILE}")."
+            exit 1
+          }
+
+          {
+            echo "## Резервная копия базы"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| объект | \`${SPACES_PREFIX}/${NAME}\` |"
+            echo "| размер | ${remote} байт |"
+            echo "| шифрование | age, получателей несколько |"
+            echo
+            echo "Открытый текст не записывался ни на хост, ни на runner."
+            echo "Конвейер не может прочитать эту копию: закрытых ключей у него нет."
+          } >> "${GITHUB_STEP_SUMMARY}"
