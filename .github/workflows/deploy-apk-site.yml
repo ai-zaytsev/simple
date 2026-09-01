@@ -412,6 +412,14 @@ jobs:
             sleep 15
           done
 
+      - name: Deploy the repository-owned static site content
+        if: ${{ inputs.apply }}
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          SITE_DROPLET_ID: ${{ steps.inventory.outputs.droplet_id }}
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+        run: bash .github/scripts/deploy-apk-site-content.sh
+
       - name: Put Cloudflare in front
         if: ${{ inputs.apply }}
         env:
@@ -445,7 +453,7 @@ jobs:
 
           for attempt in $(seq 1 30); do
             page=$(curl -fsS --max-time 12 "https://${SITE_DOMAIN}/" || true)
-            if printf '%s' "${page}" | grep -q 'Официальная загрузка'; then
+            if grep -q 'data-install-guide' <<< "${page}"; then
               echo "The public HTTPS site answers through Cloudflare."
               exit 0
             fi

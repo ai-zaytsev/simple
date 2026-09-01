@@ -26,6 +26,7 @@
       <span>Simple VPN</span>
     </a>
     <nav aria-label="Основная навигация">
+      <a href="#install">Как установить</a>
       <a href="#versions">Все версии</a>
       <a href="mailto:support@simple-vpn.download">Поддержка</a>
     </nav>
@@ -35,8 +36,8 @@
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-copy">
         <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> Официальная загрузка · Android</p>
-        <h1 id="hero-title">VPN, который включается одной кнопкой.</h1>
-        <p class="hero-lead">Скачайте последнюю подписанную версию Simple VPN. Без магазина приложений, регистрации на сайте и лишних разрешений.</p>
+        <h1 id="hero-title">Скачайте Simple VPN на Android.</h1>
+        <p class="hero-lead">Нажмите кнопку, откройте загруженный APK и подтвердите установку. Сайт всегда предлагает последнюю опубликованную версию.</p>
 
         <div class="download-panel" id="download" aria-live="polite">
           <a class="download-button is-disabled" data-download aria-disabled="true">
@@ -76,16 +77,55 @@
       </aside>
     </section>
 
-    <section class="how" aria-labelledby="how-title">
-      <div>
+    <section class="how" id="install" aria-labelledby="how-title">
+      <div class="how-heading">
         <p class="section-kicker">Установка</p>
-        <h2 id="how-title">Три коротких шага</h2>
+        <h2 id="how-title">Четыре коротких шага</h2>
+        <p>Компьютер, кабель и режим разработчика не нужны.</p>
       </div>
       <ol class="steps">
-        <li><span>1</span><div><strong>Скачайте APK</strong><p>Android может предупредить о файле из браузера — это ожидаемо.</p></div></li>
-        <li><span>2</span><div><strong>Разрешите установку</strong><p>Система предложит разрешить установку приложений из этого браузера.</p></div></li>
-        <li><span>3</span><div><strong>Откройте Simple VPN</strong><p>Следующие версии установятся поверх этой и сохранят ваши настройки.</p></div></li>
+        <li><span>1</span><div><strong>Скачайте APK</strong><p>Нажмите синюю кнопку выше. Если браузер предупредит о файле, подтвердите скачивание.</p></div></li>
+        <li><span>2</span><div><strong>Откройте файл</strong><p>Нажмите уведомление о загрузке или откройте APK в списке скачанных файлов.</p></div></li>
+        <li><span>3</span><div><strong>Разрешите этому браузеру установку</strong><p>Android покажет нужную настройку, если разрешение ещё не выдано.</p></div></li>
+        <li><span>4</span><div><strong>Нажмите «Установить»</strong><p>После установки откройте Simple VPN. Обновления сохранят настройки приложения.</p></div></li>
       </ol>
+
+      <details class="install-guide" data-install-guide>
+        <summary>
+          <span><strong>Подробная инструкция</strong><small>Обычный Android, Samsung Galaxy и старые версии</small></span>
+          <span class="summary-icon" aria-hidden="true">+</span>
+        </summary>
+        <div class="guide-grid">
+          <article>
+            <p class="guide-label">Chrome и другие браузеры</p>
+            <h3>Обычный Android</h3>
+            <ol class="guide-steps">
+              <li>Нажмите «Скачать APK» и откройте загруженный файл.</li>
+              <li>Если установка запрещена, нажмите «Настройки» в сообщении Android.</li>
+              <li>Разрешите установку из этого источника для Chrome или браузера, которым скачали файл.</li>
+              <li>Вернитесь к установке и нажмите «Установить».</li>
+            </ol>
+            <p class="security-note"><strong>После установки:</strong> снова запретите этому браузеру устанавливать неизвестные приложения.</p>
+          </article>
+
+          <article class="samsung-guide">
+            <p class="guide-label">Samsung Galaxy · One UI</p>
+            <h3>Если мешает Автоблокировка</h3>
+            <ol class="guide-steps">
+              <li>Сначала разрешите браузеру установку: «Настройки» → «Безопасность и конфиденциальность» → «Дополнительные настройки безопасности» → «Установка неизвестных приложений».</li>
+              <li>Выберите Chrome или свой браузер и включите разрешение.</li>
+              <li>Если APK всё равно блокируется, откройте «Настройки» → «Безопасность и конфиденциальность» → «Автоблокировка» и временно выключите её.</li>
+              <li>Установите APK, затем снова включите Автоблокировку и запретите установку из браузера.</li>
+            </ol>
+          </article>
+
+          <article class="older-android">
+            <p class="guide-label">Android 7.0–7.1</p>
+            <h3>Если пункты меню называются иначе</h3>
+            <p>Откройте «Настройки» → «Безопасность» → «Неизвестные источники» и разрешите установку только на время. Если такого пути нет, найдите в настройках фразу «Установка неизвестных приложений».</p>
+          </article>
+        </div>
+      </details>
     </section>
 
     <section class="versions" id="versions" aria-labelledby="versions-title">
