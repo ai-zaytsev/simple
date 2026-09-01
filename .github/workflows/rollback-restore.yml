@@ -1,0 +1,137 @@
+name: Rollback Restore
+
+# Putting back the database a restore moved aside.
+#
+# restore-live.yml renames the previous database rather than dropping it,
+# precisely so that a wrong restore is one operation away from being undone.
+# That operation existed only as a sentence in a log until now, which is the
+# difference between a plan and a tool - and the difference showed the first
+# time it was needed.
+#
+# Nothing is dropped here either. The database currently in production is
+# renamed aside under a dated name of its own, so a rollback that turns out to
+# be the wrong idea can itself be undone.
+#
+# This one deliberately does not take a backup first. The situation it exists
+# for is one where production cannot be dumped at all - a restored database
+# the service role cannot read is exactly that - and requiring a backup would
+# make the tool unusable in the only case it is for.
+
+on:
+  workflow_dispatch:
+    inputs:
+      kept:
+        description: >
+          The database to put back, named by the restore that set it aside,
+          such as controlplane_before_20260901151553.
+        required: true
+        type: string
+      confirm:
+        description: Type ROLLBACK to proceed.
+        required: true
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: restore-live
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: Rollback Restore
+    runs-on: ubuntu-latest
+    environment: disaster-recovery
+
+    steps:
+      - name: Refuse anything but a typed confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          KEPT: ${{ inputs.kept }}
+        run: |
+          set -euo pipefail
+          [ "${CONFIRM}" = "ROLLBACK" ] || { echo "Not confirmed. Type ROLLBACK."; exit 1; }
+          case "${KEPT}" in
+            *_before_*) ;;
+            *) echo "That is not a name a restore sets aside."; exit 1 ;;
+          esac
+
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" true
+
+      - name: Put it back
+        id: swap
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          KEPT: ${{ inputs.kept }}
+        run: |
+          set -euo pipefail
+          stamp=$(date -u +%Y%m%d%H%M%S)
+
+          live=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sed -nE 's#^[a-z]+://[^/]+/([^?[:space:]]+).*#\\1#p' /etc/simple-vpn-cp.dsn | head -1")
+          [ -n "${live}" ] || { echo "Could not read the database name."; exit 1; }
+
+          # Refused before anything moves if the named database is not there.
+          # A typo here would otherwise stop the service and leave nothing to
+          # start it on.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sudo -u postgres psql -tAc \"select 1 from pg_database where datname = '${KEPT}'\" -d postgres" \
+            | grep -q 1 || { echo "There is no database called ${KEPT}."; exit 1; }
+
+          failed="${live}_failed_${stamp}"
+
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" "systemctl stop simple-vpn-core"
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c \"select pg_terminate_backend(pid) from pg_stat_activity where datname in ('${live}','${KEPT}') and pid <> pg_backend_pid()\"" >/dev/null
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${live} rename to ${failed}'"
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${KEPT} rename to ${live}'"
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" "systemctl start simple-vpn-core"
+
+          echo "failed=${failed}" >> "${GITHUB_OUTPUT}"
+          echo "Put ${KEPT} back as ${live}; the one that did not work is ${failed}."
+
+      - name: Prove the service came back
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          code=000
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            code=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              'curl -sS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:8080/healthz' || true)
+            [ "${code}" = "204" ] && break
+            sleep 5
+          done
+          [ "${code}" = "204" ] || { echo "The service still does not answer (last code ${code})."; exit 1; }
+          echo "The service answers again."
+
+      - name: Say what happened
+        if: always()
+        env:
+          KEPT: ${{ inputs.kept }}
+          FAILED: ${{ steps.swap.outputs.failed }}
+        run: |
+          {
+            echo "## Откат восстановления"
+            echo
+            echo "Возвращена база \`${KEPT}\`."
+            if [ -n "${FAILED:-}" ]; then
+              echo
+              echo "База, которая не заработала, **не удалена** — она на хосте как \`${FAILED}\`."
+              echo "Ничего не потеряно: обе на диске."
+            fi
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
