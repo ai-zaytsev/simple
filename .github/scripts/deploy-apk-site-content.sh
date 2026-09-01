@@ -124,7 +124,7 @@ for attempt in $(seq 1 24); do
 done
 
 tar -C sites/official -czf "${work}/site-content.tar.gz" \
-  index.html 404.html styles.css app.js
+  index.html 404.html styles.css app.js nginx.conf
 
 scp -i "${work}/deploy-key" \
   -o BatchMode=yes -o ConnectTimeout=10 \
@@ -138,15 +138,36 @@ ssh -i "${work}/deploy-key" \
 set -euo pipefail
 stage=$(mktemp -d /var/www/simple-vpn-stage.XXXXXX)
 archive=/tmp/simple-vpn-site-content.tar.gz.new
-trap 'rm -rf -- "${stage}"; rm -f -- "${archive}"' EXIT
+nginx_target=/etc/nginx/sites-available/simple-vpn
+nginx_backup=/tmp/simple-vpn-nginx.conf.backup
+restore_nginx=false
+cleanup() {
+  status=$?
+  trap - EXIT
+  if [ "${restore_nginx}" = "true" ] && [ -f "${nginx_backup}" ]; then
+    mv -f "${nginx_backup}" "${nginx_target}"
+    nginx -t >/dev/null 2>&1 || true
+  fi
+  rm -rf -- "${stage}"
+  rm -f -- "${archive}" "${nginx_backup}"
+  exit "${status}"
+}
+trap cleanup EXIT
 tar -xzf "${archive}" -C "${stage}"
 for file in index.html 404.html styles.css app.js; do
   test -s "${stage}/${file}"
   install -o root -g www-data -m 0644 "${stage}/${file}" "/var/www/simple-vpn/${file}.new"
 done
+test -s "${stage}/nginx.conf"
 for file in index.html 404.html styles.css app.js; do
   mv -f "/var/www/simple-vpn/${file}.new" "/var/www/simple-vpn/${file}"
 done
+cp -a "${nginx_target}" "${nginx_backup}"
+restore_nginx=true
+install -o root -g root -m 0644 "${stage}/nginx.conf" "${nginx_target}"
+nginx -t
+systemctl reload nginx
+restore_nginx=false
 REMOTE
 
 curl -fsS --max-time 15 --resolve "${SITE_DOMAIN}:443:${SITE_IP}" \

@@ -63,6 +63,13 @@ assert "0.0.0.0/0" not in content_script
 assert content_script.index("firewall_open=true") < content_script.index("open-answer.json")
 assert "origin-index.html" in content_script
 assert "| grep -q 'data-install-guide'" not in content_script
+assert "index.html 404.html styles.css app.js nginx.conf" in content_script
+assert "nginx -t" in content_script
+assert "systemctl reload nginx" in content_script
+assert "restore_nginx=true" in content_script
+
+nginx_config = Path("sites/official/nginx.conf").read_text()
+assert "expires -1;" in nginx_config
 
 bootstrap_script = Path(".github/scripts/bootstrap-apk-site-access.sh").read_text()
 assert 'BOOTSTRAP_CIDR' in bootstrap_script

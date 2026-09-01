@@ -43,6 +43,8 @@ CI deploy key, чтобы исключить очередную догадку �
   точный `/32`, который обязательно удаляется;
 - content deploy проходит, firewall снова web-only, Cloudflare proxy включён;
 - публичная страница содержит новую Android/Samsung инструкцию.
+- HTML/CSS/JS перепроверяются браузером, а versioned APK сохраняют immutable
+  cache policy.
 
 ## Validation
 
