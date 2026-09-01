@@ -266,8 +266,8 @@ jobs:
         run: |
           set -euo pipefail
           terraform apply -input=false -auto-approve /tmp/site.tfplan
-          ip="${SITE_IP:-}"
-          [ -n "${ip}" ] || { echo "The apply step returned no site address."; exit 1; }
+          ip=$(terraform output -raw site_ip)
+          [ -n "${ip}" ] || { echo "Terraform returned no site address."; exit 1; }
           echo "::add-mask::${ip}"
           echo "SITE_IP=${ip}" >> "${GITHUB_ENV}"
           echo "site-1 is recorded in Terraform state."
@@ -281,8 +281,8 @@ jobs:
           SITE_DROPLET_STATUS: ${{ steps.inventory.outputs.droplet_status }}
         run: |
           set -euo pipefail
-          ip=$(terraform output -raw site_ip)
-          [ -n "${ip}" ] || { echo "Terraform returned no site address."; exit 1; }
+          ip="${SITE_IP:-}"
+          [ -n "${ip}" ] || { echo "The apply step returned no site address."; exit 1; }
           echo "::add-mask::${ip}"
 
           if curl -fsS --max-time 8 --resolve "${SITE_DOMAIN}:80:${ip}" \
