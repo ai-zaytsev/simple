@@ -33,8 +33,22 @@ permissions:
   contents: read
 
 jobs:
+  # Before anything is touched, not after.
+  #
+  # A deploy is the moment a database is most likely to be changed and least
+  # likely to be recoverable, and the last good copy should always be newer
+  # than the last change. If this fails the deploy does not run - which is the
+  # right order of priorities for a service whose data has no other copy.
+  backup:
+    name: Backup Before Deploy
+    uses: ./.github/workflows/backup-database.yml
+    secrets: inherit
+    with:
+      reason: before-core-deploy
+
   deploy:
     name: Deploy Control Plane
+    needs: backup
     runs-on: ubuntu-latest
 
     steps:

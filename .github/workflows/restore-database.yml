@@ -1,0 +1,197 @@
+name: Restore Database
+
+# Proving the backups are backups, and restoring one when it matters.
+#
+# Two things make this safe to have at all. It starts only when a person
+# starts it - there is no schedule and nothing calls it - and it runs in the
+# disaster-recovery environment, whose required reviewer has to approve the
+# run before a single step executes. Manual and approved, not one or the
+# other.
+#
+# The drill restores into a throwaway PostgreSQL inside the runner and counts
+# what came back. It never touches the live database, and it cannot: the live
+# host is not reachable from any step here.
+#
+# A backup nobody has ever restored is not a backup, it is a hope with a
+# filename. This is the part that turns one into the other.
+
+on:
+  workflow_dispatch:
+    inputs:
+      object:
+        description: >
+          Which object under db/ to restore. Leave empty for the newest.
+        required: false
+        default: ""
+        type: string
+      confirm:
+        description: >
+          Type RESTORE to proceed. Anything else stops the run before it
+          reads a backup.
+        required: true
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: restore-database
+  cancel-in-progress: false
+
+env:
+  SPACES_BUCKET: simple-vpn-infra-backups
+  SPACES_PREFIX: db
+  SPACES_ENDPOINT: https://ams3.digitaloceanspaces.com
+
+jobs:
+  drill:
+    name: Restore Drill
+    runs-on: ubuntu-latest
+
+    # The second lock. Manual start stops an accident; the environment stops
+    # somebody who has push access from restoring on their own.
+    environment: disaster-recovery
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: drill
+          POSTGRES_DB: drill
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Refuse anything but a typed confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          [ "${CONFIRM}" = "RESTORE" ] || {
+            echo "Not confirmed. Type RESTORE to run a drill."
+            exit 1
+          }
+
+      - name: Take age
+        run: |
+          set -euo pipefail
+          version=v1.2.1
+          curl -fsSL --max-time 60 \
+            "https://github.com/FiloSottile/age/releases/download/${version}/age-${version}-linux-amd64.tar.gz" \
+            -o /tmp/age.tgz
+          tar -xzf /tmp/age.tgz -C /tmp
+          install -m 0755 /tmp/age/age /usr/local/bin/age
+
+      - name: Fetch the backup
+        id: fetch
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          OBJECT: ${{ inputs.object }}
+        run: |
+          set -euo pipefail
+
+          key="${OBJECT}"
+          if [ -z "${key}" ]; then
+            key=$(aws s3api list-objects-v2 --bucket "${SPACES_BUCKET}" \
+              --prefix "${SPACES_PREFIX}/" --endpoint-url "${SPACES_ENDPOINT}" \
+              --query 'sort_by(Contents,&LastModified)[-1].Key' --output text)
+          fi
+          [ -n "${key}" ] && [ "${key}" != "None" ] || {
+            echo "There is no backup under ${SPACES_PREFIX}/ to restore."
+            exit 1
+          }
+
+          aws s3 cp "s3://${SPACES_BUCKET}/${key}" /tmp/backup.age \
+            --endpoint-url "${SPACES_ENDPOINT}"
+          echo "key=${key}" >> "${GITHUB_OUTPUT}"
+          echo "Restoring ${key}."
+
+      - name: Decrypt with the drill key alone
+        env:
+          DRILL_KEY: ${{ secrets.AGE_DRILL_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "${DRILL_KEY:-}" ] || {
+            echo "AGE_DRILL_KEY is not configured in the disaster-recovery environment."
+            exit 1
+          }
+
+          # The third recipient, and the only private half a machine holds.
+          #
+          # The other two belong to the Business Owner and are deliberately out
+          # of reach here: a backup pipeline that could read its own backups
+          # would make one compromise into every compromise. This key exists so
+          # that restoring can be rehearsed by a machine at all, and it is
+          # confined to an environment somebody has to approve.
+          umask 077
+          printf '%s\n' "${DRILL_KEY}" > /tmp/drill.key
+          age -d -i /tmp/drill.key /tmp/backup.age > /tmp/backup.sql
+          shred -u /tmp/drill.key
+          echo "Decrypted $(stat -c%s /tmp/backup.sql) bytes."
+
+      - name: Restore into a throwaway database
+        run: |
+          set -euo pipefail
+          export PGPASSWORD=drill
+          psql -h 127.0.0.1 -U postgres -d drill -v ON_ERROR_STOP=1 \
+            -f /tmp/backup.sql > /tmp/restore.log 2>&1 || {
+              echo "The restore failed. Last lines:"
+              tail -40 /tmp/restore.log
+              exit 1
+            }
+          echo "Restored without error."
+
+      - name: Count what came back
+        run: |
+          set -euo pipefail
+          export PGPASSWORD=drill
+
+          # Not "did psql exit zero". A dump can apply cleanly and contain
+          # nothing, which is the failure that looks most like success - and
+          # the one that would only be noticed while actually recovering.
+          accounts=$(psql -h 127.0.0.1 -U postgres -d drill -tAc \
+            'select count(*) from accounts')
+          devices=$(psql -h 127.0.0.1 -U postgres -d drill -tAc \
+            'select count(*) from devices')
+          tiers=$(psql -h 127.0.0.1 -U postgres -d drill -tAc \
+            'select count(*) from tier_limits')
+
+          [ "${accounts}" -ge 1 ] || { echo "No accounts came back."; exit 1; }
+          [ "${tiers}" -ge 2 ] || { echo "The tier policy did not come back."; exit 1; }
+
+          # Every device belongs to an account that exists. A dump restored in
+          # the wrong order, or truncated, breaks this before it breaks a
+          # count.
+          orphans=$(psql -h 127.0.0.1 -U postgres -d drill -tAc \
+            'select count(*) from devices d
+             left join accounts a on a.id = d.account_id
+             where d.account_id is not null and a.id is null')
+          [ "${orphans}" = "0" ] || {
+            echo "${orphans} devices reference accounts that did not come back."
+            exit 1
+          }
+
+          {
+            echo "## Проверка восстановления"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| объект | \`${{ steps.fetch.outputs.key }}\` |"
+            echo "| аккаунтов | ${accounts} |"
+            echo "| устройств | ${devices} |"
+            echo "| строк тарифной политики | ${tiers} |"
+            echo "| устройств без аккаунта | ${orphans} |"
+            echo
+            echo "Восстановление выполнено во временную базу внутри запуска."
+            echo "Живая база недостижима ни из одного шага этого workflow."
+          } >> "${GITHUB_STEP_SUMMARY}"

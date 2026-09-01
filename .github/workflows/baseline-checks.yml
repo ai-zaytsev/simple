@@ -312,6 +312,12 @@ jobs:
         shell: bash
         run: bash sites/official/tools/check-site.sh
 
+      - name: A database backup must never be world-readable
+        shell: bash
+        # The APK and the accounts live in one bucket and one flag
+        # separates them. Memory is a thin thing to rely on for that.
+        run: bash .github/scripts/check-backup-privacy.sh
+
       - name: No backslash-n where a line break was meant
         shell: bash
         # A diagnostic broke this way and reported the opposite of the
