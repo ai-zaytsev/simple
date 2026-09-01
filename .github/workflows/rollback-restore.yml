@@ -121,20 +121,25 @@ jobs:
           # listens, and the first attempt at this gave up while that was
           # still happening - reporting a failure that had already
           # finished succeeding.
-          code=000
+          # The body, not a status code. The handler answers 200 with
+          # {"status":"ok"}; waiting for 204 here reported a working service
+          # as a broken one, which is the failure a rollback can least afford
+          # to invent.
+          answer=""
           for _ in $(seq 1 20); do
-            code=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-              'curl -sS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:8080/healthz' || true)
-            [ "${code}" = "204" ] && break
+            answer=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              'curl -sS --max-time 10 http://127.0.0.1:8080/healthz' || true)
+            case "${answer}" in *'"ok"'*) break ;; esac
             sleep 5
           done
-          [ "${code}" = "204" ] || {
+          case "${answer}" in *'"ok"'*) ;; *)
             ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
               'systemctl is-active simple-vpn-core; journalctl -u simple-vpn-core -n 15 --no-pager -o cat' || true
-            echo "The service still does not answer (last code ${code})."
+            echo "The service still does not answer. It said: ${answer:-nothing}"
             exit 1
-          }
-          echo "The service answers again."
+            ;;
+          esac
+          echo "The service answers again: ${answer}"
 
       - name: Say what happened
         if: always()
