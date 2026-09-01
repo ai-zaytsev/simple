@@ -19,6 +19,7 @@ class Page(html.parser.HTMLParser):
         self.ids = set()
         self.download = False
         self.archive = False
+        self.install_guide = False
         self.title = False
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
@@ -26,6 +27,7 @@ class Page(html.parser.HTMLParser):
             self.ids.add(values["id"])
         self.download |= "data-download" in values
         self.archive |= "data-version-list" in values
+        self.install_guide |= tag == "details" and "data-install-guide" in values
         self.title |= tag == "title"
 
 parser = Page()
@@ -33,7 +35,27 @@ parser.feed((site / "index.html").read_text(encoding="utf-8"))
 assert parser.title, "page has no title"
 assert parser.download, "page has no latest download control"
 assert parser.archive, "page has no archive surface"
-assert {"download", "versions"}.issubset(parser.ids), "required anchors are absent"
+assert parser.install_guide, "page has no expandable Android install guide"
+assert {"download", "install", "versions"}.issubset(parser.ids), "required anchors are absent"
+
+page = (site / "index.html").read_text(encoding="utf-8")
+for phrase in (
+    "Установка неизвестных приложений",
+    "Неизвестные источники",
+    "Samsung Galaxy",
+    "Автоблокировка",
+    "снова запретите",
+):
+    assert phrase in page, f"install guidance is missing: {phrase}"
+
+script = (site / "app.js").read_text(encoding="utf-8")
+assert script.count('const manifestUrl = "/releases.json"') == 1
+assert script.count('download.href = "/download/latest.apk"') == 1
+
+styles = (site / "styles.css").read_text(encoding="utf-8")
+assert "@media (max-width: 850px)" in styles, "tablet layout is absent"
+assert "@media (max-width: 600px)" in styles, "phone layout is absent"
+assert "min-width: 0" in styles, "page must not force horizontal overflow"
 
 manifest = json.loads((site / "releases.example.json").read_text(encoding="utf-8"))
 assert manifest["schema"] == 1
@@ -54,4 +76,11 @@ grep -q 'location \^~ /download/releases/' "${site}/nginx.conf"
 grep -q '/apk/releases.json' "${site}/nginx.conf"
 
 bash "${site}/tools/test-publish.sh"
-echo "ok: official site has a latest download, archive and no external assets"
+bash -n "${root}/.github/scripts/deploy-apk-site-content.sh"
+grep -q 'runner_ip}/32' "${root}/.github/scripts/deploy-apk-site-content.sh"
+grep -q 'trap finish EXIT' "${root}/.github/scripts/deploy-apk-site-content.sh"
+if grep -q 'port_range.*22' "${root}/infra/terraform/site.tf"; then
+  echo "site-1 must not keep SSH open in its permanent Terraform firewall"
+  exit 1
+fi
+echo "ok: one responsive page has latest, archive, Android/Samsung guidance and no external assets"

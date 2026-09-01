@@ -23,7 +23,7 @@ body {
   background:
     radial-gradient(circle at 82% 2%, rgba(189, 243, 223, 0.62), transparent 26rem),
     linear-gradient(180deg, #fbfdff 0, var(--canvas) 38rem, #fff 100%);
-  min-width: 320px;
+  min-width: 0;
 }
 
 a { color: inherit; }
@@ -165,6 +165,7 @@ h2 { font-size: clamp(2rem, 4vw, 3.7rem); }
 .download-button:focus-visible,
 .hash:focus-visible,
 .version-download:focus-visible,
+summary:focus-visible,
 nav a:focus-visible,
 footer a:focus-visible {
   outline: 3px solid #f6b73c;
@@ -304,6 +305,13 @@ footer a:focus-visible {
   gap: 4rem;
 }
 
+.how-heading > p:last-child {
+  max-width: 24rem;
+  margin: 1.25rem 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
 .steps {
   display: grid;
   gap: 0;
@@ -340,6 +348,109 @@ footer a:focus-visible {
   color: var(--muted);
   line-height: 1.52;
 }
+
+.install-guide {
+  grid-column: 1 / -1;
+  margin-top: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 1.25rem;
+  background: var(--paper);
+  overflow: hidden;
+}
+
+.install-guide summary {
+  min-height: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.15rem 1.35rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.install-guide summary::-webkit-details-marker { display: none; }
+
+.install-guide summary > span:first-child {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.install-guide summary strong { font-size: 1.05rem; }
+.install-guide summary small { color: var(--muted); font-size: 0.84rem; line-height: 1.4; }
+
+.summary-icon {
+  flex: 0 0 auto;
+  width: 2rem;
+  height: 2rem;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--blue-dark);
+  background: var(--blue-soft);
+  font-size: 1.35rem;
+  transition: transform 160ms ease;
+}
+
+.install-guide[open] .summary-icon { transform: rotate(45deg); }
+
+.guide-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  border-top: 1px solid var(--line);
+  background: var(--line);
+}
+
+.guide-grid article {
+  min-width: 0;
+  padding: clamp(1.25rem, 3vw, 2rem);
+  background: var(--paper);
+}
+
+.guide-grid .samsung-guide { background: #f7f9ff; }
+.guide-grid .older-android { grid-column: 1 / -1; }
+
+.guide-label {
+  margin: 0 0 0.45rem;
+  color: var(--blue-dark);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.guide-grid h3 {
+  margin: 0;
+  font-size: clamp(1.25rem, 2.4vw, 1.65rem);
+  letter-spacing: -0.025em;
+}
+
+.guide-steps {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1.1rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.guide-steps li,
+.older-android p:last-child {
+  color: var(--muted);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.security-note {
+  margin: 1.2rem 0 0;
+  padding: 0.9rem 1rem;
+  border-radius: 0.8rem;
+  color: #6b4b04;
+  background: #fff7df;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.older-android p:last-child { margin: 0.8rem 0 0; }
 
 .section-heading {
   display: grid;
@@ -408,6 +519,9 @@ footer p { color: var(--muted); font-size: 0.85rem; }
   .hero { grid-template-columns: 1fr; min-height: auto; padding-top: 3.5rem; }
   .release-card { max-width: 560px; }
   .how { grid-template-columns: 1fr; gap: 2.7rem; }
+  .install-guide { grid-column: auto; margin-top: -0.5rem; }
+  .guide-grid { grid-template-columns: 1fr; }
+  .guide-grid .older-android { grid-column: auto; }
   .section-heading { grid-template-columns: 1fr; gap: 1.2rem; }
   .version-row { grid-template-columns: 1fr 1fr auto; }
   .version-sha { display: none; }
@@ -417,15 +531,20 @@ footer p { color: var(--muted); font-size: 0.85rem; }
 
 @media (max-width: 600px) {
   .site-header, main, footer { width: min(100% - 28px, 1120px); }
-  .site-header { min-height: 68px; }
-  nav a:first-child { display: none; }
-  .hero { gap: 3rem; padding: 3.3rem 0 4.5rem; }
-  h1 { font-size: clamp(3rem, 15vw, 4.7rem); }
+  .site-header { min-height: 64px; gap: 1rem; }
+  nav { gap: 0; }
+  nav a:nth-child(n+2) { display: none; }
+  .hero { gap: 2.5rem; padding: 2.25rem 0 4rem; }
+  h1 { font-size: clamp(2.55rem, 12.5vw, 3.65rem); line-height: 1.02; }
+  .hero-lead { margin: 1.3rem 0 1.5rem; font-size: 1rem; line-height: 1.5; }
   .download-panel { align-items: stretch; }
-  .download-button { width: 100%; min-width: 0; }
+  .download-button { width: 100%; min-width: 0; padding: 1rem; }
   .assurances { display: grid; }
   .release-card { border-radius: 1.35rem; }
-  .how, .versions { padding: 4.5rem 0; }
+  .how, .versions { padding: 4rem 0; }
+  .how { gap: 2.1rem; }
+  .install-guide summary { min-height: 76px; padding: 1rem; }
+  .guide-grid article { padding: 1.15rem 1rem; }
   .version-row { grid-template-columns: 1fr auto; gap: 0.45rem 1rem; }
   .version-date { grid-column: 1; }
   .version-size { display: none; }
