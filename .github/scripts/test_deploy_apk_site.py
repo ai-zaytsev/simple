@@ -17,6 +17,12 @@ inventory_script = steps["Confirm live inventory"]["run"]
 inventory_env = steps["Confirm live inventory"]["env"]
 reconcile_script = steps["Reconcile exact existing site resources into Terraform state"]["run"]
 content_step = steps["Deploy the repository-owned static site content"]
+fingerprint_step = steps["Show deployment key fingerprints"]
+
+assert fingerprint_step["env"]["DEPLOY_KEY"] == "${{ secrets.CP_DEPLOY_SSH_KEY }}"
+assert "/v2/account/keys?per_page=200" in fingerprint_step["run"]
+assert "simple-vpn-ssh-key" in fingerprint_step["run"]
+assert "ssh-keygen -lf" in fingerprint_step["run"]
 
 assert "terraform apply -input=false -auto-approve /tmp/site.tfplan" in apply_script
 assert "ip=$(terraform output -raw site_ip)" in apply_script

@@ -62,6 +62,39 @@ jobs:
           fi
           echo "Configuration is complete."
 
+      - name: Show deployment key fingerprints
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "${DEPLOY_KEY:-}" ] || { echo "The CI deployment key is missing."; exit 1; }
+
+          work=$(mktemp -d)
+          trap 'rm -rf "${work}"' EXIT
+          printf '%s\n' "${DEPLOY_KEY}" > "${work}/deploy-key"
+          chmod 600 "${work}/deploy-key"
+          deploy_fingerprint=$(ssh-keygen -lf "${work}/deploy-key" | awk '{print $2}')
+
+          token=$(printf '%s' "${DIGITALOCEAN_TOKEN}" | tr -d '[:space:]')
+          code=$(curl -sS -o "${work}/keys.json" -w '%{http_code}' \
+            -H "Authorization: Bearer ${token}" \
+            -H 'accept: application/json' \
+            'https://api.digitalocean.com/v2/account/keys?per_page=200' || echo 000)
+          [ "${code}" = "200" ] || { echo "SSH key inventory failed: HTTP ${code}."; exit 1; }
+
+          site_key_count=$(jq -r '(.ssh_keys // []) | map(select(.name == "simple-vpn-ssh-key")) | length' "${work}/keys.json")
+          [ "${site_key_count}" = "1" ] || { echo "Expected exactly one registered simple-vpn-ssh-key."; exit 1; }
+          site_fingerprint=$(jq -r '(.ssh_keys // []) | map(select(.name == "simple-vpn-ssh-key"))[0].fingerprint' "${work}/keys.json")
+
+          echo "registered site key: ${site_fingerprint}"
+          echo "CI deployment key: ${deploy_fingerprint}"
+          if [ "${site_fingerprint}" = "${deploy_fingerprint}" ]; then
+            echo "The registered site key and CI deployment key match."
+          else
+            echo "The registered site key and CI deployment key differ."
+          fi
+
       - name: Terraform init
         working-directory: infra/terraform
         env:
