@@ -46,6 +46,9 @@ jobs:
     environment: disaster-recovery
 
     steps:
+      - name: Bring the tools
+        uses: actions/checkout@v4
+
       - name: Refuse anything but a typed confirmation
         env:
           CONFIRM: ${{ inputs.confirm }}
@@ -116,30 +119,11 @@ jobs:
           HOST: ${{ secrets.CP_DEPLOY_HOST }}
         run: |
           set -euo pipefail
-          # Twenty tries, not ten. A service that has just been handed a
-          # different database opens a pool and runs migrations before it
-          # listens, and the first attempt at this gave up while that was
-          # still happening - reporting a failure that had already
-          # finished succeeding.
-          # The body, not a status code. The handler answers 200 with
-          # {"status":"ok"}; waiting for 204 here reported a working service
-          # as a broken one, which is the failure a rollback can least afford
-          # to invent.
-          answer=""
-          for _ in $(seq 1 20); do
-            answer=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-              'curl -sS --max-time 10 http://127.0.0.1:8080/healthz' || true)
-            case "${answer}" in *'"ok"'*) break ;; esac
-            sleep 5
-          done
-          case "${answer}" in *'"ok"'*) ;; *)
-            ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-              'systemctl is-active simple-vpn-core; journalctl -u simple-vpn-core -n 15 --no-pager -o cat' || true
-            echo "The service still does not answer. It said: ${answer:-nothing}"
-            exit 1
-            ;;
-          esac
-          echo "The service answers again: ${answer}"
+          # Shared with the deploy and the restore. A rollback is run when
+          # something is already wrong, so a check that invents a failure here
+          # is the most expensive kind - and this step used to wait for a
+          # status code the handler never returns.
+          bash .github/scripts/wait-for-core-health.sh "${HOST}"
 
       - name: Say what happened
         if: always()

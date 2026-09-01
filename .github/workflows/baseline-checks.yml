@@ -325,6 +325,13 @@ jobs:
         # my own tool cost an evening.
         run: bash .github/scripts/check-no-stray-escapes.sh
 
+      - name: The Control Plane health check has one copy
+        shell: bash
+        # Three workflows asked in three ways and one waited for a status
+        # code the handler never returns, reporting the first working
+        # restore into production as a failure.
+        run: bash .github/scripts/check-one-health-check.sh
+
       - name: An address published to a step output must be masked first
         shell: bash
         run: bash .github/scripts/check-masked-addresses.sh
