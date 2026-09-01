@@ -95,8 +95,11 @@ jobs:
 
       - name: Compare PostgreSQL with YooKassa
         env:
-          YOOKASSA_SHOP_ID: ${{ secrets.YOOKASSA_TEST_SHOP_ID }}
-          YOOKASSA_SECRET_KEY: ${{ secrets.YOOKASSA_TEST_SECRET_KEY }}
+          # The same store the deploy hands Core. A readback pointed at the
+          # other store would report every real payment as missing from the
+          # provider - a check that lies rather than one that fails.
+          YOOKASSA_SHOP_ID: ${{ secrets.YOOKASSA_PROD_SHOP_ID }}
+          YOOKASSA_SECRET_KEY: ${{ secrets.YOOKASSA_PROD_SECRET_KEY }}
         run: |
           set -euo pipefail
           python3 .github/scripts/payment_acceptance.py /tmp/payment-acceptance.json \

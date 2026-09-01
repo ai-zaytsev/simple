@@ -104,8 +104,12 @@ def build_report(
     compare(problems, "payment metadata", str(payment.get("id")), str((remote_payment.get("metadata") or {}).get("payment_id")))
     if payment.get("payment_method"):
         compare(problems, "payment method", payment.get("payment_method"), remote_method)
-    if payment.get("provider_test") is not True or remote_payment.get("test") is not True:
-        problems.append("payment is not confirmed as test-store on both sides")
+    # Agreement, not a remembered value. This asked both sides for test=true,
+    # which was right while the only store was the test one and reports every
+    # real payment as a problem the moment it is not. What matters either way
+    # is that Core's record and the provider's agree about which store the
+    # money went through.
+    compare(problems, "payment test flag", bool(payment.get("provider_test")), bool(remote_payment.get("test")))
     if payment.get("status") == "succeeded" and remote_payment.get("paid") is not True:
         problems.append("provider does not mark the succeeded payment as paid")
 
