@@ -87,18 +87,18 @@ jobs:
           # A typo here would otherwise stop the service and leave nothing to
           # start it on.
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            "sudo -u postgres psql -tAc \"select 1 from pg_database where datname = '${KEPT}'\" -d postgres" \
+            "sudo -u postgres psql -w -tAc \"select 1 from pg_database where datname = '${KEPT}'\" -d postgres" \
             | grep -q 1 || { echo "There is no database called ${KEPT}."; exit 1; }
 
           failed="${live}_failed_${stamp}"
 
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" "systemctl stop simple-vpn-core"
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c \"select pg_terminate_backend(pid) from pg_stat_activity where datname in ('${live}','${KEPT}') and pid <> pg_backend_pid()\"" >/dev/null
+            "sudo -u postgres psql -w -v ON_ERROR_STOP=1 -d postgres -c \"select pg_terminate_backend(pid) from pg_stat_activity where datname in ('${live}','${KEPT}') and pid <> pg_backend_pid()\"" >/dev/null
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${live} rename to ${failed}'"
+            "sudo -u postgres psql -w -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${live} rename to ${failed}'"
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
-            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${KEPT} rename to ${live}'"
+            "sudo -u postgres psql -w -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${KEPT} rename to ${live}'"
           # Cleared before starting, because a unit that has hit its restart
           # limit refuses to start and systemd says nothing about why. That is
           # what made the rollback look like it had failed: the database was
