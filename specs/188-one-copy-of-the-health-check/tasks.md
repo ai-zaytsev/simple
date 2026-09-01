@@ -8,4 +8,5 @@
 - [x] `rollback-restore.yml` зовёт скрипт и делает checkout
 - [x] `check-one-health-check.sh` написан и испытан подделкой
 - [x] Guard добавлен в baseline
+- [x] Guard упал на первом прогоне (требовал бит исполнения) и исправлен
 - [x] `go build` и `go test ./internal/api/` зелёные

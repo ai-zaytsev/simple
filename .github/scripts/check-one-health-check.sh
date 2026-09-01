@@ -22,10 +22,16 @@ for file in .github/workflows/*.yml; do
     failed=1
 done
 
-if [ ! -x "${SCRIPT}" ]; then
-    echo "${SCRIPT} is missing or not executable; the one copy has to exist"
+if [ ! -f "${SCRIPT}" ]; then
+    echo "${SCRIPT} is missing; the one copy has to exist"
     failed=1
 fi
+
+# Readable, not executable. Every script here is stored 100644 and run as
+# "bash .github/scripts/...", so demanding the executable bit would be one
+# more expectation written without looking at the thing it describes - which
+# is the exact mistake this file exists to stop. It failed that way on its
+# first run.
 
 if [ "${failed}" -ne 0 ]; then
     echo
