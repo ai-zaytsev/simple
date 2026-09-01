@@ -1,0 +1,297 @@
+name: Restore Live Database
+
+# Putting a backup back into production. The most dangerous thing in this
+# repository, and written around one question: what happens if somebody runs
+# it by mistake.
+#
+# The answer is that they lose nothing. Nothing is dropped, ever. The current
+# database is backed up first and then renamed aside rather than deleted, so a
+# restore that turns out to be wrong is undone by renaming it back - while the
+# bytes are still on the disk, not only in object storage.
+#
+# Four things have to line up before a single row moves: a person starts it, a
+# reviewer approves the environment, the exact object key is typed out, and the
+# restored contents are compared against what is live. Any of them missing
+# stops the run.
+#
+# restore-database.yml proves a backup is readable. This spends that proof.
+# Separate files because they have different blast radii, and putting them
+# behind one input would make the safe one as frightening as the dangerous one.
+
+on:
+  workflow_dispatch:
+    inputs:
+      object:
+        description: >
+          The exact object under db/ to restore, copied from a backup run. No
+          default and no "newest": choosing has to be deliberate.
+        required: true
+        type: string
+      confirm:
+        description: Type RESTORE LIVE to proceed.
+        required: true
+        default: ""
+        type: string
+      accept_data_loss:
+        description: >
+          Only needed when the backup holds less than production does. Leave
+          false unless the comparison says otherwise and you mean it.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: restore-live
+  cancel-in-progress: false
+
+env:
+  SPACES_BUCKET: simple-vpn-infra-backups
+  SPACES_ENDPOINT: https://ams3.digitaloceanspaces.com
+
+jobs:
+  # The current state, saved before anything touches it.
+  #
+  # The realistic disaster here is not a failed restore, it is a successful
+  # restore of the wrong backup. This is what makes that recoverable.
+  safety_copy:
+    name: Back Up What Is There Now
+    uses: ./.github/workflows/backup-database.yml
+    secrets: inherit
+    with:
+      reason: before-live-restore
+
+  restore:
+    name: Restore Live Database
+    needs: safety_copy
+    runs-on: ubuntu-latest
+    environment: disaster-recovery
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Refuse anything but a typed confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          OBJECT: ${{ inputs.object }}
+        run: |
+          set -euo pipefail
+          [ "${CONFIRM}" = "RESTORE LIVE" ] || { echo "Not confirmed. Type RESTORE LIVE."; exit 1; }
+          case "${OBJECT}" in
+            db/*.sql.age) ;;
+            *) echo "Give the exact object key, such as db/simple-vpn-....sql.age"; exit 1 ;;
+          esac
+
+      - name: Take age
+        run: |
+          set -euo pipefail
+          version=v1.2.1
+          curl -fsSL --max-time 60 \
+            "https://github.com/FiloSottile/age/releases/download/${version}/age-${version}-linux-amd64.tar.gz" \
+            -o /tmp/age.tgz
+          tar -xzf /tmp/age.tgz -C /tmp
+          install -m 0755 /tmp/age/age /usr/local/bin/age
+
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" true
+
+      - name: Fetch and decrypt
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          DRILL_KEY: ${{ secrets.AGE_DRILL_KEY }}
+          OBJECT: ${{ inputs.object }}
+        run: |
+          set -euo pipefail
+          aws s3 cp "s3://${SPACES_BUCKET}/${OBJECT}" /tmp/backup.age \
+            --endpoint-url "${SPACES_ENDPOINT}"
+          umask 077
+          printf '%s\n' "${DRILL_KEY}" > /tmp/drill.key
+          age -d -i /tmp/drill.key /tmp/backup.age > /tmp/backup.sql
+          shred -u /tmp/drill.key
+          echo "Decrypted $(stat -c%s /tmp/backup.sql) bytes."
+
+      - name: Load it beside production, not over it
+        id: side
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          stamp=$(date -u +%Y%m%d%H%M%S)
+          side="simple_vpn_restored_${stamp}"
+
+          # Only the database name comes back. The DSN holds a password and
+          # never leaves the machine. One sed handles both legal shapes - a URL
+          # and a keyword string - because guessing wrong would name a database
+          # that does not exist and fail late, on the host, mid-operation.
+          live=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sed -nE 's#^[a-z]+://[^/]+/([^?[:space:]]+).*#\\1#p; s#.*dbname=([^[:space:]]+).*#\\1#p' /etc/simple-vpn-cp.dsn | head -1")
+          [ -n "${live}" ] || { echo "Could not read the database name."; exit 1; }
+          echo "Production database is named ${live}."
+
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sudo -u postgres createdb ${side}"
+
+          # Streamed in. The plaintext dump is never written to the host disk,
+          # exactly as it was never written on the way out.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d ${side} > /tmp/load.log 2>&1" \
+            < /tmp/backup.sql || {
+              ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'tail -40 /tmp/load.log'
+              ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" "sudo -u postgres dropdb ${side}"
+              echo "The backup did not load. Production was not touched."
+              exit 1
+            }
+
+          echo "live=${live}" >> "${GITHUB_OUTPUT}"
+          echo "side=${side}" >> "${GITHUB_OUTPUT}"
+          echo "stamp=${stamp}" >> "${GITHUB_OUTPUT}"
+          echo "Loaded into ${side}. Production untouched so far."
+
+      - name: Compare what is there with what would replace it
+        id: compare
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          LIVE: ${{ steps.side.outputs.live }}
+          SIDE: ${{ steps.side.outputs.side }}
+          ACCEPT: ${{ inputs.accept_data_loss }}
+        run: |
+          set -euo pipefail
+
+          count() {
+            ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              "sudo -u postgres psql -tAc 'select count(*) from $2' -d $1" 2>/dev/null \
+              | tr -d '[:space:]' || echo 0
+          }
+
+          live_accounts=$(count "${LIVE}" accounts)
+          side_accounts=$(count "${SIDE}" accounts)
+          live_payments=$(count "${LIVE}" payments)
+          side_payments=$(count "${SIDE}" payments)
+
+          echo "accounts: live=${live_accounts} backup=${side_accounts}"
+          echo "payments: live=${live_payments} backup=${side_payments}"
+
+          [ "${side_accounts:-0}" -ge 1 ] || {
+            echo "The backup holds no accounts. Refusing to make that production."
+            exit 1
+          }
+
+          # The dangerous case, named rather than assumed away: restoring an
+          # older copy over a database holding more. That is a real thing to
+          # want after corruption, and it is also exactly what a mistake looks
+          # like, so it needs a second deliberate answer.
+          if [ "${side_accounts:-0}" -lt "${live_accounts:-0}" ] || \
+             [ "${side_payments:-0}" -lt "${live_payments:-0}" ]; then
+            if [ "${ACCEPT}" != "true" ]; then
+              echo
+              echo "This backup holds less than production does."
+              echo "Nothing has been changed. Run again with accept_data_loss"
+              echo "if losing the difference is what you mean to do."
+              exit 1
+            fi
+            echo "Proceeding with acknowledged data loss."
+          fi
+
+          {
+            echo "live_accounts=${live_accounts}"
+            echo "side_accounts=${side_accounts}"
+            echo "live_payments=${live_payments}"
+            echo "side_payments=${side_payments}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Swap, with the old one kept
+        id: swap
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          LIVE: ${{ steps.side.outputs.live }}
+          SIDE: ${{ steps.side.outputs.side }}
+          STAMP: ${{ steps.side.outputs.stamp }}
+        run: |
+          set -euo pipefail
+          kept="${LIVE}_before_${STAMP}"
+
+          # Stopped first, so nothing writes into a database that is about to
+          # stop being the one anybody means.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" "systemctl stop simple-vpn-core"
+
+          # Renamed, never dropped. The old database stays on the disk under a
+          # dated name, which is what makes a wrong restore a rename away from
+          # being undone rather than a recovery from object storage.
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c \"select pg_terminate_backend(pid) from pg_stat_activity where datname in ('${LIVE}','${SIDE}') and pid <> pg_backend_pid()\"" >/dev/null
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${LIVE} rename to ${kept}'"
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+            "sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c 'alter database ${SIDE} rename to ${LIVE}'"
+
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" "systemctl start simple-vpn-core"
+
+          echo "kept=${kept}" >> "${GITHUB_OUTPUT}"
+          echo "The previous database is kept as ${kept}."
+
+      - name: Prove the service came back
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          KEPT: ${{ steps.swap.outputs.kept }}
+        run: |
+          set -euo pipefail
+
+          # Not "systemctl says active". The service can be running and unable
+          # to reach its database, which is the failure this operation could
+          # plausibly cause.
+          code=000
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            code=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              'curl -sS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:8080/healthz' || true)
+            [ "${code}" = "204" ] && break
+            sleep 5
+          done
+
+          [ "${code}" = "204" ] || {
+            echo "The service did not answer after the swap (last code ${code})."
+            echo "The previous database is still on the host as ${KEPT}."
+            echo "To go back: systemctl stop simple-vpn-core, rename the databases back, start it."
+            exit 1
+          }
+          echo "The service answers on the restored database."
+
+      - name: Say what happened
+        if: always()
+        env:
+          OBJECT: ${{ inputs.object }}
+          KEPT: ${{ steps.swap.outputs.kept }}
+          LIVE_A: ${{ steps.compare.outputs.live_accounts }}
+          SIDE_A: ${{ steps.compare.outputs.side_accounts }}
+          LIVE_P: ${{ steps.compare.outputs.live_payments }}
+          SIDE_P: ${{ steps.compare.outputs.side_payments }}
+        run: |
+          {
+            echo "## Восстановление в живую базу"
+            echo
+            echo "| | было | стало |"
+            echo "| --- | --- | --- |"
+            echo "| аккаунтов | ${LIVE_A:-?} | ${SIDE_A:-?} |"
+            echo "| платежей | ${LIVE_P:-?} | ${SIDE_P:-?} |"
+            echo
+            echo "Источник: \`${OBJECT}\`"
+            echo
+            if [ -n "${KEPT:-}" ]; then
+              echo "Прежняя база **не удалена**, она на хосте как \`${KEPT}\`."
+              echo "Вернуть: остановить \`simple-vpn-core\`, переименовать базы обратно, запустить."
+            else
+              echo "Обмен не выполнялся: производственная база не тронута."
+            fi
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
