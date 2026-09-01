@@ -7,6 +7,6 @@
 - [x] Добавить unit tests и Process Baseline step
 - [x] Обновить durable BO/integration docs
 - [x] Выполнить локальную валидацию: 6 replay tests, 4 acceptance tests, `git diff --check`
-- [ ] Опубликовать PR и получить green checks/AI review
-- [ ] После human merge выполнить live replay
-- [ ] Прочитать панель и назвать live verdict
+- [x] Опубликовать PR #168 и получить green checks/AI review
+- [x] После human merge выполнить live replay: 4 × HTTP 200, все applied=false
+- [x] Прочитать панель: FREE=1, VIP=0, purchases open, FREE-период временно 1 день
