@@ -1,0 +1,97 @@
+name: Refund Lost Response
+
+# Repeats the exact successful test-store refund request with its original
+# idempotency key. Private identifiers remain in runner files and memory.
+
+on:
+  workflow_dispatch:
+    inputs:
+      account_prefix:
+        description: Unambiguous account UUID prefix (at least 8 characters).
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  retry:
+    name: Refund Lost Response
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate the target
+        env:
+          PREFIX: ${{ inputs.account_prefix }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${PREFIX}" | grep -qiE '^[0-9a-f-]{8,36}$' || {
+            echo "account_prefix must be 8–36 UUID characters."
+            exit 1
+          }
+
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh -i ~/.ssh/deploy -o BatchMode=yes -o ConnectTimeout=20 \
+            -o StrictHostKeyChecking=accept-new "root@${HOST}" true
+
+      - name: Fetch private before snapshot
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          PREFIX: ${{ inputs.account_prefix }}
+        run: |
+          set -euo pipefail
+          {
+            printf '%s\n' "${PREFIX}"
+            cat .github/scripts/refund_retry_snapshot.sql
+          } | ssh -i ~/.ssh/deploy -o BatchMode=yes -o ConnectTimeout=20 \
+            "root@${HOST}" \
+            'read -r prefix; psql "$(cat /etc/simple-vpn-cp.dsn)" \
+               -v ON_ERROR_STOP=1 -v prefix="${prefix}" -qAt -f -' \
+            > /tmp/refund-retry-before.json
+          test -s /tmp/refund-retry-before.json
+
+      - name: Repeat the exact provider request
+        env:
+          YOOKASSA_SHOP_ID: ${{ secrets.YOOKASSA_TEST_SHOP_ID }}
+          YOOKASSA_SECRET_KEY: ${{ secrets.YOOKASSA_TEST_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/refund_lost_response.py \
+            /tmp/refund-retry-before.json | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: Fetch private after snapshot
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          PREFIX: ${{ inputs.account_prefix }}
+        run: |
+          set -euo pipefail
+          {
+            printf '%s\n' "${PREFIX}"
+            cat .github/scripts/refund_retry_snapshot.sql
+          } | ssh -i ~/.ssh/deploy -o BatchMode=yes -o ConnectTimeout=20 \
+            "root@${HOST}" \
+            'read -r prefix; psql "$(cat /etc/simple-vpn-cp.dsn)" \
+               -v ON_ERROR_STOP=1 -v prefix="${prefix}" -qAt -f -' \
+            > /tmp/refund-retry-after.json
+          test -s /tmp/refund-retry-after.json
+
+      - name: Prove durable state is unchanged
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/payment_webhook_replay.py verify \
+            /tmp/refund-retry-before.json /tmp/refund-retry-after.json \
+            | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: Remove private snapshots
+        if: always()
+        run: rm -f /tmp/refund-retry-before.json /tmp/refund-retry-after.json

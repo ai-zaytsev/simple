@@ -92,6 +92,8 @@ Workflow `Payment Acceptance` принимает безопасный account UU
 
 Workflow `Payment Webhook Replay` предназначен для проверки повторной доставки уже завершённой test-store цепочки. Он сам получает private provider IDs из PostgreSQL, дважды повторяет `payment.succeeded` и `refund.succeeded`, требует четыре ответа `HTTP 200 / received=true / applied=false`, затем повторно читает durable state. Full provider IDs не являются input/output и не печатаются. Workflow отказывается работать, если аккаунт не `FREE`, payment/refund не `succeeded`, `provider_test` не равен `true`, возвратов или provider attempts не ровно по одному либо сумма/entitlement изменились.
 
+Workflow `Refund Lost Response` воспроизводит потерю ответа на POST без создания искусственного refund. Только в пределах 24 часов он берёт private idempotency key и exact payload уже успешной test-store attempt, повторяет запрос к ЮKassa и требует тот же provider refund. Затем provider list должен содержать ровно одну операцию с нашим internal refund metadata, а before/after snapshot — остаться неизменным. Key, Basic Auth и provider IDs не выводятся. Это проверяет provider-owned idempotency отдельно от webhook replay.
+
 | Проверка | Действие | Обязательный readback |
 | --- | --- | --- |
 | Успех | `5555 5555 5555 4477`, завершить 3-D Secure | payment `succeeded`, `provider_test = true`, VIP и срок ровно по продукту |
@@ -102,7 +104,7 @@ Workflow `Payment Webhook Replay` предназначен для проверк
 | Полный возврат | успешный платёж моложе 7 суток | refund `succeeded`, возвращена вся сумма, VIP и внешние credentials прекращены только после canonical GET |
 | Частичный возврат | тестовый paid interval с возрастом больше 7 суток | сумма равна `floor(pro rata × 75%)`, исходный способ принимает частичный refund, VIP и внешние credentials прекращены после `succeeded` |
 | Недостаточный баланс | создать refund при недоступной сумме магазина | refund `canceled/insufficient_funds`, VIP остаётся |
-| Повтор и потеря ответа | повторить webhook/запрос и имитировать потерянный POST response | один provider refund, одна смена entitlement |
+| Повтор и потеря ответа | `Payment Webhook Replay`, затем `Refund Lost Response` до 24-часовой границы | один provider refund/attempt, одна сумма и одна смена entitlement |
 | Границы | сразу, ровно 7 суток, после 7 суток, почти в конце и после конца | 100%, 100%, pro rata × 75%, минимум/отказ, автоматического возврата нет |
 
 После каждого сценария читаются собственные payment row и account tier/expiry из живой PostgreSQL либо operator endpoint. Одной картинки успешной страницы недостаточно.

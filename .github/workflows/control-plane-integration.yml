@@ -6,7 +6,9 @@ on:
       - 'control-plane/**'
       - '.github/scripts/payment_acceptance*.sql'
       - '.github/scripts/prepare_partial_payment.sql'
+      - '.github/scripts/refund_retry_snapshot.sql'
       - '.github/workflows/payment-acceptance.yml'
+      - '.github/workflows/refund-lost-response.yml'
       - '.github/workflows/control-plane-integration.yml'
   workflow_dispatch:
 
@@ -114,3 +116,42 @@ jobs:
           unchanged=$(psql "${PGURL}" -Atc \
             "select (paid_at > now() - interval '1 minute')::text from payments where id = '16110001-0000-4000-8000-000000000001'")
           test "${unchanged}" = "true"
+
+          psql "${PGURL}" -v ON_ERROR_STOP=1 -q -f - <<'SQL'
+          insert into refunds (
+            id, payment_id, account_id, provider, amount_minor, currency,
+            mode, status, calculated_at, succeeded_at, entitlement_revoked_at
+          ) values (
+            '16330000-0000-4000-8000-000000000001',
+            '16110000-0000-4000-8000-000000000001',
+            '16100000-0000-4000-8000-000000000001',
+            'yookassa', 22201, 'RUB', 'pro_rata', 'succeeded',
+            now() - interval '9 hours', now() - interval '9 hours', now() - interval '9 hours'
+          );
+          insert into refund_attempts (
+            id, refund_id, provider, attempt_no, idempotency_key,
+            provider_refund_id, status, created_at
+          ) values (
+            '16340000-0000-4000-8000-000000000001',
+            '16330000-0000-4000-8000-000000000001',
+            'yookassa', 1, '16350000-0000-4000-8000-000000000001',
+            'acceptance-provider-refund', 'succeeded', now() - interval '9 hours'
+          );
+          update accounts set tier = 'FREE', vip_expires_at = null
+          where id = '16100000-0000-4000-8000-000000000001';
+          SQL
+
+          retry_snapshot=$(psql "${PGURL}" -v ON_ERROR_STOP=1 -v prefix=16100000 \
+            -qAt -f .github/scripts/refund_retry_snapshot.sql)
+          printf '%s' "${retry_snapshot}" > /tmp/refund-retry-snapshot.json
+          python3 - <<'PY'
+          import json
+          snapshot = json.load(open("/tmp/refund-retry-snapshot.json"))
+          assert snapshot["match_count"] == 1
+          assert snapshot["account"]["tier"] == "FREE"
+          assert snapshot["payment"]["provider_test"] is True
+          assert snapshot["refund"]["status"] == "succeeded"
+          assert snapshot["refund"]["attempt"]["idempotency_key"].startswith("16350000")
+          assert snapshot["refund_count"] == 1
+          assert snapshot["succeeded_refund_total_minor"] == 22201
+          PY

@@ -245,7 +245,7 @@ Cloudflare proxy допустим для публичного сайта, но �
 ```
 Что это: первый adapter общего платёжного модуля, сейчас test store, разовые VIP-платежи и возвраты через провайдера исходного платежа.
 Где находится: внешний сервис ЮKassa; checkout у провайдера, webhook и entitlement в Core.
-Как проверить: workflow Payment Acceptance по безопасному account UUID-prefix сопоставляет payment/refund rows с authenticated GET ЮKassa. Payment Webhook Replay повторяет уже завершённые test-store события и доказывает неизменность VIP/refund без раскрытия provider IDs. Затем сверить tier в Read The Panel и credentials в Device Access/Service Log. Возврат браузера или ответ POST сам по себе не является успехом.
+Как проверить: Payment Acceptance сопоставляет payment/refund rows с authenticated GET ЮKassa. Payment Webhook Replay проверяет повторные события, Refund Lost Response — exact POST retry с исходным key в пределах 24 часов; оба скрывают provider IDs и доказывают неизменность денег/VIP. Затем сверить tier в Read The Panel и credentials в Device Access/Service Log. Возврат браузера или ответ POST сам по себе не является успехом.
 Как перезапустить: неприменимо; при сомнении закрыть новые продажи workflow Purchases, не меняя существующий VIP.
 Где смотреть логи: операции ЮKassa и отфильтрованный Service Log; секреты и provider error body не печатать.
 Что делать при отказе: оставить платёж/refund незавершённым, VIP не активировать и не прекращать; после восстановления перечитать канонический status server API.
