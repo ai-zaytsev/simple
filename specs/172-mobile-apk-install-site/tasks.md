@@ -6,6 +6,6 @@
 - [x] Добавить штатный content deploy без нового сервера
 - [x] Расширить автоматические site/deploy contracts
 - [x] Проверить 320–360 px phone, большой phone, tablet и desktop
-- [ ] Пройти PR loop и получить human merge
-- [ ] Выполнить live deploy и HTTP/browser readback
+- [x] Пройти PR loop и получить human merge (PR #178)
+- [x] Выполнить live deploy `33502414855`: Terraform без изменений, content deploy не стартовал из-за неверного имени secret; исправление перенесено в feature 173
 - [ ] После первой официальной APK пройти установку на реальном Android

@@ -35,7 +35,7 @@ assert inventory_env["AWS_SECRET_ACCESS_KEY"] == "${{ secrets.SPACES_SECRET_ACCE
 
 assert content_step["run"] == "bash .github/scripts/deploy-apk-site-content.sh"
 assert content_step["env"]["SITE_DROPLET_ID"] == "${{ steps.inventory.outputs.droplet_id }}"
-assert content_step["env"]["DEPLOY_KEY"] == "${{ secrets.DEPLOY_KEY }}"
+assert content_step["env"]["DEPLOY_KEY"] == "${{ secrets.CP_DEPLOY_SSH_KEY }}"
 assert step_names.index("Wait for cloud-init and HTTPS") < step_names.index(
     "Deploy the repository-owned static site content"
 ) < step_names.index("Put Cloudflare in front")
