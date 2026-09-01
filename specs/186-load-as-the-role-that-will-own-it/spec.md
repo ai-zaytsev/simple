@@ -2,7 +2,7 @@
 
 - Feature ID: `186-load-as-the-role-that-will-own-it`
 - Feature Branch: `feature/186-load-as-the-role-that-will-own-it`
-- Status: `local-ready`
+- Status: `live-accepted`
 
 ## Что Отказало
 

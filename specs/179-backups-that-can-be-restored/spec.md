@@ -2,7 +2,7 @@
 
 - Feature ID: `179-backups-that-can-be-restored`
 - Feature Branch: `feature/179-backups-that-can-be-restored`
-- Status: `local-ready`
+- Status: `live-accepted`
 
 ## Что Закрывается
 

@@ -2,7 +2,7 @@
 
 - Feature ID: `187-ask-the-service-not-a-number`
 - Feature Branch: `feature/187-ask-the-service-not-a-number`
-- Status: `local-ready`
+- Status: `merged-not-yet-exercised`
 
 ## Восстановление В Бой Сработало
 

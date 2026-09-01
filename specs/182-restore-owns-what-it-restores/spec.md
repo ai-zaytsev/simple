@@ -2,7 +2,7 @@
 
 - Feature ID: `182-restore-owns-what-it-restores`
 - Feature Branch: `feature/182-restore-owns-what-it-restores`
-- Status: `local-ready`
+- Status: `live-accepted`
 
 ## Что Случилось
 
