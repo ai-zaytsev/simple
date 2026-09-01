@@ -174,7 +174,7 @@ def verify_unchanged(before, after):
             "- account tier: FREE; VIP expiry: отсутствует",
             "- refunds: 1 succeeded; provider attempts: 1; amount unchanged",
             "- entitlement timestamps: unchanged; refund revocation: unchanged",
-            "**Verdict: IDEMPOTENT — повторные webhook не изменили деньги или VIP.**",
+            "**Verdict: IDEMPOTENT — повторная доставка или операция не изменила деньги или VIP.**",
         ]
     )
 

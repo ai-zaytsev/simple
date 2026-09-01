@@ -2,7 +2,7 @@
 
 - Feature ID: `157-yookassa-refunds`
 - Feature Branch: `feature/157-yookassa-refunds`
-- Status: `merge-ready`
+- Status: `live-accepted-with-provider-limitation`
 
 ## Цель
 
