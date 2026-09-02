@@ -30,7 +30,10 @@
     {"kind": "server", "name": "a", "state": "serving", "may_hand_out": true,
      "stop_handing_out": false, "needs_replacing": false, "may_delete": false},
     {"kind": "domain", "name": "x.example", "state": "serving", "may_hand_out": true,
-     "stop_handing_out": false, "needs_replacing": false, "may_delete": false}
+     "stop_handing_out": false, "needs_replacing": false, "may_delete": false},
+    {"kind": "server", "name": "b", "state": "removed", "may_hand_out": false,
+     "stop_handing_out": false, "needs_replacing": false, "may_delete": false,
+     "gone": true}
   ],
   "endpoints": [
     {"target": "x.example", "verdict": "works", "ok_from_us": 100.0,

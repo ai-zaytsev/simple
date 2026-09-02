@@ -210,18 +210,23 @@ def main(path):
     if life:
         say("### Жизненный цикл")
         say("")
-        say("| что | всего | выдавать | снять | заменить | удалять |")
-        say("| --- | --- | --- | --- | --- | --- |")
+        # "Уже нет" is its own column rather than an absence. Twelve removed
+        # servers used to be counted under "заменить" and "удалять" - both
+        # work columns - so the fleet report claimed twelve jobs that did not
+        # exist and hid the numbers that did.
+        say("| что | всего | выдавать | снять | заменить | удалить | уже нет |")
+        say("| --- | --- | --- | --- | --- | --- | --- |")
         for kind, label in (("server", "серверы"), ("domain", "домены")):
             rows = [s for s in life if s.get("kind") == kind]
             if not rows:
                 continue
-            say("| %s | %d | %d | %d | %d | %d |" % (
+            say("| %s | %d | %d | %d | %d | %d | %d |" % (
                 label, len(rows),
                 sum(1 for s in rows if s.get("may_hand_out")),
                 sum(1 for s in rows if s.get("stop_handing_out")),
                 sum(1 for s in rows if s.get("needs_replacing")),
-                sum(1 for s in rows if s.get("may_delete"))))
+                sum(1 for s in rows if s.get("may_delete")),
+                sum(1 for s in rows if s.get("gone"))))
         say("")
         states = {}
         for s in life:

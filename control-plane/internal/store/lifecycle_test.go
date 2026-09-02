@@ -127,8 +127,23 @@ func TestTheFourAnswers(t *testing.T) {
 		{"quarantined", Standing{Lifecycle: "quarantined", Condition: Healthy, Since: long}, 0,
 			false, false, false, false},
 
+		// Gone. Nothing about it is work: it is not replaced, because it has
+		// already been dealt with, and it is not deleted, because there is
+		// nothing left to delete.
 		{"removed", Standing{Lifecycle: "removed", Condition: Unknown, Since: long}, 0,
-			false, false, false, true},
+			false, false, false, false},
+
+		// The case the fleet actually had and the table did not. A removed node
+		// keeps whatever condition it was last seen in, and nothing measures it
+		// again, so "faulty for longer than an hour" stays true for ever. Twelve
+		// of these sat under "needs replacing" and hid the number that meant
+		// something. The old test used Unknown here, where the wrong branch
+		// could not be reached.
+		{"removed while broken", Standing{Lifecycle: "removed", Condition: Faulty, Since: long}, 0,
+			false, false, false, false},
+
+		{"removed while blocked", Standing{Lifecycle: "removed", Condition: Blocked, Since: long}, 0,
+			false, false, false, false},
 	}
 
 	for _, c := range cases {
@@ -173,6 +188,16 @@ func TestHandingOutAndDeletingAreNeverBothTrue(t *testing.T) {
 
 				if st.MayHandOut && st.MayDelete {
 					t.Errorf("%s/%s: may be handed out and may be deleted at the same time", lifecycle, condition)
+				}
+
+				// Nothing that is gone is work. This is the invariant the
+				// fleet report broke: twelve removed servers counted as
+				// "needs replacing" because the verdict was computed from
+				// condition alone, and a removed node keeps the condition it
+				// was last seen in for ever.
+				if st.Gone && (st.NeedsReplacing || st.MayDelete || st.MayHandOut || st.StopHandingOut) {
+					t.Errorf("%s/%s: gone, yet still counted as something to do",
+						lifecycle, condition)
 				}
 				if st.MayHandOut && st.StopHandingOut {
 					t.Errorf("%s/%s: may be handed out and must stop being handed out", lifecycle, condition)
