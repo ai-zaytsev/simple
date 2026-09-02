@@ -98,8 +98,18 @@ func (s *Store) BeginPayment(
 	if err := json.Unmarshal(raw, &settings); err != nil {
 		return payment.Record{}, payment.ErrPurchaseUnavailable
 	}
+	// And the tax service, read in the same transaction and the same way. A
+	// purchase begun while receipts cannot be issued would be a sale we are
+	// not allowed to make, and the gap between checking and inserting is
+	// exactly where one would slip through.
+	var receiptsWorking bool
+	if err := tx.QueryRow(ctx,
+		`select ok from npd_availability where id = true for share`).Scan(&receiptsWorking); err != nil {
+		// No row means nothing has ever checked. That is not permission.
+		return payment.Record{}, payment.ErrPurchaseUnavailable
+	}
 	offer := purchase.Assess(now, created, tier, purchase.Settings{
-		Open: settings.Open, FreeDays: settings.FreeDays,
+		Open: settings.Open, ReceiptsWorking: receiptsWorking, FreeDays: settings.FreeDays,
 	})
 	if !offer.Available {
 		return payment.Record{}, payment.ErrPurchaseUnavailable
@@ -283,6 +293,13 @@ func (s *Store) ApplySucceeded(
 		    end
 		where id = $1`, record.AccountID, entitlementEndsAt); err != nil {
 		return payment.Record{}, false, fmt.Errorf("cannot activate VIP: %w", err)
+	}
+	// The receipt is owed from the same commit that granted VIP. Written here
+	// rather than after the webhook returns, because between those two points
+	// is where an obligation would be lost - and a lost obligation is money
+	// taken with no receipt behind it.
+	if err := enqueueReceipt(ctx, tx, paymentID); err != nil {
+		return payment.Record{}, false, err
 	}
 
 	updated, err := paymentByID(ctx, tx, paymentID)

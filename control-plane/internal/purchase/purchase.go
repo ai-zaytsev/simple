@@ -18,6 +18,15 @@ type Settings struct {
 	// stops new purchases and touches nothing that has already been bought.
 	Open bool
 
+	// Whether receipts can be issued at all.
+	//
+	// A separate reason from Open, and not folded into it, because the two are
+	// different facts with different owners: Open is a decision somebody made,
+	// this is a condition somebody found. Folding them together would let a
+	// morning check quietly overwrite the operator's own switch, and would
+	// leave nobody able to say which of the two closed the door.
+	ReceiptsWorking bool
+
 	// How long a new account waits on FREE before it may buy.
 	//
 	// Days rather than a timestamp per account, so that changing it moves
@@ -34,6 +43,10 @@ const (
 	// Sales are off. Ours, not theirs, and the wording a person sees has to
 	// reflect that: nothing they do brings this forward.
 	ReasonClosed = "closed"
+
+	// Receipts cannot be issued, so nothing may be sold. Selling without a
+	// receipt is not a degraded sale, it is one we are not allowed to make.
+	ReasonNoReceipts = "no_receipts"
 
 	// The free period has not finished. This one has a date, which is what
 	// makes it different from every other refusal here.
@@ -68,6 +81,11 @@ type Offer struct {
 // free period, on a service that is not selling, should not be shown a
 // countdown to a date on which nothing will happen.
 //
+// Receipts follow the switch, and are separate from it. The operator turning
+// sales off is a decision; the tax service being unreachable is a condition. A
+// person needs to know which one they are looking at, and an operator needs
+// their own switch not to be silently rewritten by a morning check.
+//
 // The wait comes last, because it is the only refusal that resolves by itself.
 func Assess(now, accountCreated time.Time, tier string, settings Settings) Offer {
 	if tier == "VIP" {
@@ -75,6 +93,9 @@ func Assess(now, accountCreated time.Time, tier string, settings Settings) Offer
 	}
 	if !settings.Open {
 		return Offer{Reason: ReasonClosed}
+	}
+	if !settings.ReceiptsWorking {
+		return Offer{Reason: ReasonNoReceipts}
 	}
 
 	// Zero and negative both mean no wait. Negative cannot be stored - the

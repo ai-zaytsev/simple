@@ -31,6 +31,11 @@ var namedOnPurpose = map[string]string{
 	// The addresses we test. The service refuses to store one that is not in
 	// our own node list, so this cannot become a list of places people go.
 	"endpoint_probes.target": "our own way in, being checked",
+
+	// Where the tax receipt is printed, at lknpd.nalog.ru. Built by us from
+	// the receipt identifier and our own ИНН - it names a document we issued,
+	// not a place any person went.
+	"npd_receipts.print_url": "our own tax receipt, printable",
 }
 
 // Words that must never name a column.

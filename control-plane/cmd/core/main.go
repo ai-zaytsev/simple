@@ -25,6 +25,8 @@ import (
 	"download.simplevpn/control-plane/internal/certs"
 	"download.simplevpn/control-plane/internal/dnsedit"
 	"download.simplevpn/control-plane/internal/mail"
+	"download.simplevpn/control-plane/internal/npd"
+	"download.simplevpn/control-plane/internal/npd/lknpd"
 	"download.simplevpn/control-plane/internal/payment"
 	"download.simplevpn/control-plane/internal/payment/yookassa"
 	"download.simplevpn/control-plane/internal/probe"
@@ -218,6 +220,97 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("payment service: %w", err)
 	}
 
+	// Moscow, because both the tax service and the working day are there. A
+	// fixed offset rather than a named zone: the container carries no tzdata,
+	// and Moscow has not observed daylight saving since 2014.
+	moscow := time.FixedZone("MSK", 3*60*60)
+
+	// Tax receipts.
+	//
+	// Built here, next to payments, because they are one obligation with two
+	// halves: money in, receipt out. The dependency on an unofficial API is
+	// the whole reason npd and lknpd are separate packages - what is likely to
+	// break is at the bottom, behind one interface, and nothing above it knows
+	// the difference between lknpd.nalog.ru and its replacement.
+	//
+	// A missing ИНН or password is fatal rather than a warning. Selling
+	// without being able to file is the one state this stage exists to
+	// prevent, and starting quietly in it would hide that.
+	npdChannels := []npd.Channel{}
+	if to := os.Getenv("CP_ALERT_EMAIL"); to != "" {
+		npdChannels = append(npdChannels, npd.Email{Sender: sender, To: to})
+	} else {
+		log.Warn("no CP_ALERT_EMAIL; failed tax receipts will only be logged")
+	}
+	receipts, err := npd.NewService(
+		st,
+		lknpd.New(nil, moscow),
+		npd.MailAlerter{Channels: npdChannels, Log: log},
+		npd.Credentials{
+			INN:      os.Getenv("CP_NPD_INN"),
+			Password: os.Getenv("CP_NPD_PASSWORD"),
+		},
+		os.Getenv("CP_NPD_SERVICE_NAME"),
+		log,
+	)
+	if err != nil {
+		return fmt.Errorf("CP_NPD_INN and CP_NPD_PASSWORD: %w", err)
+	}
+
+	// The queue, worked through often. This is not polling ФНС: it runs only
+	// when something is owed, and an outage stops the pass rather than
+	// repeating it.
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				settled, err := receipts.Drain(ctx, 50)
+				if err != nil {
+					log.Error("cannot work through the receipt queue", "error", err)
+				} else if settled > 0 {
+					log.Info("tax receipts settled", "payments", settled)
+				}
+			}
+		}
+	}()
+
+	// The one full check a day, at 06:00 Moscow, and the only thing that
+	// decides whether selling is allowed.
+	//
+	// A minute ticker rather than a daily timer: a daily timer restarts with
+	// the process, so a deploy at 05:59 would push the check to tomorrow. This
+	// asks "has 06:00 passed since the last check" of the database, which
+	// survives restarts and cannot fire twice.
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				availability, err := st.TaxAvailability(ctx)
+				if err != nil {
+					log.Error("cannot read tax availability", "error", err)
+					continue
+				}
+				if !dueForCheck(time.Now().In(moscow), availability.CheckedAt) {
+					continue
+				}
+				allowed, err := receipts.CheckAvailability(ctx)
+				if err != nil {
+					log.Error("cannot check the tax service", "error", err)
+					continue
+				}
+				log.Info("tax service checked", "sales_allowed", allowed)
+			}
+		}
+	}()
+
 	// A paid tier is access, not a label. Expiry therefore runs before the
 	// service answers and continuously afterwards; each pass also revokes
 	// credentials no longer allowed by FREE.
@@ -339,4 +432,21 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// dueForCheck says whether the once-a-day tax check is owed.
+//
+// The rule is "06:00 Moscow has passed and we have not checked since", not "it
+// is 06:00 now". A service that was restarting at six would otherwise skip the
+// day entirely, and the day it skips is the day nobody notices sales are open
+// with no way to file a receipt.
+func dueForCheck(now time.Time, lastCheck *time.Time) bool {
+	sixThisMorning := time.Date(now.Year(), now.Month(), now.Day(), 6, 0, 0, 0, now.Location())
+	if now.Before(sixThisMorning) {
+		return false
+	}
+	if lastCheck == nil {
+		return true
+	}
+	return lastCheck.In(now.Location()).Before(sixThisMorning)
 }

@@ -1,0 +1,172 @@
+name: Tax Receipts
+
+# The manual way out when a receipt could not be issued automatically.
+#
+# Two things bring somebody here, and both arrive by email:
+#
+#   - a receipt failed, and Business Owner issued it by hand in «Мой налог»;
+#   - a receipt was asked for and the answer was lost, so nobody knows whether
+#     one exists. Only a person looking at the cabinet can settle that, and
+#     until they do the queue stays blocked - and a blocked queue keeps selling
+#     closed, on purpose.
+#
+# Nothing here creates or cancels a receipt at ФНС. It records what a person
+# found, so the service stops guessing.
+#
+# The payment is named in full here, unlike the other operational workflows: it
+# is copied from the alert email, and a prefix would risk settling the wrong
+# payment. Nothing else is printed - no receipt identifier, no address.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Read what is owed, or record a receipt issued by hand.
+        required: true
+        default: show
+        type: choice
+        options:
+          - show
+          - settled
+          - no_receipt
+      payment_id:
+        description: >
+          The payment, in full. It comes from the alert email as Payment ID.
+          Ignored when showing.
+        required: false
+        default: ""
+        type: string
+      receipt_uuid:
+        description: >
+          The receipt identifier from «Мой налог». Required for "settled",
+          ignored otherwise.
+        required: false
+        default: ""
+        type: string
+      amount_minor:
+        description: >
+          What that receipt is for, in kopecks. Leave 0 to keep the amount the
+          failed attempt was going to use.
+        required: false
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  receipts:
+    name: Tax Receipts
+    runs-on: ubuntu-latest
+
+    steps:
+      # The step that prints lives in the repository. Without this the receipt
+      # is recorded, the service answers, and the run fails on the line that
+      # would have said so - a red run with the change already applied, which
+      # is the worst shape a failure can have.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Refuse an incomplete request
+        env:
+          ACTION: ${{ inputs.action }}
+          PAYMENT_ID: ${{ inputs.payment_id }}
+          RECEIPT_UUID: ${{ inputs.receipt_uuid }}
+          AMOUNT: ${{ inputs.amount_minor }}
+        run: |
+          set -euo pipefail
+          [ "${ACTION}" = "show" ] && exit 0
+
+          printf '%s' "${PAYMENT_ID}" | grep -qiE '^[0-9a-f-]{36}$' || {
+            echo "payment_id must be the full identifier from the alert email."
+            exit 1
+          }
+          case "${AMOUNT}" in
+            ''|*[!0-9]*) echo "The amount must be a whole number of kopecks."; exit 1 ;;
+          esac
+
+          if [ "${ACTION}" = "settled" ]; then
+            # A receipt identifier is a UUID. Refusing a malformed one here
+            # rather than at ФНС keeps a typo from being recorded as a receipt
+            # that does not exist - which would look settled and would not be.
+            printf '%s' "${RECEIPT_UUID}" | grep -qiE '^[0-9a-f-]{36}$' || {
+              echo "receipt_uuid must be the identifier shown in «Мой налог»."
+              exit 1
+            }
+          fi
+
+      - name: Reach the host
+        env:
+          DEPLOY_KEY: ${{ secrets.CP_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_KEY}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" true
+
+      - name: Record it
+        if: inputs.action != 'show'
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          ACTION: ${{ inputs.action }}
+          PAYMENT_ID: ${{ inputs.payment_id }}
+          RECEIPT_UUID: ${{ inputs.receipt_uuid }}
+          AMOUNT: ${{ inputs.amount_minor }}
+        run: |
+          set -euo pipefail
+
+          receipt=""
+          [ "${ACTION}" = "settled" ] && receipt="${RECEIPT_UUID}"
+
+          body=$(printf '{"payment_id": "%s", "receipt_uuid": "%s", "amount_minor": %s}' \
+            "${PAYMENT_ID}" "${receipt}" "${AMOUNT}")
+
+          # Token and request both on stdin: an argument list is visible in the
+          # process table of the host it runs on.
+          printf '%s\n%s\n' "${ADMIN_TOKEN}" "${body}" \
+            | ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              "read -r t; read -r b; printf '%s' \"\${b}\" | curl -sS --max-time 20 \
+                 -o /tmp/settled.json -w '%{http_code}' \
+                 -H \"authorization: Bearer \${t}\" \
+                 -H 'content-type: application/json' \
+                 --data-binary @- \
+                 http://127.0.0.1:8080/v1/admin/receipts/settle; \
+               echo; cat /tmp/settled.json; rm -f /tmp/settled.json" > /tmp/answer.txt
+
+          code=$(head -1 /tmp/answer.txt)
+          tail -n +2 /tmp/answer.txt > /tmp/settled.json
+
+          if [ "${code}" != "200" ]; then
+            echo "Not recorded. HTTP ${code}."
+            cat /tmp/settled.json
+            exit 1
+          fi
+
+          if [ "${ACTION}" = "settled" ]; then
+            echo "Recorded: this payment has a receipt issued by hand."
+          else
+            echo "Recorded: no receipt exists. The queue will try again."
+          fi
+
+      - name: Say what is owed now
+        env:
+          HOST: ${{ secrets.CP_DEPLOY_HOST }}
+          ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${ADMIN_TOKEN}" \
+            | ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" \
+              "read -r t; curl -sS --max-time 20 \
+                 -H \"authorization: Bearer \${t}\" \
+                 http://127.0.0.1:8080/v1/admin/overview" > /tmp/overview.json
+
+          python3 .github/scripts/say_receipts.py /tmp/overview.json \
+            | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: Remove the answer
+        if: always()
+        run: rm -f /tmp/settled.json /tmp/overview.json /tmp/answer.txt

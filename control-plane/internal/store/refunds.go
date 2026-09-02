@@ -389,6 +389,11 @@ func (s *Store) ApplyRefundSucceeded(
 		}
 	}
 
+	// The tax position changed with the money. Same commit, same reason as on
+	// the payment side: an obligation recorded anywhere else can be lost.
+	if err := enqueueReceipt(ctx, tx, uuid.MustParse(expected.PaymentID)); err != nil {
+		return payment.RefundRecord{}, false, err
+	}
 	updated, err := refundByID(ctx, tx, refundID, false)
 	if err != nil {
 		return payment.RefundRecord{}, false, err
