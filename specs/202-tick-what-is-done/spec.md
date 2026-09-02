@@ -1,6 +1,6 @@
 # Spec: Что именно говорят разделы
 
-- Feature ID: `202-what-free-and-vip-actually-say`
+- Feature ID: `202-tick-what-is-done`
 - Feature Branch: `feature/202-tick-what-is-done`
 - Status: `local-ready`
 
