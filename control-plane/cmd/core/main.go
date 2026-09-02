@@ -247,6 +247,16 @@ func run(log *slog.Logger) error {
 		lknpd.New(nil, moscow),
 		npd.MailAlerter{Channels: npdChannels, Log: log},
 		npd.Credentials{
+			// The primary way in. An account signed in through Госуслуги has
+			// no lknpd password at all, so a pair is a complete answer on its
+			// own - and the pair travels together, because the token belongs
+			// to the device it was issued for.
+			RefreshToken: os.Getenv("CP_NPD_REFRESH_TOKEN"),
+			DeviceID:     os.Getenv("CP_NPD_DEVICE_ID"),
+
+			// The older way, kept and unchanged. It catches a revoked pair,
+			// and it is still the whole answer for an account that has a
+			// password.
 			INN:      os.Getenv("CP_NPD_INN"),
 			Password: os.Getenv("CP_NPD_PASSWORD"),
 		},
@@ -254,7 +264,9 @@ func run(log *slog.Logger) error {
 		log,
 	)
 	if err != nil {
-		return fmt.Errorf("CP_NPD_INN and CP_NPD_PASSWORD: %w", err)
+		return fmt.Errorf(
+			"CP_NPD_REFRESH_TOKEN with CP_NPD_DEVICE_ID, or CP_NPD_INN with CP_NPD_PASSWORD: %w",
+			err)
 	}
 
 	// The queue, worked through often. This is not polling ФНС: it runs only

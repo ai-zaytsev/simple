@@ -28,6 +28,7 @@ type fakeRepo struct {
 	failedOperations  []string
 	failureAlerted    []bool
 	pendingAfterDrain int
+	askedDeviceID     string
 }
 
 func newRepo() *fakeRepo {
@@ -37,7 +38,15 @@ func newRepo() *fakeRepo {
 	}
 }
 
-func (r *fakeRepo) LoadSession(context.Context) (lknpd.Session, error) { return r.session, nil }
+func (r *fakeRepo) LoadSession(_ context.Context, preferredDeviceID string) (lknpd.Session, error) {
+	r.askedDeviceID = preferredDeviceID
+	if preferredDeviceID != "" && r.session.DeviceID != preferredDeviceID {
+		// The store drops tokens that belonged to another device; the fake
+		// does the same, so the tests exercise the real shape.
+		return lknpd.Session{DeviceID: preferredDeviceID, INN: r.session.INN}, nil
+	}
+	return r.session, nil
+}
 func (r *fakeRepo) SaveSession(_ context.Context, s lknpd.Session) error {
 	r.session = s
 	r.savedTimes++
@@ -81,14 +90,19 @@ func (r *fakeRepo) CancelReceipt(_ context.Context, rowID string, _ time.Time) e
 }
 
 type fakeAdapter struct {
-	aliveErr   error
-	createErr  error
-	cancelErr  error
-	created    []int64
-	cancelled  []string
-	refreshes  int
-	logins     int
-	refreshErr error
+	aliveErr     error
+	createErr    error
+	cancelErr    error
+	created      []int64
+	cancelled    []string
+	refreshes    int
+	logins       int
+	refreshErr   error
+	profileErr   error
+	profileCalls int
+	refreshSeen  []string
+	rotateTo     string
+	refuseToken  string
 
 	// unauthorizedUntil makes the first N calls answer with a dead session, so
 	// that renewal can be exercised.
@@ -97,16 +111,37 @@ type fakeAdapter struct {
 }
 
 func (a *fakeAdapter) Alive(context.Context, lknpd.Session) error { return a.aliveErr }
+func (a *fakeAdapter) Profile(_ context.Context, s lknpd.Session) (string, error) {
+	a.profileCalls++
+	if a.profileErr != nil {
+		return "", a.profileErr
+	}
+	if s.INN != "" {
+		return s.INN, nil
+	}
+	return "123456789012", nil
+}
 func (a *fakeAdapter) Login(context.Context, string, string, string) (lknpd.Session, error) {
 	a.logins++
 	return lknpd.Session{AccessToken: "fresh", DeviceID: "device", INN: "1"}, nil
 }
 func (a *fakeAdapter) Refresh(_ context.Context, s lknpd.Session) (lknpd.Session, error) {
 	a.refreshes++
+	a.refreshSeen = append(a.refreshSeen, s.RefreshToken+"@"+s.DeviceID)
 	if a.refreshErr != nil {
 		return lknpd.Session{}, a.refreshErr
 	}
-	return lknpd.Session{AccessToken: "renewed", DeviceID: s.DeviceID, INN: s.INN}, nil
+	if a.refuseToken != "" && s.RefreshToken == a.refuseToken {
+		return lknpd.Session{}, fmt.Errorf("%w: отозван", lknpd.ErrUnauthorized)
+	}
+	renewed := lknpd.Session{
+		AccessToken: "renewed", DeviceID: s.DeviceID, INN: s.INN,
+		RefreshToken: s.RefreshToken,
+	}
+	if a.rotateTo != "" {
+		renewed.RefreshToken = a.rotateTo
+	}
+	return renewed, nil
 }
 func (a *fakeAdapter) CreateReceipt(
 	_ context.Context, _ lknpd.Session, _ string, amountMinor int64, _ time.Time,

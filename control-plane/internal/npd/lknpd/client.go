@@ -179,6 +179,21 @@ func (c *Client) Alive(ctx context.Context, s Session) error {
 	return nil
 }
 
+// Profile answers with the taxpayer identifier.
+//
+// The refresh response carries no profile, so a deployment signed in with only
+// a token pair does not know its own ИНН - and the printable address of every
+// receipt is built from it. This is the one place it can be asked.
+func (c *Client) Profile(ctx context.Context, s Session) (string, error) {
+	var out struct {
+		INN string `json:"inn"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/user", s.AccessToken, nil, &out); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out.INN), nil
+}
+
 // CreateReceipt registers income and returns the receipt id and its printable
 // address.
 //

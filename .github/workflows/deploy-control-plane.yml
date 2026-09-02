@@ -122,6 +122,11 @@ jobs:
           # «Мой налог». Without these Core refuses to start, deliberately:
           # selling with no way to issue a receipt is the one state this is
           # here to prevent, and starting quietly in it would hide that.
+          # The primary pair. An account signed in through Госуслуги has no
+          # lknpd password at all, so this is the whole way in for one.
+          NPD_REFRESH_TOKEN: ${{ secrets.NPD_REFRESH_TOKEN }}
+          NPD_DEVICE_ID: ${{ secrets.NPD_DEVICE_ID }}
+          # The older way, kept. Either pair will do; neither will not.
           NPD_INN: ${{ secrets.NPD_INN }}
           NPD_PASSWORD: ${{ secrets.NPD_PASSWORD }}
           NPD_SERVICE_NAME: ${{ vars.NPD_SERVICE_NAME }}
@@ -129,8 +134,25 @@ jobs:
           set -euo pipefail
           [ -n "${YOOKASSA_SHOP_ID}" ] || { echo "YOOKASSA_PROD_SHOP_ID is not configured."; exit 1; }
           [ -n "${YOOKASSA_SECRET_KEY}" ] || { echo "YOOKASSA_PROD_SECRET_KEY is not configured."; exit 1; }
-          [ -n "${NPD_INN}" ] || { echo "NPD_INN is not configured."; exit 1; }
-          [ -n "${NPD_PASSWORD}" ] || { echo "NPD_PASSWORD is not configured."; exit 1; }
+          # Either way in will do; neither will not. Refused here rather than
+          # at the first purchase, because a service that cannot issue a
+          # receipt must not discover that after taking money.
+          #
+          # A half-configured pair is refused too: a refresh token without its
+          # device identifier is not a way in, it is a token that will be
+          # rejected and read as a revoked one.
+          if [ -n "${NPD_REFRESH_TOKEN}" ] && [ -z "${NPD_DEVICE_ID}" ]; then
+            echo "NPD_REFRESH_TOKEN is set but NPD_DEVICE_ID is not."
+            echo "They are issued together and only work together."
+            exit 1
+          fi
+          if [ -z "${NPD_REFRESH_TOKEN}" ]; then
+            [ -n "${NPD_INN}" ] || {
+              echo "Neither NPD_REFRESH_TOKEN nor NPD_INN is configured."
+              exit 1
+            }
+            [ -n "${NPD_PASSWORD}" ] || { echo "NPD_PASSWORD is not configured."; exit 1; }
+          fi
           if [ "${SLOT}" = "a" ]; then
             seed="${SEED_A}"; key_id="cp-2026-08-a"
           else
@@ -163,6 +185,8 @@ jobs:
           CP_YOOKASSA_SHOP_ID=${YOOKASSA_SHOP_ID}
           CP_YOOKASSA_SECRET_KEY=${YOOKASSA_SECRET_KEY}
           CP_PAYMENT_RETURN_URL=https://simple-syncbridge.download/v1/payments/return
+          CP_NPD_REFRESH_TOKEN=${NPD_REFRESH_TOKEN}
+          CP_NPD_DEVICE_ID=${NPD_DEVICE_ID}
           CP_NPD_INN=${NPD_INN}
           CP_NPD_PASSWORD=${NPD_PASSWORD}
           CP_NPD_SERVICE_NAME=${NPD_SERVICE_NAME}
