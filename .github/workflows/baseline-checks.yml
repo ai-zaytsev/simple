@@ -338,6 +338,12 @@ jobs:
         # as missing from the provider - a check that lies, not one that fails.
         run: bash .github/scripts/check-one-payment-store.sh
 
+      - name: The panel's hourly chart names its window
+        shell: bash
+        # It was headed "Сутки по часам" over a week's worth of peaks, so the
+        # page showed a daily peak of 60 above bars reaching 258.
+        run: bash .github/scripts/check-panel-labels-its-window.sh
+
       - name: An address published to a step output must be masked first
         shell: bash
         run: bash .github/scripts/check-masked-addresses.sh
