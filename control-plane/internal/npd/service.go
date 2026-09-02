@@ -20,6 +20,11 @@ type Adapter interface {
 	Alive(ctx context.Context, s lknpd.Session) error
 	Login(ctx context.Context, inn, password, deviceID string) (lknpd.Session, error)
 	Refresh(ctx context.Context, s lknpd.Session) (lknpd.Session, error)
+
+	// Profile answers with the taxpayer identifier. Needed because a session
+	// built from a refresh token alone does not carry one, and every receipt
+	// address is built from it.
+	Profile(ctx context.Context, s lknpd.Session) (string, error)
 	CreateReceipt(ctx context.Context, s lknpd.Session, name string, amountMinor int64, at time.Time) (string, string, error)
 	CancelReceipt(ctx context.Context, s lknpd.Session, receiptUUID string, at time.Time) error
 }
@@ -53,7 +58,11 @@ type Settlement struct {
 }
 
 type Repository interface {
-	LoadSession(ctx context.Context) (lknpd.Session, error)
+	// preferredDeviceID is the identifier that came with the configured refresh
+	// token. It wins over anything stored, and over generating one: a refresh
+	// token belongs to the device it was issued for, and pairing it with any
+	// other identifier makes it useless.
+	LoadSession(ctx context.Context, preferredDeviceID string) (lknpd.Session, error)
 	SaveSession(ctx context.Context, s lknpd.Session) error
 
 	SetAvailability(ctx context.Context, ok bool, detail string, at time.Time) error
@@ -76,11 +85,29 @@ type Alerter interface {
 	TaxServiceDown(ctx context.Context, reason string, queued int) error
 }
 
-// Credentials are what the adapter logs in with. Never logged, never printed,
-// and read from the environment rather than stored.
+// Credentials are the ways in. Never logged, never printed, read from the
+// environment rather than kept.
+//
+// Two ways exist and each is optional on its own. The token pair is the
+// primary one: it is what an account signed in through Госуслуги has, where no
+// password to lknpd exists at all. The ИНН and password stay because they were
+// here first and still work, and because a pair can be revoked while a
+// password is not.
 type Credentials struct {
+	// The token pair, issued together. They travel together too: a refresh
+	// token belongs to the device it was issued for, and pairing it with any
+	// other identifier makes it useless.
+	RefreshToken string
+	DeviceID     string
+
+	// The older way, untouched.
 	INN      string
 	Password string
+}
+
+// usable says whether any way in is configured at all.
+func (c Credentials) usable() bool {
+	return c.RefreshToken != "" || (c.INN != "" && c.Password != "")
 }
 
 type Service struct {
@@ -102,8 +129,12 @@ func NewService(
 	if repo == nil || adapter == nil {
 		return nil, errors.New("npd: нужны хранилище и адаптер")
 	}
-	if creds.INN == "" || creds.Password == "" {
-		return nil, errors.New("npd: нужны ИНН и пароль")
+	if !creds.usable() {
+		// Either way in will do; neither will not. Refusing here rather than at
+		// the first payment, because a service that cannot issue receipts must
+		// not be one that discovers it after taking money.
+		return nil, errors.New(
+			"npd: нужен либо refresh token, либо ИНН с паролем")
 	}
 	if serviceName == "" {
 		serviceName = "Доступ к сервису Simple VPN"
@@ -317,33 +348,100 @@ func (s *Service) recordFailure(ctx context.Context, operation Operation, cause 
 	}
 }
 
-// session hands back a usable session, renewing or logging in as needed.
+// session hands back a usable session, renewing or signing in as needed.
+//
+// Two ways in exist and the token pair is the primary one. Nothing below this
+// function knows which was used: creating, cancelling and reconciling receipts
+// are the same work either way, and that is the point of the split.
 func (s *Service) session(ctx context.Context) (lknpd.Session, error) {
-	stored, err := s.repo.LoadSession(ctx)
+	stored, err := s.repo.LoadSession(ctx, s.creds.DeviceID)
 	if err != nil {
 		return lknpd.Session{}, err
 	}
 	if stored.AccessToken != "" && !s.expired(stored) {
-		return stored, nil
+		return s.withINN(ctx, stored)
 	}
-	return s.renew(ctx, stored)
+	renewed, err := s.renew(ctx, stored)
+	if err != nil {
+		return lknpd.Session{}, err
+	}
+	return s.withINN(ctx, renewed)
 }
 
+// withINN fills in the taxpayer identifier when only a token pair was
+// configured.
+//
+// The refresh response carries no profile, so a deployment that has never
+// signed in with a password does not know its own ИНН - and the printable
+// address of every receipt is built from it. Asked once, then stored.
+func (s *Service) withINN(ctx context.Context, session lknpd.Session) (lknpd.Session, error) {
+	if session.INN != "" {
+		return session, nil
+	}
+	inn, err := s.adapter.Profile(ctx, session)
+	if err != nil {
+		return lknpd.Session{}, err
+	}
+	if inn == "" {
+		return lknpd.Session{}, errors.New("npd: ФНС не назвала ИНН")
+	}
+	session.INN = inn
+	return session, s.repo.SaveSession(ctx, session)
+}
+
+// renew gets a working session, preferring the token pair.
+//
+// The order is the design. A stored refresh token comes first because ФНС
+// rotates them: the value in the environment is a seed, and after the first
+// renewal the current one is the stored one. Falling back to the configured
+// token when the stored one is refused is what makes a replaced pair take
+// effect without a database edit. The password comes last and only if it is
+// configured at all, which is the requirement that the older way keeps working
+// and stays untouched.
 func (s *Service) renew(ctx context.Context, stored lknpd.Session) (lknpd.Session, error) {
+	tried := ""
+
 	if stored.RefreshToken != "" {
+		tried = stored.RefreshToken
 		renewed, err := s.adapter.Refresh(ctx, stored)
 		if err == nil {
 			return renewed, s.repo.SaveSession(ctx, renewed)
 		}
 		if errors.Is(err, lknpd.ErrServiceUnavailable) {
-			// Not a credentials problem. Logging in with a password now would
-			// be one more request at a service already unwell.
+			// Not a credentials problem. Trying another way in now would be
+			// one more request at a service that is already unwell, and
+			// repeated sign-ins to an unofficial API earn a CAPTCHA.
 			return lknpd.Session{}, err
 		}
-		s.log.Warn("обновить сессию ФНС не удалось, вход по паролю")
+		s.log.Warn("сохранённый refresh token ФНС не принят")
 	}
 
-	deviceID := stored.DeviceID
+	// The configured pair. Skipped when it is the one that just failed.
+	if s.creds.RefreshToken != "" && s.creds.RefreshToken != tried {
+		seed := lknpd.Session{
+			INN:          stored.INN,
+			DeviceID:     s.deviceID(stored),
+			RefreshToken: s.creds.RefreshToken,
+		}
+		renewed, err := s.adapter.Refresh(ctx, seed)
+		if err == nil {
+			return renewed, s.repo.SaveSession(ctx, renewed)
+		}
+		if errors.Is(err, lknpd.ErrServiceUnavailable) {
+			return lknpd.Session{}, err
+		}
+		s.log.Warn("настроенный refresh token ФНС не принят")
+	}
+
+	if s.creds.INN == "" || s.creds.Password == "" {
+		// No password configured. Saying so plainly, because the alternative
+		// is a generic authorisation error that sends somebody looking at the
+		// tax service for a problem that is in our own configuration.
+		return lknpd.Session{}, fmt.Errorf(
+			"%w: refresh token не принят, а вход по паролю не настроен", lknpd.ErrUnauthorized)
+	}
+
+	deviceID := s.deviceID(stored)
 	if deviceID == "" {
 		return lknpd.Session{}, errors.New("npd: нет идентификатора устройства для входа")
 	}
@@ -352,6 +450,16 @@ func (s *Service) renew(ctx context.Context, stored lknpd.Session) (lknpd.Sessio
 		return lknpd.Session{}, err
 	}
 	return fresh, s.repo.SaveSession(ctx, fresh)
+}
+
+// deviceID prefers the configured one. A refresh token is issued for a device
+// and is worthless beside any other identifier, so a configured pair travels
+// together and a generated identifier is never substituted for it.
+func (s *Service) deviceID(stored lknpd.Session) string {
+	if s.creds.DeviceID != "" {
+		return s.creds.DeviceID
+	}
+	return stored.DeviceID
 }
 
 func (s *Service) expired(session lknpd.Session) bool {

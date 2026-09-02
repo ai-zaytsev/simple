@@ -34,49 +34,6 @@ func enqueueReceipt(ctx context.Context, tx pgx.Tx, paymentID uuid.UUID) error {
 	return nil
 }
 
-// LoadSession reads the stored lknpd session. A missing row is not an error:
-// it means we have never logged in.
-func (s *Store) LoadSession(ctx context.Context) (lknpd.Session, error) {
-	var (
-		session   lknpd.Session
-		inn       *string
-		access    *string
-		refresh   *string
-		expiresAt *time.Time
-	)
-	err := s.pool.QueryRow(ctx, `
-		select inn, device_id, access_token, refresh_token, expires_at
-		from npd_session where id = true`).
-		Scan(&inn, &session.DeviceID, &access, &refresh, &expiresAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// The device identifier has to be stable across restarts: it is what
-		// binds a refresh token to us. Made once and kept.
-		deviceID := uuid.NewString()
-		if _, err := s.pool.Exec(ctx, `
-			insert into npd_session (id, device_id) values (true, $1)
-			on conflict (id) do nothing`, deviceID); err != nil {
-			return lknpd.Session{}, fmt.Errorf("cannot start an НПД session: %w", err)
-		}
-		return lknpd.Session{DeviceID: deviceID}, nil
-	}
-	if err != nil {
-		return lknpd.Session{}, fmt.Errorf("cannot read the НПД session: %w", err)
-	}
-	if inn != nil {
-		session.INN = *inn
-	}
-	if access != nil {
-		session.AccessToken = *access
-	}
-	if refresh != nil {
-		session.RefreshToken = *refresh
-	}
-	if expiresAt != nil {
-		session.ExpiresAt = *expiresAt
-	}
-	return session, nil
-}
-
 func (s *Store) SaveSession(ctx context.Context, session lknpd.Session) error {
 	var expires any
 	if !session.ExpiresAt.IsZero() {
