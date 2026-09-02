@@ -346,7 +346,7 @@ def main(path):
     if tiers:
         say("### Что даёт тариф")
         say("")
-        say("| тариф | аккаунтов | устройств | внешних | скорость |")
+        say("| тариф | аккаунтов | устройств | внешних | скорость в туннеле |")
         say("| --- | --- | --- | --- | --- |")
         for t in tiers:
             say("| %s | %s | %s | %s | %s |" % (
@@ -355,6 +355,14 @@ def main(path):
                 limit(t.get("max_devices")),
                 limit(t.get("max_external")),
                 limit(t.get("speed_mbit"), " Мбит/с")))
+        say("")
+        # "в туннеле" and not just "скорость". The shaper marks packets on the
+        # node, so traffic that never reaches the node is not slowed at all - a
+        # speed test against a Russian server shows the home connection while a
+        # foreign one shows the limit. Both numbers are right and they measure
+        # different things, which cost an evening to work out from a bug report.
+        say("Ограничение применяется на ноде, поэтому прямой трафик "
+            "(российские адреса при `russia_direct`) под него не попадает.")
         say("")
 
     print("\n".join(out))
