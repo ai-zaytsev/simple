@@ -352,6 +352,13 @@ jobs:
         # as missing from the provider - a check that lies, not one that fails.
         run: bash .github/scripts/check-one-payment-store.sh
 
+      - name: The tunnel is reachable only through TLS
+        shell: bash
+        # VLESS has no encryption of its own. A node that binds the engine
+        # beyond the loopback, or carries anything on port 80, serves the same
+        # tunnel readably - a failure with no symptom.
+        run: bash .github/scripts/check-tunnel-is-encrypted.sh
+
       - name: The panel's hourly chart names its window
         shell: bash
         # It was headed "Сутки по часам" over a week's worth of peaks, so the
