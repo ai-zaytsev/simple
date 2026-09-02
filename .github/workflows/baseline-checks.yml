@@ -359,6 +359,12 @@ jobs:
         # tunnel readably - a failure with no symptom.
         run: bash .github/scripts/check-tunnel-is-encrypted.sh
 
+      - name: The site states the limits the product enforces
+        shell: bash
+        # Two places hold one fact and two places drift. Here the drift has a
+        # customer on the other end: somebody chose the product by reading it.
+        run: bash .github/scripts/check-site-says-the-real-limits.sh
+
       - name: The panel's hourly chart names its window
         shell: bash
         # It was headed "Сутки по часам" over a week's worth of peaks, so the
