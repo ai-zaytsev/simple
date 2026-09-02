@@ -176,6 +176,7 @@ func (s *Server) Routes() http.Handler {
 	// Whether VIP may be bought at all, and how long a new account waits.
 	// An empty body reads; a body with both fields replaces them.
 	mux.HandleFunc("POST /v1/admin/purchases", s.adminPurchases)
+	mux.HandleFunc("POST /v1/admin/receipts/settle", s.adminReceipts)
 	mux.HandleFunc("GET /v1/admin/updates", s.adminUpdates)
 	mux.HandleFunc("POST /v1/admin/updates/publish", s.adminPublishUpdate)
 	mux.HandleFunc("POST /v1/admin/updates/minimum", s.adminMinimumUpdate)

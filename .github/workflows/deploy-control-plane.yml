@@ -119,10 +119,18 @@ jobs:
           # add - nothing would read it.
           YOOKASSA_SHOP_ID: ${{ secrets.YOOKASSA_PROD_SHOP_ID }}
           YOOKASSA_SECRET_KEY: ${{ secrets.YOOKASSA_PROD_SECRET_KEY }}
+          # «Мой налог». Without these Core refuses to start, deliberately:
+          # selling with no way to issue a receipt is the one state this is
+          # here to prevent, and starting quietly in it would hide that.
+          NPD_INN: ${{ secrets.NPD_INN }}
+          NPD_PASSWORD: ${{ secrets.NPD_PASSWORD }}
+          NPD_SERVICE_NAME: ${{ vars.NPD_SERVICE_NAME }}
         run: |
           set -euo pipefail
           [ -n "${YOOKASSA_SHOP_ID}" ] || { echo "YOOKASSA_PROD_SHOP_ID is not configured."; exit 1; }
           [ -n "${YOOKASSA_SECRET_KEY}" ] || { echo "YOOKASSA_PROD_SECRET_KEY is not configured."; exit 1; }
+          [ -n "${NPD_INN}" ] || { echo "NPD_INN is not configured."; exit 1; }
+          [ -n "${NPD_PASSWORD}" ] || { echo "NPD_PASSWORD is not configured."; exit 1; }
           if [ "${SLOT}" = "a" ]; then
             seed="${SEED_A}"; key_id="cp-2026-08-a"
           else
@@ -155,6 +163,9 @@ jobs:
           CP_YOOKASSA_SHOP_ID=${YOOKASSA_SHOP_ID}
           CP_YOOKASSA_SECRET_KEY=${YOOKASSA_SECRET_KEY}
           CP_PAYMENT_RETURN_URL=https://simple-syncbridge.download/v1/payments/return
+          CP_NPD_INN=${NPD_INN}
+          CP_NPD_PASSWORD=${NPD_PASSWORD}
+          CP_NPD_SERVICE_NAME=${NPD_SERVICE_NAME}
           ENVFILE
 
           ssh -i ~/.ssh/deploy -o BatchMode=yes "root@${HOST}" 'bash -s' <<'REMOTE'

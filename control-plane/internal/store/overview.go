@@ -55,6 +55,9 @@ type Overview struct {
 	// switched back is invisible from every other angle, and the symptom is
 	// an absence of revenue that nobody attributes to a setting.
 	Purchases PurchaseSettings `json:"purchases"`
+	// Whether receipts can be issued, and how many payments are still owed
+	// one. Not a setting; a condition, and the panel has to be able to say so.
+	Tax TaxAvailability `json:"tax"`
 
 	// The stop line and the offered version, read from the same row that
 	// config and plan issuance use. A deployment is not accepted by reading a
@@ -240,6 +243,16 @@ func (s *Store) Overview(ctx context.Context, now time.Time) (Overview, error) {
 		Open:     state.Purchases.Open,
 		FreeDays: state.Purchases.FreeDays,
 	}
+
+	// Whether a receipt can be issued is half of whether a sale may happen, so
+	// the panel has to show it beside the switch. Read separately and not
+	// folded into Open: a panel that showed one number for two facts would
+	// leave nobody able to say which of them closed the door.
+	tax, err := s.TaxAvailability(ctx)
+	if err != nil {
+		return o, err
+	}
+	o.Tax = tax
 	o.Updates = state.AppUpdates
 	return o, nil
 }

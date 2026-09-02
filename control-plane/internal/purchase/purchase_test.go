@@ -7,9 +7,9 @@ import (
 
 var (
 	now     = time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
-	open    = Settings{Open: true, FreeDays: 7}
-	shut    = Settings{Open: false, FreeDays: 7}
-	instant = Settings{Open: true, FreeDays: 0}
+	open    = Settings{Open: true, ReceiptsWorking: true, FreeDays: 7}
+	shut    = Settings{Open: false, ReceiptsWorking: true, FreeDays: 7}
+	instant = Settings{Open: true, ReceiptsWorking: true, FreeDays: 0}
 )
 
 // Every combination of the three facts, written out.
@@ -141,13 +141,13 @@ func TestChangingTheWaitMovesTheWaiting(t *testing.T) {
 	day := 24 * time.Hour
 	created := now.Add(-3 * day)
 
-	if Assess(now, created, "FREE", Settings{Open: true, FreeDays: 7}).Available {
+	if Assess(now, created, "FREE", Settings{Open: true, ReceiptsWorking: true, FreeDays: 7}).Available {
 		t.Fatal("a three-day-old account may buy under a seven-day wait")
 	}
-	if !Assess(now, created, "FREE", Settings{Open: true, FreeDays: 2}).Available {
+	if !Assess(now, created, "FREE", Settings{Open: true, ReceiptsWorking: true, FreeDays: 2}).Available {
 		t.Error("shortening the wait did not reach an account already waiting")
 	}
-	if Assess(now, created, "FREE", Settings{Open: true, FreeDays: 14}).Available {
+	if Assess(now, created, "FREE", Settings{Open: true, ReceiptsWorking: true, FreeDays: 14}).Available {
 		t.Error("lengthening the wait did not reach an account already waiting")
 	}
 }
@@ -172,12 +172,60 @@ func TestPayingCustomersDoNotNoticeTheSwitch(t *testing.T) {
 // one does not compute a date in the past.
 func TestNoWaitMeansNoWait(t *testing.T) {
 	for _, days := range []int{0, -1, -365} {
-		got := Assess(now, now, "FREE", Settings{Open: true, FreeDays: days})
+		got := Assess(now, now, "FREE", Settings{Open: true, ReceiptsWorking: true, FreeDays: days})
 		if !got.Available {
 			t.Errorf("FreeDays=%d refuses an account: %q", days, got.Reason)
 		}
 		if got.AvailableAt != nil {
 			t.Errorf("FreeDays=%d invents a date: %v", days, got.AvailableAt)
 		}
+	}
+}
+
+func TestReceiptsAreTheirOwnReason(t *testing.T) {
+	now := time.Now()
+	old := now.AddDate(0, -1, 0)
+
+	// Sales are on, the wait is over, but nothing can be filed with the tax
+	// service. Selling here is not a degraded sale - it is one we are not
+	// allowed to make.
+	offer := Assess(now, old, "FREE", Settings{Open: true, ReceiptsWorking: false, FreeDays: 7})
+	if offer.Available {
+		t.Fatal("nothing may be sold while receipts cannot be issued")
+	}
+	if offer.Reason != ReasonNoReceipts {
+		t.Fatalf("reason was %q; an operator has to see which of the two closed the door", offer.Reason)
+	}
+	if offer.AvailableAt != nil {
+		t.Fatal("nobody has promised a date for this")
+	}
+}
+
+func TestAPayingCustomerIsUntouchedByTheTaxService(t *testing.T) {
+	// The stage is explicit: existing VIP keeps working. Whatever is wrong
+	// with НПД is ours, and it must never reach somebody who has paid.
+	offer := Assess(time.Now(), time.Now().AddDate(0, -1, 0), "VIP",
+		Settings{Open: false, ReceiptsWorking: false, FreeDays: 7})
+	if offer.Reason != ReasonAlreadyVIP {
+		t.Fatalf("a paying customer was told %q", offer.Reason)
+	}
+}
+
+func TestTheOperatorsSwitchIsReportedBeforeTheTaxService(t *testing.T) {
+	// Both are shut. The operator's own decision is the one they need to see,
+	// because it is the one they can undo.
+	offer := Assess(time.Now(), time.Now().AddDate(0, -1, 0), "FREE",
+		Settings{Open: false, ReceiptsWorking: false, FreeDays: 7})
+	if offer.Reason != ReasonClosed {
+		t.Fatalf("reason was %q, want the operator's own switch", offer.Reason)
+	}
+}
+
+func TestUnknownReceiptStateIsClosed(t *testing.T) {
+	// The zero value is "we have not checked", and that must not sell. A
+	// deployment that has never reached the tax service knows nothing about
+	// whether it can issue receipts, and "we do not know" is not "yes".
+	if Assess(time.Now(), time.Now().AddDate(0, -1, 0), "FREE", Settings{Open: true, FreeDays: 0}).Available {
+		t.Fatal("an unchecked tax service must not open sales")
 	}
 }

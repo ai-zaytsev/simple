@@ -295,6 +295,28 @@ def main(path):
         say("| --- | --- |")
         say("| продажи | %s |" % ("открыты" if buying.get("open") else "**закрыты**"))
         say("| FREE до покупки | %s дн. |" % buying.get("free_days"))
+
+        # The switch and the tax service are two separate reasons a sale may
+        # not happen, and the panel says which. One line for both would leave
+        # nobody able to tell an operator's own decision from an outage.
+        tax = d.get("tax") or {}
+        say("| чеки НПД | %s |" % ("выдаются" if tax.get("ok") else "**не выдаются**"))
+        if tax.get("detail"):
+            say("| последняя проверка | %s |" % tax.get("detail"))
+        if tax.get("checked_at"):
+            say("| проверено | %s |" % tax.get("checked_at"))
+        queued = tax.get("pending") or 0
+        if queued:
+            say("| платежей без чека | **%d** |" % queued)
+        say("")
+        if not tax.get("ok"):
+            say("Продажи закрыты, пока нельзя выдать чек. "
+                "Действующий VIP это не трогает.")
+            say("")
+        if queued:
+            say("Каждый платёж без чека — отдельное письмо Business Owner. "
+                "Пока очередь не пуста, продажи не откроются даже при живой ФНС.")
+            say("")
         say("")
         if not buying.get("open"):
             say("Закрытые продажи не трогают тех, у кого VIP уже есть.")

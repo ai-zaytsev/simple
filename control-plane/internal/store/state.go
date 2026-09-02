@@ -86,6 +86,19 @@ func (s *Store) LoadServiceState(ctx context.Context) (ServiceState, error) {
 		return ServiceState{}, fmt.Errorf("cannot finish reading service state: %w", err)
 	}
 
+	// Whether receipts can be issued lives in its own table, not in the
+	// settings row, because it is not a setting: nobody chooses it. Read here
+	// so that every place already asking for service state gets the whole
+	// answer about whether a sale may happen, rather than half of it.
+	//
+	// A missing row leaves it false, in the same safe direction as Open.
+	var receiptsWorking bool
+	if err := s.pool.QueryRow(ctx,
+		`select ok from npd_availability where id = true`).Scan(&receiptsWorking); err != nil {
+		receiptsWorking = false
+	}
+	state.Purchases.ReceiptsWorking = receiptsWorking
+
 	// Purchases is deliberately not required.
 	//
 	// An absent row leaves Open false, and false is the safe direction: the
