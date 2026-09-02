@@ -116,7 +116,13 @@ def main(path):
     hours = c.get("by_hour") or []
     if any(hours):
         top = max(hours)
-        say("### Сутки по часам, МСК")
+        # "Сутки по часам" is what this said, and the page then carried two
+        # numbers that contradict each other: peak_today is the last 24 hours
+        # (60 at this reading) while these bars are the busiest each hour of
+        # the day has been over the week (258 at midnight). Both were right;
+        # the heading described the wrong one. The Go comment beside the query
+        # says "over the week" - the label here was written apart from it.
+        say("### Часы суток: самое занятое за неделю, МСК")
         say("")
         say("```")
         for hour, value in enumerate(hours):
