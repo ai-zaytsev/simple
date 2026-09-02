@@ -34,6 +34,12 @@ func TestPaymentLifecycleOnPostgres(t *testing.T) {
 	if err := st.SetPurchases(ctx, purchase.Settings{Open: true, FreeDays: 7}, "payment-test"); err != nil {
 		t.Fatal(err)
 	}
+	// Selling also needs the tax service to be answering. This fixture line
+	// is the gate working: without it BeginPayment refuses, which is exactly
+	// what it should do on a deployment that has never checked.
+	if err := st.SetAvailability(ctx, true, "integration test", time.Now()); err != nil {
+		t.Fatal(err)
+	}
 
 	accountID := uuid.New()
 	if _, err := st.pool.Exec(ctx, `
@@ -72,6 +78,35 @@ func TestPaymentLifecycleOnPostgres(t *testing.T) {
 	second, applied, err := st.ApplySucceeded(ctx, record.ID, canonical)
 	if err != nil || applied || second.VIPExpiresAt == nil || !second.VIPExpiresAt.Equal(*first.VIPExpiresAt) {
 		t.Fatalf("duplicate application changed expiry: applied=%v record=%+v err=%v", applied, second, err)
+	}
+
+	// The receipt obligation is committed with the VIP, not after it. Only
+	// Postgres can prove that: it is a property of one transaction, and a fake
+	// repository would agree with whatever the code happened to do.
+	queued, err := st.PendingCount(ctx)
+	if err != nil || queued != 1 {
+		t.Fatalf("a paid payment must owe exactly one receipt: queued=%d err=%v", queued, err)
+	}
+
+	// And a duplicate webhook must not owe a second one.
+	settlement, err := st.Settlement(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settlement.PaidMinor != record.Product.AmountMinor {
+		t.Fatalf("receipt would be for %d, payment was %d",
+			settlement.PaidMinor, record.Product.AmountMinor)
+	}
+	if settlement.Active != nil {
+		t.Fatal("nothing has been issued yet")
+	}
+
+	// Two receipts for one payment are refused by the database, not by care.
+	if _, err := st.BeginReceipt(ctx, record.ID, settlement.PaidMinor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.BeginReceipt(ctx, record.ID, settlement.PaidMinor); err == nil {
+		t.Fatal("the database allowed a second open receipt for one payment")
 	}
 	appCredential := insertCredential(t, ctx, st, accountID, "app")
 	external, err := st.AddExternalDevice(ctx, accountID, "expiry-test")
@@ -125,6 +160,12 @@ func TestRefundLifecycleOnPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := st.SetPurchases(ctx, purchase.Settings{Open: true, FreeDays: 7}, "refund-test"); err != nil {
+		t.Fatal(err)
+	}
+	// Selling also needs the tax service to be answering. This fixture line
+	// is the gate working: without it BeginPayment refuses, which is exactly
+	// what it should do on a deployment that has never checked.
+	if err := st.SetAvailability(ctx, true, "integration test", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
