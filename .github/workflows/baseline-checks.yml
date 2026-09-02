@@ -200,6 +200,20 @@ jobs:
           }
           echo "ok: a zero reads as a zero"
 
+          # A removed server is not work. Twelve of them were counted under
+          # "заменить" and "удалить" on the live panel, which claimed twelve
+          # jobs that did not exist and hid the numbers that did. The fixture
+          # carries one gone server; the row must put it in its own column.
+          full=$(python3 .github/scripts/read_panel.py \
+            .github/scripts/fixtures/overview-full.json)
+
+          echo "${full}" | grep -qE '^\| серверы \| 2 \| 1 \| 0 \| 0 \| 0 \| 1 \|$' || {
+            echo "A server that is gone is being counted as something to do."
+            echo "${full}" | grep -A 5 'Жизненный цикл'
+            exit 1
+          }
+          echo "ok: what is gone is counted as gone"
+
           echo "${zeroes}" | grep -q 'посчитаны по 10 ч истории' || {
             echo "The peaks do not say how much history they rest on."
             exit 1

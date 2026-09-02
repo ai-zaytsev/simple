@@ -106,6 +106,11 @@ type Standing struct {
 	NeedsReplacing bool `json:"needs_replacing"`
 	MayDelete      bool `json:"may_delete"`
 
+	// Gone: the thing this row names does not exist any more. Its own column
+	// rather than an absence, because a fleet report that shows what is left
+	// but never what went is one nobody can reconcile against a bill.
+	Gone bool `json:"gone"`
+
 	// Why, in one line, so that the answers above are readable rather than
 	// merely correct.
 	Because string `json:"because"`
@@ -156,22 +161,39 @@ func Decide(st *Standing, now time.Time, idleFor time.Duration) {
 	// Only for things that were supposed to be in service. A node that is
 	// being built is not "stop handing out", it is "not yet", and reporting it
 	// as the former would put it on a list of problems it does not belong on.
-	st.StopHandingOut = !usable && (lifecycle == "ready" || lifecycle == "serving")
+	inService := lifecycle == "ready" || lifecycle == "serving"
+	st.StopHandingOut = !usable && inService
+
+	// Gone. The row stays so the name is never reused, but the thing it names
+	// does not exist and nothing about it is work.
+	st.Gone = lifecycle == "removed" || lifecycle == "retired"
 
 	// A blocked domain does not recover by being restarted; it is replaced.
 	// That is the difference this stage exists to make, and it is the
 	// difference between an afternoon spent on the wrong machine and a new
 	// domain being raised.
-	st.NeedsReplacing = st.Condition == Blocked ||
-		(st.Condition == Faulty && now.Sub(st.Since) > faultyTooLong)
+	//
+	// Only for something still in service. A node that has been taken away
+	// cannot need replacing - it has already been dealt with, and its last
+	// recorded condition never improves because nothing measures it any more.
+	// Without this, twelve removed servers sat under "needs replacing" for as
+	// long as the fleet existed, and the number that meant something was
+	// hidden among them.
+	st.NeedsReplacing = inService &&
+		(st.Condition == Blocked ||
+			(st.Condition == Faulty && now.Sub(st.Since) > faultyTooLong))
 
-	// Deletable when it has been declared gone, or when it has been on its way
-	// out long enough that nothing can still be using it. `removing` is not
+	// Deletable when something is still there to delete. `removing` is not
 	// enough on its own: something is removing it, and finishing the job twice
 	// is how a half-deleted node loses the half that was still working.
-	st.MayDelete = lifecycle == "removed" || lifecycle == "retired" ||
-		(lifecycle == "draining" && idleFor > drainedFor) ||
-		(lifecycle == "quarantined" && idleFor > drainedFor)
+	//
+	// Not for what is already gone. This column is work waiting to be done,
+	// and answering "yes, delete it" about a machine that no longer exists
+	// contradicts the row's own reason for existing - it is kept precisely so
+	// the name is never reused.
+	st.MayDelete = !st.Gone &&
+		((lifecycle == "draining" && idleFor > drainedFor) ||
+			(lifecycle == "quarantined" && idleFor > drainedFor))
 
 	st.Because = because(st, lifecycle)
 }
