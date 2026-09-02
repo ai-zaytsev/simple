@@ -2,7 +2,7 @@
 
 - Feature ID: `194-gone-is-not-work`
 - Feature Branch: `feature/194-gone-is-not-work`
-- Status: `local-ready`
+- Status: `live-accepted`
 
 ## Что Это
 
