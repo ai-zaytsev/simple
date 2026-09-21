@@ -33,7 +33,7 @@ concurrency:
 
 env:
   TF_IN_AUTOMATION: "1"
-  SITE_DOMAIN: simple-vpn.download
+  SITE_DOMAIN: simple-app.download
 
 jobs:
   deploy:

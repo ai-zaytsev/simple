@@ -166,7 +166,7 @@ restore_nginx=true
 if ! grep -Eq '^[[:space:]]*listen[[:space:]].*443' "${nginx_target}"; then
   certbot --nginx --non-interactive --agree-tos \
     --register-unsafely-without-email --redirect --reinstall \
-    -d simple-vpn.download
+    -d simple-app.download
 fi
 if ! grep -Fq 'expires -1;' "${nginx_target}"; then
   sed -i '/^[[:space:]]*location \/ {$/a\        expires -1;' "${nginx_target}"
