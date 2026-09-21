@@ -28,7 +28,7 @@ func TestPolicyValidation(t *testing.T) {
 		MinSupportedVersionCode: 1,
 		Channels: map[string]Artifact{
 			DirectAPK: {
-				URL:    "https://simple-vpn.download/download/releases/0.2.0/simple-vpn-0.2.0.apk",
+				URL:    "https://simple-app.download/download/releases/0.2.0/simple-0.2.0.apk",
 				SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			},
 		},

@@ -20,17 +20,21 @@ jobs:
     steps:
       - name: Check configuration
         env:
+          # The sender comes from the same secret Core reads. It used to come from
+          # vars.BREVO_SENDER_EMAIL, which did not exist - so this check failed its
+          # own preflight and could not have verified anything, while Core sent
+          # from the secret. Two places for one address, one of them empty.
           BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
           EMAIL_TEST_GMAIL: ${{ secrets.EMAIL_TEST_GMAIL }}
           EMAIL_TEST_YANDEX: ${{ secrets.EMAIL_TEST_YANDEX }}
-          BREVO_SENDER_EMAIL: ${{ vars.BREVO_SENDER_EMAIL }}
+          BREVO_SENDER_EMAIL: ${{ secrets.BREVO_SENDER_EMAIL }}
         run: |
           set -euo pipefail
           missing=""
           [ -n "${BREVO_API_KEY}" ] || missing="${missing} secrets.BREVO_API_KEY"
           [ -n "${EMAIL_TEST_GMAIL}" ] || missing="${missing} secrets.EMAIL_TEST_GMAIL"
           [ -n "${EMAIL_TEST_YANDEX}" ] || missing="${missing} secrets.EMAIL_TEST_YANDEX"
-          [ -n "${BREVO_SENDER_EMAIL}" ] || missing="${missing} vars.BREVO_SENDER_EMAIL"
+          [ -n "${BREVO_SENDER_EMAIL}" ] || missing="${missing} secrets.BREVO_SENDER_EMAIL"
 
           if [ -n "${missing}" ]; then
             echo "Not configured:${missing}"
@@ -82,7 +86,7 @@ jobs:
         id: send
         env:
           BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
-          BREVO_SENDER_EMAIL: ${{ vars.BREVO_SENDER_EMAIL }}
+          BREVO_SENDER_EMAIL: ${{ secrets.BREVO_SENDER_EMAIL }}
           EMAIL_TEST_GMAIL: ${{ secrets.EMAIL_TEST_GMAIL }}
           EMAIL_TEST_YANDEX: ${{ secrets.EMAIL_TEST_YANDEX }}
         run: |
@@ -93,7 +97,7 @@ jobs:
           send_one() {
             label="$1"
             recipient="$2"
-            probe_link="https://simple-vpn.download/auth/verify?token=probe-${label}-$(date -u +%s)"
+            probe_link="https://simple-app.download/auth/verify?token=probe-${label}-$(date -u +%s)"
 
             jq -n \
               --arg sender "${BREVO_SENDER_EMAIL}" \

@@ -94,7 +94,7 @@
     "min_supported_version_code": 3,
     "channels": {
       "direct_apk": {
-        "url": "https://simple-vpn.download/download/releases/0.5.0/simple-vpn-0.5.0.apk",
+        "url": "https://simple-app.download/download/releases/0.5.0/simple-0.5.0.apk",
         "sha256": "64 lowercase hex characters"
       }
     }
