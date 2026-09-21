@@ -83,7 +83,7 @@
       }
 
       download.href = "/download/latest.apk";
-      download.setAttribute("download", `simple-vpn-${latest.versionName}.apk`);
+      download.setAttribute("download", `simple-${latest.versionName}.apk`);
       download.removeAttribute("aria-disabled");
       download.classList.remove("is-disabled");
       downloadMeta.textContent = `Версия ${latest.versionName} · ${formatSize(latest.size)}`;

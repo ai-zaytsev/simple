@@ -25,7 +25,7 @@ env:
   SPACES_BUCKET: simple-vpn-infra-backups
   SPACES_PREFIX: apk
   SPACES_ENDPOINT: https://ams3.digitaloceanspaces.com
-  SITE_DOMAIN: simple-vpn.download
+  SITE_DOMAIN: simple-app.download
 
 jobs:
   publish:

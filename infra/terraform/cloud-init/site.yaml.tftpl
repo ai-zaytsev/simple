@@ -55,7 +55,7 @@ write_files:
     content: |
       #!/bin/sh
       set -eu
-      domain="simple-vpn.download"
+      domain="simple-app.download"
       if [ -s "/etc/letsencrypt/live/$domain/fullchain.pem" ]; then
         exit 0
       fi
