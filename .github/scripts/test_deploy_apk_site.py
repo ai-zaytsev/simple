@@ -63,11 +63,37 @@ assert "0.0.0.0/0" not in content_script
 assert content_script.index("firewall_open=true") < content_script.index("open-answer.json")
 assert "origin-index.html" in content_script
 assert "| grep -q 'data-install-guide'" not in content_script
-assert "index.html 404.html styles.css app.js" in content_script
-assert "index.html 404.html styles.css app.js nginx.conf" not in content_script
+assert "index.html 404.html styles.css app.js nginx.conf" in content_script
+
+# nginx.conf is uploaded again, and that is a deliberate reversal.
+#
+# It used to be, until "Preserve Certbot TLS during site deploy" removed it:
+# installing the repository's 80-only config wiped the 443 block Certbot had
+# added, and the site lost TLS. The fix then was to stop overwriting the file.
+#
+# The cost of that fix was that server_name could no longer be changed at all
+# on a running host - which is how a domain move nearly shipped a new name
+# served under the old name's certificate.
+#
+# So the upload is back and the original failure is closed differently:
+# Certbot runs unconditionally straight afterwards and re-adds the 443 block.
+# These assertions hold that pairing together, because the upload alone is the
+# regression they fixed.
+assert 'test -s "${stage}/nginx.conf"' in content_script
+assert 'install -o root -g root -m 0644 "${stage}/nginx.conf"' in content_script
+assert content_script.index('install -o root -g root -m 0644 "${stage}/nginx.conf"') \
+    < content_script.index("certbot --nginx --non-interactive")
+
+# Unconditional. The old test asked whether a 443 block already existed, which
+# is true of any host that has ever had a certificate - so a new domain would
+# have been served the previous domain's certificate.
+assert "listen[[:space:]].*443" not in content_script
+
 assert "certbot --nginx --non-interactive" in content_script
 assert "--redirect --reinstall" in content_script
-assert "expires -1;" in content_script
+# The host config is owned by the repository now, so the line is in the file
+# rather than patched in afterwards.
+assert "expires -1;" not in content_script
 assert "nginx -t" in content_script
 assert "systemctl reload nginx" in content_script
 assert "systemctl is-active --quiet nginx" in content_script

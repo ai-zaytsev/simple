@@ -124,7 +124,7 @@ for attempt in $(seq 1 24); do
 done
 
 tar -C sites/official -czf "${work}/site-content.tar.gz" \
-  index.html 404.html styles.css app.js
+  index.html 404.html styles.css app.js nginx.conf
 
 scp -i "${work}/deploy-key" \
   -o BatchMode=yes -o ConnectTimeout=10 \
@@ -163,14 +163,26 @@ for file in index.html 404.html styles.css app.js; do
 done
 cp -a "${nginx_target}" "${nginx_backup}"
 restore_nginx=true
-if ! grep -Eq '^[[:space:]]*listen[[:space:]].*443' "${nginx_target}"; then
-  certbot --nginx --non-interactive --agree-tos \
-    --register-unsafely-without-email --redirect --reinstall \
-    -d simple-app.download
-fi
-if ! grep -Fq 'expires -1;' "${nginx_target}"; then
-  sed -i '/^[[:space:]]*location \/ {$/a\        expires -1;' "${nginx_target}"
-fi
+
+# The server config comes from the repository too, so that a change to
+# server_name reaches the host at all. It used not to: only the four content
+# files were uploaded, and the host kept whatever nginx config it had from the
+# day it was built.
+test -s "${stage}/nginx.conf"
+install -o root -g root -m 0644 "${stage}/nginx.conf" "${nginx_target}"
+
+# Unconditionally, with --reinstall. The old test was "does the file already
+# have a 443 block", which was true from the previous domain's certificate -
+# so a new domain would have been served the old name's certificate and every
+# browser would have refused it.
+#
+# Running every time is safe and is what --reinstall is for: an existing valid
+# certificate is re-wired rather than re-issued, so this does not spend the
+# five-per-week limit. The config installed above has no 443 block, so certbot
+# adds one each time, which is the same thing it did on the first deploy.
+certbot --nginx --non-interactive --agree-tos \
+  --register-unsafely-without-email --redirect --reinstall \
+  -d simple-app.download
 nginx -t
 systemctl reload nginx
 systemctl is-active --quiet nginx
