@@ -421,13 +421,29 @@ jobs:
         if: ${{ inputs.apply }}
         run: |
           set -euo pipefail
+          # What this has to prove is that the origin is up and Nginx is
+          # answering, not that it already serves this name. Teaching it the
+          # name is the job of the content step further down, so demanding a
+          # 204 here makes the first deploy of a new domain impossible: the
+          # host still carries the previous server_name, an unknown name falls
+          # through to the default server, and the answer is 404.
+          #
+          # That is exactly how the move to simple-app.download failed - thirty
+          # attempts, all 404, on an origin that was perfectly healthy.
+          #
+          # So 404 counts as ready: it is Nginx replying. Anything that is not
+          # an HTTP reply at all does not.
           for attempt in $(seq 1 30); do
-            if curl -fsS --max-time 8 --resolve "${SITE_DOMAIN}:80:${SITE_IP}" \
-                 "http://${SITE_DOMAIN}/healthz" -o /dev/null; then
-              echo "Origin HTTP is ready."
-              break
-            fi
-            [ "${attempt}" -lt 30 ] || { echo "Origin did not finish cloud-init."; exit 1; }
+            code=$(curl -sS --max-time 8 --resolve "${SITE_DOMAIN}:80:${SITE_IP}" \
+              -o /dev/null -w '%{http_code}' "http://${SITE_DOMAIN}/healthz" || echo 000)
+            case "${code}" in
+              204) echo "Origin is ready and already serves this name."; break ;;
+              404) echo "Origin is ready; it does not serve this name yet."; break ;;
+            esac
+            [ "${attempt}" -lt 30 ] || {
+              echo "Origin did not answer HTTP. Last status: ${code}."
+              exit 1
+            }
             sleep 10
           done
 
