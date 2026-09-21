@@ -17,6 +17,22 @@ VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 
+# The filename every release is published under.
+#
+# Versions published while the site lived at simple-vpn.download carry that
+# word in their filename, and a published version is never renamed: its link is
+# permanent, and renaming means copying the stored object and breaking the
+# address anybody already holds. So those versions are accepted under the name
+# they were published with - and only those. Everything newer must use the
+# current name; a rule that accepted either for any version would quietly let
+# the old word back in with the next release.
+LEGACY_FILE_NAMES = {"0.1.0": "simple-vpn-0.1.0.apk"}
+
+
+def file_name_for(version_name):
+    return LEGACY_FILE_NAMES.get(version_name, f"simple-{version_name}.apk")
+
+
 def fail(message: str) -> None:
     raise ValueError(message)
 
@@ -46,7 +62,7 @@ def validate_release(item: object) -> dict:
     if not isinstance(item["versionCode"], int) or item["versionCode"] <= 0:
         fail("versionCode must be a positive integer")
     parse_timestamp(item["publishedAt"])
-    expected_file = f"simple-vpn-{version_name}.apk"
+    expected_file = file_name_for(version_name)
     if item["fileName"] != expected_file:
         fail(f"fileName must be {expected_file}")
     if not isinstance(item["size"], int) or item["size"] <= 0:
@@ -113,7 +129,7 @@ def main() -> int:
 
     if not args.file.is_file() or args.file.stat().st_size <= 0:
         fail("APK file does not exist or is empty")
-    if args.file.name != f"simple-vpn-{args.version_name}.apk":
+    if args.file.name != file_name_for(args.version_name):
         fail("APK filename does not match versionName")
     actual_sha256 = hashlib.sha256(args.file.read_bytes()).hexdigest()
     if args.sha256 != actual_sha256:
