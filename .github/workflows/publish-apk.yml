@@ -79,6 +79,14 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # platform-tools only. The action's default is "tools platform-tools",
+          # and the legacy "tools" package no longer exists in the SDK the
+          # runner image carries since 2026-09-07 (cmdline-tools 16.0):
+          # sdkmanager fails with "Failed to find package 'tools'" before a
+          # single line is compiled. Nothing here uses it - the build runs on
+          # Gradle and the cmdline-tools the action installs itself.
+          packages: platform-tools
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -152,7 +160,7 @@ jobs:
 
           built=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
           [ -n "${built}" ] || { echo "No release APK was produced."; exit 1; }
-          file="${RUNNER_TEMP}/simple-vpn-${version_name}.apk"
+          file="${RUNNER_TEMP}/simple-${version_name}.apk"
           cp "${built}" "${file}"
 
           apksigner=$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -1)
