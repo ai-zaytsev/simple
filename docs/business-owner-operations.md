@@ -116,15 +116,15 @@ Core без выпуска APK меняет kill switch, ноды и резер�
 | PostgreSQL | Единственный источник истины аккаунтов, нод, планов, метрик и платежей | VDSka, Финляндия | тот же `fi`, локальный сервис | Диск `fi`, Core | Core теряет состояние и перестаёт выполнять основные операции |
 | VPN `n-481e` | Пользовательский туннель и edge к Core | Kamatera `EU-ST`, Стокгольм | `simple-vpn-n-481e`; 1 vCPU / 1 ГБ / 20 ГБ; `6015875.xyz` | Kamatera, DNS Spaceship, Nginx, Xray, агенты, Core | Часть пользователей переключается на другую ноду; один публичный edge исчезает |
 | VPN `n-c5e6` | Пользовательский туннель и edge к Core | Kamatera `EU-ST`, Стокгольм | `simple-vpn-n-c5e6`; 1 vCPU / 1 ГБ / 20 ГБ; `6047864.xyz` | Kamatera, DNS Cloudflare, Nginx, Xray, агенты, Core | То же; причина прежней остановки Nginx остаётся неизвестной |
-| Сайт `site-1` | Главная страница и reverse proxy к APK/manifest в Spaces | DigitalOcean `ams3`, Амстердам | Droplet 1 vCPU / 512 МБ / 10 ГБ; `simple-vpn.download` | DigitalOcean, Cloudflare, Spaces, Nginx, TLS | Нельзя скачать или обновить APK; VPN установленных клиентов не затронут |
+| Сайт `site-1` | Главная страница и reverse proxy к APK/manifest в Spaces | DigitalOcean `ams3`, Амстердам | Droplet 1 vCPU / 512 МБ / 10 ГБ; `simple-app.download` | DigitalOcean, Cloudflare, Spaces, Nginx, TLS | Нельзя скачать или обновить APK; VPN установленных клиентов не затронут |
 | Edge/маскировка | Обычный HTTPS-сайт и скрытый путь к Xray/Core | На обеих Kamatera VPN-нодах, отдельных edge-серверов нет | Домены активных нод | Нода, её сертификат, Nginx, Core | Отказ одного edge уменьшает число путей; отказ всех мешает восстановлению новых клиентов |
 | DNS и домены | Стабильный адрес Core, сайт, активные и запасные входы | Cloudflare и Spaceship, глобальные внешние сервисы | таблица доменов ниже | Регистраторы, authoritative DNS, актуальные A/MX/TXT | Ошибка записи может отключить Core, сайт, почту или отдельную ноду |
 | Мониторинг | BO-панель, fleet/capacity/connectivity, безопасные журналы | Core на `fi` + GitHub Actions | `/panel` закрыт извне; штатный доступ — `Read The Panel` | Core, PostgreSQL, GitHub Actions | Сервис продолжает работать, но оператор теряет видимость |
 | Объектное хранение | Terraform state, место под DB backups, APK и manifest | DigitalOcean Spaces `ams3` | приватный bucket `simple-vpn-infra-backups` | Spaces credentials в CI | State можно восстановить import; APK недоступны; DB recovery сейчас отсутствует |
-| Исходящая почта | Magic links и capacity alerts | Brevo, внешний SaaS | sender на `mail.simple-vpn.download` | Brevo, DNS Cloudflare, Core | Новые входы и email-алерты не работают |
-| Входящая почта | Приём адресов домена проекта | Cloudflare Email Routing | MX домена `simple-vpn.download` | Cloudflare и внешний конечный ящик | Support/admin письма не доходят; отправка magic links не затронута |
+| Исходящая почта | Magic links и capacity alerts | Brevo, внешний SaaS | sender `no-reply@simple-app.download` | Brevo, DNS Cloudflare, Core | Новые входы и email-алерты не работают |
+| Входящая почта | Приём адресов домена проекта | Cloudflare Email Routing | MX домена `simple-app.download` | Cloudflare и внешний конечный ящик | Support/admin письма не доходят; отправка magic links не затронута |
 | Платёжный контур | Разовые тестовые платежи и возвраты VIP | ЮKassa test store, внешний SaaS | server API, внешняя checkout page, webhook в Core | Core, PostgreSQL, ЮKassa, DNS Core | Новые оплаты/возвраты не завершаются; VIP не должен меняться без канонического success |
-| Канал APK | Сборка, подпись, неизменяемые версии и latest | GitHub Actions + DigitalOcean Spaces + `site-1`/Cloudflare | `https://simple-vpn.download` | signing material в CI, Spaces, сайт, Core update policy | Новые установки/обновления недоступны; установленный APK работает |
+| Канал APK | Сборка, подпись, неизменяемые версии и latest | GitHub Actions + DigitalOcean Spaces + `site-1`/Cloudflare | `https://simple-app.download` | signing material в CI, Spaces, сайт, Core update policy | Новые установки/обновления недоступны; установленный APK работает |
 | `ru` | Ранее предполагался как RU-probe | RUVDS, Россия | отдельный сервер 1 vCPU / 366 МБ / 9,7 ГБ | Нет runtime-зависимостей | Сейчас на сервис не влияет: роль заменена проверками с Android-устройств |
 
 Отдельных `obs-1`, Prometheus, Grafana, Loki, ClickHouse, WireGuard management network и выделенного PostgreSQL-хоста сейчас нет. Панель и метрики находятся в Core/PostgreSQL; журналы — в journald. SSH к VPN-нодам разрешён только от Core и идёт через него как jump host.
@@ -134,11 +134,33 @@ Core без выпуска APK меняет kill switch, ноды и резер�
 | Домен | Регистратор/DNS | Роль и текущее использование |
 | --- | --- | --- |
 | `simple-syncbridge.download` | Cloudflare / Cloudflare | Стабильный Core; менять IP можно без обновления APK |
-| `simple-vpn.download` | Cloudflare / Cloudflare | Публичный APK-сайт, почтовая зона; Cloudflare proxy включён намеренно |
+| `simple-app.download` | Cloudflare / Cloudflare | Публичный APK-сайт, приём и отправка почты; Cloudflare proxy включает сам выкат сайта |
+| `simple-vpn.download` | Cloudflare / Cloudflare | **Выводится из эксплуатации.** Заблокирован в России 2026-09; держится только ради установок 0.1.0, см. ниже |
 | `6015875.xyz` | Spaceship / Spaceship | Активное прикрытие и edge ноды `n-481e` |
 | `6047864.xyz` | Cloudflare / Cloudflare | Активное прикрытие и edge ноды `n-c5e6` |
 | `6047865.xyz` | Cloudflare / Cloudflare | Единственный готовый свободный расходный домен |
 | `6015874.xyz` | Spaceship / Spaceship | Зарегистрирован, но текущая запись недостижима и требует замены; не считать запасом |
+
+#### Вывод `simple-vpn.download` из эксплуатации
+
+Заблокирован в России в сентябре 2026. Сайт, отправка писем и ссылка обновления с него уже сняты — проверено, что письмо входа приходит с `no-reply@simple-app.download`, а Core отдаёт 0.1.1 по новому адресу.
+
+Что его ещё держит — только вне репозитория:
+
+| Что | Почему держит | Когда отпускает |
+| --- | --- | --- |
+| `support@simple-vpn.download` в Cloudflare Email Routing | Этот адрес вшит в каждую установку **0.1.0**. Обновление до 0.1.1 **необязательное** (минимальная версия — 1), так что 0.1.0 может жить сколько угодно | Когда установок 0.1.0 не останется — или сразу, если поднять минимальную версию до 2 |
+| Аутентификация `mail.simple-vpn.download` в Brevo | Ничего: отправка ушла на новый домен | Можно убрать из Brevo в любой момент |
+| Сайт по старому имени | Ничего: он отдаёт ту же чистую страницу, что и новый | Уйдёт вместе с DNS |
+
+Порядок, если отпускать:
+
+1. Решить про 0.1.0: ждать, пока установки обновятся сами, или поднять минимальную версию до 2 через **Application Updates → set-minimum** — тогда 0.1.0 потребует обновления при следующем запуске.
+2. После этого убрать правило Email Routing для `support@simple-vpn.download`.
+3. Убрать `mail.simple-vpn.download` из Brevo.
+4. Удалить записи зоны в Cloudflare или дать домену истечь.
+
+Пока шаг 1 не решён, **зону не удалять**: письма в поддержку от пользователей 0.1.0 начнут отбиваться, а узнать об этом будет неоткуда.
 
 Cloudflare proxy допустим для публичного сайта, но запрещён для доменов VPN-нод: proxy терминирует TLS и ломает туннель. Прямой IP Core также входит в подписанный bootstrap, но намеренно не публикуется в BO-документе; его живость видна как отдельная строка в панели.
 
@@ -196,7 +218,7 @@ Cloudflare proxy допустим для публичного сайта, но �
 
 ```
 Что это: Nginx с главной страницей и proxy к публичным APK-объектам Spaces.
-Где находится: DigitalOcean ams3; simple-vpn.download за Cloudflare.
+Где находится: DigitalOcean ams3; simple-app.download за Cloudflare.
 Как проверить: / и /healthz должны отвечать 200 через публичный домен; Infra Inventory должен видеть ровно один Droplet нужного размера.
 Как перезапустить: Deploy APK Site с `apply=true`, `recover_origin=true`: workflow проверяет прямой /healthz и только при отказе делает power-on/power-cycle существующего site-1. Для ручной диагностики: DigitalOcean → site-1 → Web Console → systemctl restart nginx. Публичный SSH закрыт firewall.
 Где смотреть логи: journalctl -u nginx и nginx error log через Web Console; access log не нужен.
@@ -244,7 +266,7 @@ Cloudflare proxy допустим для публичного сайта, но �
 
 ```
 Что это: Brevo отправляет magic links и алерты; Cloudflare Email Routing принимает входящую почту домена.
-Где находится: внешние SaaS; DNS mail.simple-vpn.download в Cloudflare.
+Где находится: внешние SaaS; DNS simple-app.download в Cloudflare.
 Как проверить: Email Provider Check; нужны accepted и delivered для gmail/yandex, затем ручная проверка Inbox/Spam и неизменённой ссылки.
 Как перезапустить: неприменимо; при смене credential обновить GitHub Secrets и повторить Deploy Control Plane.
 Где смотреть логи: Brevo transactional logs и summary workflow; адреса получателей в публичный лог не выводить.
@@ -270,7 +292,7 @@ Cloudflare proxy допустим для публичного сайта, но �
 
 ```
 Что это: Publish APK собирает и подписывает APK, пишет immutable version, latest и manifest, затем синхронизирует Core.
-Где находится: GitHub Actions, Spaces apk/, simple-vpn.download.
+Где находится: GitHub Actions, Spaces apk/, simple-app.download.
 Как проверить: latest.apk и постоянная ссылка должны скачиваться через официальный домен; workflow повторно проверяет SHA-256 и signing certificate.
 Как перезапустить: сайт — по инструкции site-1; неудачный publish повторяется только после определения последнего завершённого шага.
 Где смотреть логи: Publish APK summary и Application Updates / show.

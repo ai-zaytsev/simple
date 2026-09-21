@@ -29,7 +29,7 @@ func TestAppUpdateLifecycleOnPostgres(t *testing.T) {
 		VersionName: "0.1.0",
 		Channel:     appupdate.DirectAPK,
 		Artifact: appupdate.Artifact{
-			URL:    "https://simple-vpn.download/download/releases/0.1.0/simple-vpn-0.1.0.apk",
+			URL:    "https://simple-app.download/download/releases/0.1.0/simple-0.1.0.apk",
 			SHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		},
 	}
@@ -43,7 +43,7 @@ func TestAppUpdateLifecycleOnPostgres(t *testing.T) {
 		VersionName: "0.2.0",
 		Channel:     appupdate.DirectAPK,
 		Artifact: appupdate.Artifact{
-			URL:    "https://simple-vpn.download/download/releases/0.2.0/simple-vpn-0.2.0.apk",
+			URL:    "https://simple-app.download/download/releases/0.2.0/simple-0.2.0.apk",
 			SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		},
 	}
@@ -84,7 +84,7 @@ func TestAppUpdateLifecycleOnPostgres(t *testing.T) {
 		VersionName: "0.3.0",
 		Channel:     appupdate.DirectAPK,
 		Artifact: appupdate.Artifact{
-			URL:    "https://simple-vpn.download/download/releases/0.3.0/simple-vpn-0.3.0.apk",
+			URL:    "https://simple-app.download/download/releases/0.3.0/simple-0.3.0.apk",
 			SHA256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 		},
 	}

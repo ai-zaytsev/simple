@@ -372,6 +372,14 @@ jobs:
         # once, and the first crawl that finds the same words spends it.
         run: bash .github/scripts/check-site-says-nothing-that-gets-it-blocked.sh
 
+      - name: Nothing operational depends on the retired domain
+        shell: bash
+        # simple-vpn.download is blocked in Russia. The move off it touched the
+        # site, the sender, a release and the filename convention - each one a
+        # place the old name was holding something up. It is allowed only where
+        # it is history or protection.
+        run: bash .github/scripts/check-nothing-depends-on-the-old-domain.sh
+
       - name: The panel's hourly chart names its window
         shell: bash
         # It was headed "Сутки по часам" over a week's worth of peaks, so the

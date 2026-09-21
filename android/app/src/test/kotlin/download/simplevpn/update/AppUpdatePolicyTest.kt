@@ -11,7 +11,7 @@ import java.security.MessageDigest
 class AppUpdatePolicyTest {
     private val hash = "a".repeat(64)
 
-    private fun config(latest: Int = 5, minimum: Int = 2, url: String? = "https://simple-vpn.download/v5.apk") =
+    private fun config(latest: Int = 5, minimum: Int = 2, url: String? = "https://simple-app.download/v5.apk") =
         JSONObject().apply {
             put("min_supported_app_version", minimum)
             put(
@@ -59,7 +59,7 @@ class AppUpdatePolicyTest {
 
     @Test
     fun `insecure URL and malformed hash are rejected`() {
-        assertNull(AppUpdatePolicy.parse(config(url = "http://simple-vpn.download/v5.apk"), 2))
+        assertNull(AppUpdatePolicy.parse(config(url = "http://simple-app.download/v5.apk"), 2))
         val malformed = config().also {
             it.getJSONObject("update").getJSONObject("channels")
                 .getJSONObject(AppUpdatePolicy.DIRECT_APK).put("sha256", "ABC")

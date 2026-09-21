@@ -20,7 +20,7 @@
 
 ```json
 {
-  "url": "https://simple-vpn.download/download/releases/0.2.0/simple-vpn-0.2.0.apk",
+  "url": "https://simple-app.download/download/releases/0.2.0/simple-0.2.0.apk",
   "sha256": "64 lowercase hex characters"
 }
 ```
