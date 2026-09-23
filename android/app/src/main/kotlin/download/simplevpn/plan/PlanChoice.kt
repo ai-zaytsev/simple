@@ -40,4 +40,47 @@ object PlanChoice {
 
         return Use.KNOWN_GOOD
     }
+
+    /**
+     * Whether another attempt would try anything the failed one did not.
+     *
+     * [decide] says which plan to use; this says whether using it again is
+     * worth anything. The two belong together because apart they drifted, and
+     * the drift was invisible from either side.
+     *
+     * The service used to rebuild the tunnel after every failed proof and give
+     * up only once [decide] answered KNOWN_GOOD. In the two commonest shapes it
+     * never answers that: with nothing proven there is nothing to roll back to,
+     * and once a candidate has been proved the proven plan *is* the candidate.
+     * Both are stated in the tests for [decide], and neither was read as a
+     * statement about when to stop trying. So a phone whose node had stopped
+     * answering rebuilt its tunnel for ever, a few seconds per turn, saying
+     * "reconnecting" each time.
+     *
+     * @param failures the candidate's failures, counting the one just recorded
+     * @param justFailed which plan the attempt that just failed used
+     */
+    fun worthRetrying(
+        candidateSeq: Long?,
+        goodSeq: Long?,
+        failures: Int,
+        limit: Int,
+        justFailed: Use,
+    ): Boolean {
+        // The last plan known to work has now failed as well. Nothing older is
+        // kept, and the candidate spent its attempts on the way here.
+        if (justFailed != Use.CANDIDATE) return false
+
+        val next = decide(candidateSeq, goodSeq, failures, limit)
+        if (next == Use.NOTHING) return false
+
+        // Something different to try: the rollback, which is the whole reason
+        // a failed proof does not simply give up.
+        if (next != justFailed) return true
+
+        // The same plan again. Worth one more go while it still has attempts,
+        // and nothing at all once it does not - trying it a third time on the
+        // same network in the same minute is how the loop began.
+        return failures < limit
+    }
 }

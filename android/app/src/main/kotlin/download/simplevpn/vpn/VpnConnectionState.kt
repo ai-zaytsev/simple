@@ -19,7 +19,16 @@ sealed interface VpnConnectionState {
 
     data class Connected(val establishedAtMillis: Long) : VpnConnectionState
 
-    /** Underlying network changed; the tunnel is being re-established. */
+    /**
+     * The tunnel is being re-established, for a reason this does not carry.
+     *
+     * It used to say "the underlying network changed", and so did the label on
+     * the screen, and both were guesses. A network change is one of five ways
+     * here; the others are a node that stopped answering, a failover to a
+     * reserve, a plan being abandoned, and a recording being switched on.
+     * Naming one of them cost a support conversation that went looking at the
+     * network while the plan was the thing failing.
+     */
     data object Reconnecting : VpnConnectionState
 
     data object Disconnecting : VpnConnectionState

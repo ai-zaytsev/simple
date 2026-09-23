@@ -62,6 +62,21 @@ class SimpleVpnService : VpnService() {
     private var networkMonitor: NetworkMonitor? = null
     private val starting = AtomicBoolean(false)
 
+    /**
+     * Which press of the button the work in flight belongs to.
+     *
+     * Everything deferred - the establishing thread, the proof, the rebuild it
+     * can ask for, the restart a network change schedules - carries a token
+     * and abandons itself once that run is over. See [TunnelRuns]: without it
+     * a stop was advice, and the tunnel came back by itself a second after
+     * somebody switched it off.
+     */
+    private val runs = TunnelRuns()
+
+    /** The run that scheduled callbacks belong to, for the ones handed no token. */
+    @Volatile
+    private var thisRun = 0
+
     /** Runs the delayed restart; see scheduleEngineRestart. */
     private val restartHandler = Handler(Looper.getMainLooper())
     private val restartEngine = Runnable { restartWhenNodeAnswers() }
@@ -146,10 +161,16 @@ class SimpleVpnService : VpnService() {
                 startForeground(NOTIFICATION_ID, buildNotification(getString(R.string.status_connecting)))
                 VpnController.update(VpnConnectionState.Connecting)
 
+                // A new run, begun on the calling thread so that anything left
+                // over from an earlier press is already out of date by the
+                // time this one starts doing anything.
+                val token = runs.begin()
+                thisRun = token
+
                 // Everything after it moves off this thread: establishing now
                 // includes asking the Control Plane where to connect, and a
                 // network call on the main thread is an immediate crash.
-                starts.execute { handleStart() }
+                starts.execute { handleStart(token) }
             }
 
             // Handled on the calling thread: both are a flag and a restart,
@@ -164,12 +185,21 @@ class SimpleVpnService : VpnService() {
                 watchHandler.post(watchConfig)
             }
 
-            ACTION_STOP -> handleStop(VpnConnectionState.Disconnected)
+            // The run ends first, on the calling thread. Tearing down what
+            // exists is not enough on its own: the work that rebuilds a tunnel
+            // is queued elsewhere, and until the run is over it is still on
+            // its way.
+            ACTION_STOP -> {
+                runs.stop()
+                handleStop(VpnConnectionState.Disconnected)
+            }
+
             else -> {
                 // Restarted by the system with a null intent. Nothing is known
                 // about the previous session, so the safe action is to stop
                 // rather than to establish a tunnel the user did not ask for.
                 Log.i(TAG, "restarted without an action, stopping")
+                runs.stop()
                 handleStop(VpnConnectionState.Disconnected)
             }
         }
@@ -179,7 +209,18 @@ class SimpleVpnService : VpnService() {
         return START_NOT_STICKY
     }
 
-    private fun handleStart() {
+    /**
+     * Establishes the tunnel for one run.
+     *
+     * Every step below can take seconds - three of them open a connection -
+     * and the person can press OFF during any of them. So the run is checked
+     * between steps rather than only at the start, and an abandoned attempt
+     * takes down whatever it had managed to build. Checking only on entry is
+     * what let a switched-off tunnel finish establishing itself.
+     */
+    private fun handleStart(token: Int) {
+        if (abandoned(token, "before starting")) return
+
         if (!starting.compareAndSet(false, true)) {
             Log.i(TAG, "start already in progress")
             return
@@ -208,10 +249,13 @@ class SimpleVpnService : VpnService() {
                 SessionLog.record(this, "configuration unavailable, using what is stored")
             }
 
+            if (abandoned(token, "asking whether the service is running")) return
+
             // Where to connect is asked for, not compiled in. This is the
             // whole point of the stage: the endpoint can change on the server
             // without anybody installing anything.
             val planResult = planSource.currentProfile()
+            if (abandoned(token, "asking where to connect")) return
             if (planResult is PlanSource.Result.Revoked) {
                 signOutAndStop()
                 return
@@ -244,6 +288,7 @@ class SimpleVpnService : VpnService() {
             // The first endpoint that answers, in the order the server chose.
             // A reserve nobody ever tries is a reserve that does not exist.
             val choice = EndpointChoice.choose(endpoints) { reachable(it) }
+            if (abandoned(token, "probing the endpoints")) return
             if (choice == null) {
                 failAndStop(getString(R.string.error_unexpected))
                 return
@@ -277,6 +322,12 @@ class SimpleVpnService : VpnService() {
             // then an operator changing a row, not a release.
             val policy = routing
 
+            // The last check before anything of the device's is touched. After
+            // this line there is an interface to take down again, so a stop
+            // arriving now is answered by tearing down rather than by not
+            // having built.
+            if (abandoned(token, "about to build the interface")) return
+
             val descriptor = TunConfigurator(this).establish(policy)
             if (descriptor == null) {
                 SessionLog.record(this, "interface not established")
@@ -285,6 +336,7 @@ class SimpleVpnService : VpnService() {
             }
             tunnel = descriptor
             SessionLog.record(this, "interface established, mtu ${TunConfigurator.MTU}")
+            if (abandoned(token, "building the interface")) return
 
             val configJson = XrayConfigBuilder.build(profile, policy, engineLog())
 
@@ -305,6 +357,8 @@ class SimpleVpnService : VpnService() {
                 }
             }
 
+            if (abandoned(token, "starting the engine")) return
+
             // The engine only listens on loopback. Until the bridge is running,
             // not a single packet from the device reaches it, so the tunnel is
             // not established until this succeeds.
@@ -314,6 +368,7 @@ class SimpleVpnService : VpnService() {
             when (val bridged = bridge.start(rawFd, TunConfigurator.MTU, XrayConfigBuilder.SOCKS_PORT)) {
                 is TunBridge.Result.Started -> {
                     SessionLog.record(this, "bridge started, socks ${XrayConfigBuilder.SOCKS_PORT}")
+                    if (abandoned(token, "starting the bridge")) return
                     startNetworkMonitor()
                     startWatching()
                     VpnController.update(VpnConnectionState.Connected(System.currentTimeMillis()))
@@ -326,7 +381,7 @@ class SimpleVpnService : VpnService() {
                     // routing rule sends everything nowhere, and when the plan
                     // names an endpoint that has been withdrawn - all three
                     // have happened here, and each looked like success.
-                    probes.execute { proveOrRollBack(planSource.sourceInUse()) }
+                    probes.execute { proveOrRollBack(planSource.sourceInUse(), token) }
                 }
 
                 is TunBridge.Result.Unavailable -> {
@@ -352,6 +407,23 @@ class SimpleVpnService : VpnService() {
     }
 
     /**
+     * Whether this run is over, and if it is, leaves nothing behind.
+     *
+     * The teardown matters as much as the answer. A run abandoned halfway can
+     * own an interface, an engine and a bridge, and returning without them
+     * would leave the device holding a tunnel that no longer belongs to
+     * anything. Teardown is written to be safe to run twice, because the stop
+     * that ended the run has usually run it already.
+     */
+    private fun abandoned(token: Int, where: String): Boolean {
+        if (runs.isCurrent(token)) return false
+        SessionLog.record(this, "stopped while $where, abandoning this attempt")
+        Log.i(TAG, "run $token is over, abandoning: $where")
+        teardown()
+        return true
+    }
+
+    /**
      * Confirms the tunnel carries traffic, and rolls back when it does not.
      *
      * This is the whole of the stage. A mistake in settings must not break the
@@ -359,18 +431,27 @@ class SimpleVpnService : VpnService() {
      * something, and one that cannot is abandoned for the last plan that could.
      * The person does nothing; they see a reconnection.
      *
-     * Bounded, because the fallback can fail too. Without a limit a device with
-     * two bad plans would rebuild the tunnel for ever, which is worse than
-     * saying plainly that nothing works.
+     * Bounded, because every plan can fail. The bound is one press of the
+     * button being worth at most three attempts - the candidate twice and the
+     * last plan that worked once - after which the person is told plainly that
+     * nothing works. Saying so is not a lesser outcome than retrying: a device
+     * whose node has become unreachable cannot be fixed by trying again, and
+     * an application that reconnects for ever cannot even be switched off
+     * without racing itself.
+     *
+     * The bound is not restated here. PlanChoice owns it, because PlanChoice
+     * also decides which plan the next attempt would use, and the two answers
+     * have to be the same answer. They were not, and the gap between them had
+     * no end in it.
      */
-    private fun proveOrRollBack(source: PlanStore.Source) {
+    private fun proveOrRollBack(source: PlanStore.Source, token: Int) {
         // Deliberately broad, and it is not defensive habit. This runs on a
         // background thread, and an exception thrown here takes the process
         // down with it: the tunnel disappears, the session log stops
         // mid-sentence, and the person is left pressing the button again with
         // nothing to explain why. That is what a live test showed happening.
         try {
-            proveOrRollBackOrThrow(source)
+            proveOrRollBackOrThrow(source, token)
         } catch (t: Throwable) {
             Log.e(TAG, "failed while proving the tunnel", t)
             SessionLog.record(this, "unexpected failure while proving the tunnel: ${t.message}")
@@ -378,8 +459,9 @@ class SimpleVpnService : VpnService() {
         }
     }
 
-    private fun proveOrRollBackOrThrow(source: PlanStore.Source) {
+    private fun proveOrRollBackOrThrow(source: PlanStore.Source, token: Int) {
         if (!engine.isRunning) return
+        if (abandoned(token, "proving the tunnel")) return
 
         if (TunnelProof.carriesTraffic(connectTimeoutMs)) {
             SessionLog.record(this, "tunnel carries traffic")
@@ -419,20 +501,37 @@ class SimpleVpnService : VpnService() {
         // to install gets the same one.
         starts.execute { planSource.reportFailure(seq, "no traffic through the tunnel") }
 
-        // When the plan that just failed was already the fallback, there is
-        // nothing older to fall back to and rebuilding would try the same two
-        // plans for ever.
+        // Rebuild only while a rebuild would try something the last attempt did
+        // not. The store answers, because the same rule decides which plan the
+        // next attempt would use; asking it here rather than restating it is
+        // the point.
         //
         // Judged from what the store remembers rather than from a counter in
         // this object, because this object does not always survive: a live test
         // showed the process ending between attempts, and an in-memory count
         // silently started again from zero each time - a bound that bounded
         // nothing.
-        if (source == PlanStore.Source.KNOWN_GOOD) {
-            SessionLog.record(this, "neither the newest plan nor the last good one works")
-            failAndStop(getString(R.string.error_no_working_plan))
+        //
+        // The bound this replaces stopped only when the plan that failed was
+        // the fallback. That reads as "we have tried everything", and it is
+        // not: with nothing proven, and with a proven plan that is the
+        // candidate itself, there is never a fallback to reach - so the
+        // condition could not become true and the tunnel rebuilt itself until
+        // somebody killed the application. That is what a device did on 23
+        // September, with both node domains unreachable from its network.
+        if (!planSource.worthTryingAgain(source)) {
+            SessionLog.record(this, "nothing left to try: $source was the last of them")
+            failAndStop(
+                if (source == PlanStore.Source.KNOWN_GOOD) {
+                    getString(R.string.error_no_working_plan)
+                } else {
+                    getString(R.string.error_tunnel_carries_nothing)
+                },
+            )
             return
         }
+
+        if (abandoned(token, "deciding whether to try another plan")) return
 
         SessionLog.record(this, "trying another plan")
         VpnController.update(VpnConnectionState.Reconnecting)
@@ -448,8 +547,11 @@ class SimpleVpnService : VpnService() {
         // another thread was building one.
         rebuilding = true
         starts.execute {
+            // The same run: nobody asked for this to stop. It is still the one
+            // press of the button, being answered.
+            if (abandoned(token, "waiting to rebuild on another plan")) return@execute
             teardown()
-            handleStart()
+            handleStart(token)
         }
     }
 
@@ -615,12 +717,18 @@ class SimpleVpnService : VpnService() {
      */
     private fun checkEndpoint() {
         if (!engine.isRunning) return
+        val token = thisRun
 
         probes.execute {
             val alive = currentEndpoint?.let { reachable(it) } ?: true
 
             watchHandler.post {
                 if (!engine.isRunning) return@post
+
+                // A probe takes seconds, and the run can end inside them. The
+                // post cannot be cancelled by teardown - it is not the runnable
+                // teardown knows about - so it has to check for itself.
+                if (!runs.isCurrent(token)) return@post
 
                 if (alive) {
                     failures.succeeded()
@@ -678,6 +786,7 @@ class SimpleVpnService : VpnService() {
      */
     private fun checkConfig() {
         if (!engine.isRunning) return
+        val token = thisRun
 
         starts.execute {
             // Two questions on one rhythm: is the service running, and is
@@ -694,6 +803,7 @@ class SimpleVpnService : VpnService() {
 
             watchHandler.post {
                 if (!engine.isRunning) return@post
+                if (!runs.isCurrent(token)) return@post
                 if (standing == PlanSource.Standing.REVOKED) {
                     signOutAndStop()
                     return@post
@@ -755,10 +865,16 @@ class SimpleVpnService : VpnService() {
      * it is more useful than this quietly waiting forever.
      */
     private fun restartWhenNodeAnswers() {
+        val token = thisRun
         probes.execute {
             val reachable = probeNode()
 
             restartHandler.post {
+                // This post is not the runnable teardown cancels, so a stop
+                // during the probe would otherwise be answered by scheduling
+                // the next one - a wait that outlives what it was waiting for.
+                if (!runs.isCurrent(token)) return@post
+
                 when {
                     reachable -> {
                         SessionLog.record(this, "node answers after $probeAttempts probe(s), restarting")
@@ -834,6 +950,7 @@ class SimpleVpnService : VpnService() {
      */
     private fun restartEngineOnCurrentEndpoint(reason: String, countAsReconnect: Boolean = true) {
         if (!engine.isRunning) return
+        if (!runs.isCurrent(thisRun)) return
         SessionLog.record(this, "$reason, restarting the engine")
 
         // Counted here and only here. The other places that show
@@ -920,6 +1037,10 @@ class SimpleVpnService : VpnService() {
     }
 
     private fun failAndStop(reason: String) {
+        // The run ends here too. A failure is as final as a stop, and the work
+        // still queued behind it has no more right to rebuild the tunnel than
+        // it would after somebody pressed OFF.
+        runs.stop()
         rebuilding = false
         SessionLog.record(this, "stopping after failure: " + reason)
         // Kept past the end of this attempt so a support message written an
@@ -1000,6 +1121,7 @@ class SimpleVpnService : VpnService() {
     override fun onRevoke() {
         Log.i(TAG, "consent revoked")
         SessionLog.record(this, "consent revoked or another VPN took over")
+        runs.stop()
         teardown()
         VpnController.update(VpnConnectionState.Disconnected)
         stopSelf()
@@ -1007,6 +1129,7 @@ class SimpleVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        runs.stop()
         teardown()
         if (VpnController.state.value.isActive) {
             VpnController.update(VpnConnectionState.Disconnected)

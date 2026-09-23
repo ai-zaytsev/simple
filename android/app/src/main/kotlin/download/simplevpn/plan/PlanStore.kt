@@ -127,6 +127,27 @@ class PlanStore(context: Context) {
     enum class Source { CANDIDATE, KNOWN_GOOD, NOTHING }
 
     /**
+     * Whether trying again after a failure would try anything different.
+     *
+     * Asked after [failed] has been recorded, so the count it reads includes
+     * the failure being answered. The rule itself lives in PlanChoice beside
+     * the one that picks a plan, because the two have to agree about when
+     * there is nothing left: they did not, and the disagreement was a tunnel
+     * that rebuilt itself for ever.
+     */
+    fun worthTryingAgain(justFailed: Source): Boolean = PlanChoice.worthRetrying(
+        candidateSeq = stored()?.seq,
+        goodSeq = knownGood()?.seq,
+        failures = candidateFailures,
+        limit = FAILURES_BEFORE_ROLLING_BACK,
+        justFailed = when (justFailed) {
+            Source.CANDIDATE -> PlanChoice.Use.CANDIDATE
+            Source.KNOWN_GOOD -> PlanChoice.Use.KNOWN_GOOD
+            Source.NOTHING -> PlanChoice.Use.NOTHING
+        },
+    )
+
+    /**
      * Records that a plan carried traffic.
      *
      * Only a candidate is ever promoted. Promoting whatever happened to work

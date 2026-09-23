@@ -21,7 +21,16 @@
     <string name="auth_bad_address">Проверьте адрес: похоже, в нём опечатка.</string>
     <string name="auth_unreachable">Не удалось связаться с сервером. Попробуйте ещё раз.</string>
     <string name="status_connected">Подключено</string>
-    <string name="status_reconnecting">Сеть сменилась, переподключаемся</string>
+    <!--
+         Says what is happening, not why.
+
+         Five different situations show this label: a network change, a node
+         that stopped answering, a failover, a plan being abandoned, and a
+         recording being switched on. It named the rarest of them. A fault
+         report came back quoting it word for word, which sent the search to
+         the network and away from the plan that was actually failing.
+    -->
+    <string name="status_reconnecting">Переподключаемся</string>
     <string name="status_disconnecting">Отключаемся</string>
 
     <string name="error_consent_denied">Без разрешения системы VPN включить нельзя</string>
@@ -33,6 +42,7 @@
     <string name="error_signed_in_elsewhere">Выполнен вход на другом устройстве. Войдите заново, чтобы пользоваться VPN здесь.</string>
     <string name="error_already_tunnelled">Эта сеть уже работает через наш VPN. Второй туннель не нужен.</string>
     <string name="error_no_working_plan">Не удалось подключиться ни с текущими, ни с предыдущими настройками. Попробуйте позже.</string>
+    <string name="error_tunnel_carries_nothing">Соединение установлено, но данные через него не проходят. Попробуйте позже.</string>
 
     <string name="update_available_title">Доступно обновление</string>
     <string name="update_available_body">Можно установить новую версию сейчас или продолжить пользоваться VPN.</string>

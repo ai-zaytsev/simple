@@ -97,6 +97,16 @@ class PlanSource(private val context: Context) {
      */
     fun failed(source: PlanStore.Source) = store.failed(source)
 
+    /**
+     * Whether another attempt is worth making, asked after [failed].
+     *
+     * The answer is false when the next attempt would use the same plan that
+     * has just run out of chances, and that is the case this client had no
+     * answer for: it rebuilt the tunnel until a rollback became available,
+     * and when none ever would it rebuilt for ever.
+     */
+    fun worthTryingAgain(justFailed: PlanStore.Source): Boolean = store.worthTryingAgain(justFailed)
+
     /** The number of the plan currently proposed, for reporting a bad one. */
     fun candidateSeq(): Long = store.lastSeq
 
