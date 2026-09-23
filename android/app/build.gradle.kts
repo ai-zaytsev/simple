@@ -12,8 +12,8 @@ android {
         applicationId = "download.simplevpn"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
         // The version policy is shared; only this executor changes when a
         // Google Play build is introduced.
         buildConfigField("String", "UPDATE_CHANNEL", "\"direct_apk\"")
